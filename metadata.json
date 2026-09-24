@@ -1,0 +1,10 @@
+{
+  "name": "Timeline Event Tracker",
+  "description": "Chronological timeline tracker to log events with tags, attached photos, emotions, ideas, and location context.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
