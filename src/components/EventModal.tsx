@@ -18,6 +18,7 @@ import {
 import { TimelineEvent, EmotionKey, LocationMetadata, EventTrack } from '../types';
 import { EMOTIONS, DEFAULT_TAGS } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
+import { compressImage } from '../lib/images';
 
 interface EventModalProps {
   isOpen: boolean;
@@ -74,6 +75,7 @@ export const EventModal: React.FC<EventModalProps> = ({
   const [isAddingUrl, setIsAddingUrl] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [isCompressing, setIsCompressing] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -141,13 +143,27 @@ export const EventModal: React.FC<EventModalProps> = ({
   };
 
   // Keep local files for the authenticated upload endpoint and use object URLs only for previews.
+  // Photos are downscaled before upload so phone pictures stop hitting the server size limit.
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = (Array.from(e.target.files || []) as File[]).filter((file) => file.type.startsWith('image/'));
-    if (files.length) {
-      setImageFiles((prev) => [...prev, ...files]);
-      setImages((prev) => [...prev, ...files.map((file) => URL.createObjectURL(file))]);
-    }
+    const picked = (Array.from(e.target.files || []) as File[]).filter((file) => file.type.startsWith('image/'));
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (!picked.length) return;
+    setSaveError('');
+    setIsCompressing(true);
+    (async () => {
+      const ready: File[] = [];
+      for (const file of picked) {
+        try {
+          ready.push(await compressImage(file));
+        } catch (error) {
+          setSaveError(error instanceof Error ? error.message : `Could not prepare "${file.name}".`);
+        }
+      }
+      if (ready.length) {
+        setImageFiles((prev) => [...prev, ...ready]);
+        setImages((prev) => [...prev, ...ready.map((file) => URL.createObjectURL(file))]);
+      }
+    })().finally(() => setIsCompressing(false));
   };
 
   const handleAddImageUrl = () => {
@@ -733,7 +749,7 @@ export const EventModal: React.FC<EventModalProps> = ({
               type="button"
               id="cancel-event-button"
               onClick={onClose}
-              disabled={isSaving}
+              disabled={isSaving || isCompressing}
               className="px-5 py-2.5 text-xs font-semibold rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition disabled:opacity-50"
             >
               Cancel
@@ -741,10 +757,10 @@ export const EventModal: React.FC<EventModalProps> = ({
             <button
               type="submit"
               id="save-event-button"
-              disabled={isSaving}
+              disabled={isSaving || isCompressing}
               className="px-6 py-2.5 text-xs font-semibold rounded-xl bg-amber-600 hover:bg-amber-700 text-white shadow-sm transition disabled:opacity-60"
             >
-              {isSaving ? 'Saving…' : eventToEdit ? 'Save Changes' : 'Add to Timeline'}
+              {isSaving ? 'Saving…' : isCompressing ? 'Preparing photos…' : eventToEdit ? 'Save Changes' : 'Add to Timeline'}
             </button>
           </div>
         </form>

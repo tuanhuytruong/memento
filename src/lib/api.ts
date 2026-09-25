@@ -137,7 +137,17 @@ export const dataApi = {
     const form = new FormData();
     form.append('file', file);
     form.append('momentId', momentId);
-    return request('/images', { method: 'POST', body: form });
+    try {
+      return await request('/images', { method: 'POST', body: form });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 413) {
+        throw new ApiError(`"${file.name}" is too large for upload. Try a smaller photo.`, 413);
+      }
+      if (error instanceof ApiError && error.status === 415) {
+        throw new ApiError(`"${file.name}" is not a supported image (JPEG/PNG/GIF/WebP only).`, 415);
+      }
+      throw error;
+    }
   },
 };
 
