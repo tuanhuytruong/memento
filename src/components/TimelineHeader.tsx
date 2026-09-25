@@ -1,14 +1,13 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Calendar,
   Plus,
   Download,
-  Upload,
-  RefreshCw,
   Star,
   MapPin,
   Image as ImageIcon,
   Sparkles,
+  MoreHorizontal,
 } from 'lucide-react';
 import { TimelineEvent } from '../types';
 
@@ -16,10 +15,7 @@ interface TimelineHeaderProps {
   events: TimelineEvent[];
   trackCount: number;
   onAddNewEvent: () => void;
-  onAddNewTrack?: () => void;
   onExportJson: () => void;
-  onImportJson: (file: File) => void;
-  onResetToDemo: () => void;
   username?: string;
   onLogout?: () => void;
 }
@@ -28,14 +24,23 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
   events,
   trackCount,
   onAddNewEvent,
-  onAddNewTrack,
   onExportJson,
-  onImportJson,
-  onResetToDemo,
   username,
   onLogout,
 }) => {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // Close dropdowns on outside click.
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-account-menu]')) setAccountOpen(false);
+      if (!target.closest('[data-overflow-menu]')) setMenuOpen(false);
+    };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, []);
 
   // Derive metrics
   const totalEvents = events.length;
@@ -45,110 +50,102 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
     events.map((e) => e.location?.city || e.location?.name).filter(Boolean)
   ).size;
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      onImportJson(file);
-    }
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
   return (
     <header className="mb-6 sm:mb-8">
-      {/* Top Banner */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-stone-200 dark:border-stone-800">
+      {/* Top Banner — single lean row */}
+      <div className="flex flex-row items-center justify-between gap-3 pb-5 border-b border-stone-200 dark:border-stone-800">
         <div className="min-w-0">
-          <div className="flex items-center gap-2.5 mb-1.5">
+          <div className="flex items-center gap-2.5 mb-1">
             <div className="w-8 h-8 rounded-xl bg-amber-600 text-white flex items-center justify-center shadow-xs shrink-0">
               <Calendar className="w-4 h-4" />
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold font-display text-stone-900 dark:text-stone-100 tracking-tight">
-              Timeline Event Tracker
+              Memento
             </h1>
           </div>
           <p className="text-xs sm:text-sm text-stone-500 dark:text-stone-400 max-w-xl">
-            Chronicle life milestones with tag organization, attached imagery, emotion levels,
-            philosophical ideas, and location context.
+            Mend your memory, together.
           </p>
         </div>
 
-        {/* Action Controls - cleanly organized */}
-        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          {username && onLogout && <div className="flex items-center gap-2 mr-1"><span className="text-xs text-stone-500">{username}</span><button type="button" onClick={onLogout} className="px-3 py-2 rounded-xl text-xs font-semibold border border-stone-200 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800">Sign out</button></div>}
-          {/* Secondary Utilities: Export / Import / Reset segmented group */}
-          <div className="inline-flex items-center rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 p-1 shadow-xs">
+        {/* Actions: 1 primary + overflow + avatar */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            id="open-create-event-modal"
+            onClick={onAddNewEvent}
+            className="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition flex items-center gap-2 active:scale-98 whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4" />
+            <span>New entry</span>
+          </button>
+
+          <div className="relative" data-overflow-menu>
             <button
-              id="export-timeline-json"
-              onClick={onExportJson}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700 transition flex items-center gap-1.5 whitespace-nowrap"
-              title="Export timeline data as JSON backup"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((v) => !v)}
+              title="More actions"
+              className="px-3 py-2 rounded-xl text-xs font-semibold border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700"
             >
-              <Download className="w-3.5 h-3.5 text-stone-500" />
-              <span className="hidden sm:inline">Export</span>
+              <MoreHorizontal className="w-4 h-4" />
             </button>
-
-            <div className="h-4 w-px bg-stone-200 dark:bg-stone-700 mx-0.5" />
-
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              accept=".json"
-              className="hidden"
-            />
-            <button
-              id="import-timeline-json"
-              onClick={() => fileInputRef.current?.click()}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700 transition flex items-center gap-1.5 whitespace-nowrap"
-              title="Import timeline data from JSON backup"
-            >
-              <Upload className="w-3.5 h-3.5 text-stone-500" />
-              <span className="hidden sm:inline">Import</span>
-            </button>
-
-            <div className="h-4 w-px bg-stone-200 dark:bg-stone-700 mx-0.5" />
-
-            <button
-              id="reset-demo-timeline"
-              onClick={onResetToDemo}
-              className="p-1.5 rounded-lg text-xs font-medium text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 transition"
-              title="Reset to demo entries"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          {/* Primary Action Buttons */}
-          <div className="flex items-center gap-2">
-            {onAddNewTrack && (
-              <button
-                id="open-create-track-modal-header"
-                onClick={onAddNewTrack}
-                className="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-800 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-750 transition flex items-center gap-1.5 shadow-xs whitespace-nowrap active:scale-98"
-                title="Create a new event track timeline"
-              >
-                <Plus className="w-3.5 h-3.5 text-amber-600 dark:text-amber-500" />
-                <span>New Track</span>
-              </button>
+            {menuOpen && (
+              <div role="menu" className="absolute right-0 mt-2 w-48 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 shadow-lg p-1.5 z-50">
+                <button
+                  type="button"
+                  role="menuitem"
+                  id="export-timeline-json"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onExportJson();
+                  }}
+                  title="Export timeline data as JSON backup"
+                  className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800 flex items-center gap-2"
+                >
+                  <Download className="w-3.5 h-3.5 text-stone-500" />
+                  Export backup (JSON)
+                </button>
+              </div>
             )}
-
-            <button
-              id="open-create-event-modal"
-              onClick={onAddNewEvent}
-              className="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition flex items-center gap-2 active:scale-98 whitespace-nowrap"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Add Event</span>
-            </button>
           </div>
+
+          {username && onLogout && (
+            <div className="relative" data-account-menu>
+              <button
+                type="button"
+                onClick={() => setAccountOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={accountOpen}
+                title={username}
+                className="w-9 h-9 rounded-full bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-xs font-bold flex items-center justify-center shrink-0"
+              >
+                {username.slice(0, 1).toUpperCase()}
+              </button>
+              {accountOpen && (
+                <div role="menu" className="absolute right-0 mt-2 w-48 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 shadow-lg p-1.5 z-50">
+                  <p className="px-3 py-2 text-xs text-stone-500 truncate">{username}</p>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAccountOpen(false);
+                      onLogout();
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-semibold hover:bg-stone-100 dark:hover:bg-stone-800"
+                  >
+                    Sign out
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Metrics ribbon */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 pt-5">
-        <div className="px-3.5 py-2.5 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
+      {/* Metrics ribbon — compact */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 pt-4">
+        <div className="px-3 py-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 flex items-center justify-center shrink-0">
             <Sparkles className="w-4 h-4" />
           </div>
@@ -162,7 +159,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
           </div>
         </div>
 
-        <div className="px-3.5 py-2.5 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
+        <div className="px-3 py-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 flex items-center justify-center shrink-0">
             <Calendar className="w-4 h-4" />
           </div>
@@ -176,7 +173,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
           </div>
         </div>
 
-        <div className="px-3.5 py-2.5 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
+        <div className="px-3 py-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
             <Star className="w-4 h-4 fill-current" />
           </div>
@@ -190,7 +187,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
           </div>
         </div>
 
-        <div className="px-3.5 py-2.5 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
+        <div className="px-3 py-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 flex items-center justify-center shrink-0">
             <ImageIcon className="w-4 h-4" />
           </div>
@@ -204,7 +201,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
           </div>
         </div>
 
-        <div className="px-3.5 py-2.5 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
+        <div className="px-3 py-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 flex items-center justify-center shrink-0">
             <MapPin className="w-4 h-4" />
           </div>

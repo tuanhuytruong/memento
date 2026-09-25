@@ -408,13 +408,7 @@ export default function App() {
             setEventToEdit(null);
             setIsEventModalOpen(true);
           }}
-          onAddNewTrack={() => {
-            setTrackToEdit(null);
-            setIsEventTrackModalOpen(true);
-          }}
           onExportJson={() => exportTimelineData(eventTracks, events, apiTags.map((tag) => tag.name))}
-          onImportJson={() => setDataError('Importing backups is disabled until a server-side restore contract is available.')}
-          onResetToDemo={() => setDataError('Sample data reset is disabled; account data will never be replaced with demo records.')}
         />
         {/* Event-Based Timeline Navigation & Overview */}
         <EventTrackNav
