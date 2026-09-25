@@ -26,7 +26,7 @@ interface EventDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   onEdit: (event: TimelineEvent) => void;
-  onDelete: (id: string) => void;
+  onDelete: (id: string) => Promise<void>;
   onTagClick?: (tag: string) => void;
   onOpenImageLightbox: (images: string[], index: number) => void;
 }

@@ -1,15 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
-import {
-  loadStoredEventTracks,
-  saveStoredEventTracks,
-  loadStoredEvents,
-  saveStoredEvents,
-  loadStoredCustomTags,
-  saveStoredCustomTags,
-  exportTimelineData,
-} from './lib/storage';
-import { INITIAL_EVENT_TRACKS, INITIAL_EVENTS } from './data/initialEvents';
+import { exportTimelineData } from './lib/storage';
+import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag } from './lib/api';
+import { AuthScreen } from './components/AuthScreen';
 import { TimelineHeader } from './components/TimelineHeader';
 import { EventTrackNav } from './components/EventTrackNav';
 import { EventTrackModal } from './components/EventTrackModal';
@@ -22,9 +15,120 @@ import { EventDetailModal } from './components/EventDetailModal';
 import { ImageLightbox } from './components/ImageLightbox';
 
 export default function App() {
-  const [eventTracks, setEventTracks] = useState<EventTrack[]>(() => loadStoredEventTracks());
-  const [events, setEvents] = useState<TimelineEvent[]>(() => loadStoredEvents(eventTracks));
-  const [customTags, setCustomTags] = useState<string[]>(() => loadStoredCustomTags());
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [authStatus, setAuthStatus] = useState<'checking' | 'anonymous' | 'authenticated' | 'error'>('checking');
+  const [sessionError, setSessionError] = useState('');
+  const [dataReady, setDataReady] = useState(false);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [dataError, setDataError] = useState('');
+  const [pendingImageRetry, setPendingImageRetry] = useState<{ momentId: string; files: File[] } | null>(null);
+  const [eventTracks, setEventTracks] = useState<EventTrack[]>([]);
+  const [events, setEvents] = useState<TimelineEvent[]>([]);
+  const [apiTags, setApiTags] = useState<ApiTag[]>([]);
+  const authGenerationRef = useRef(0);
+
+  const loadData = useCallback(async () => {
+    const generation = authGenerationRef.current;
+    setDataLoading(true);
+    setDataError('');
+    try {
+      const accountData = await loadAccountData();
+      if (generation !== authGenerationRef.current) return;
+      setEventTracks(accountData.tracks);
+      setEvents(accountData.moments);
+      setApiTags(accountData.tags);
+      setDataReady(true);
+    } catch (error) {
+      if (generation !== authGenerationRef.current) throw error;
+      if (error instanceof ApiError && error.status === 401) {
+        setUser(null);
+        setAuthStatus('anonymous');
+        setEventTracks([]);
+        setEvents([]);
+        setApiTags([]);
+        setDataReady(false);
+      }
+      setDataError(error instanceof Error ? error.message : 'Could not load your account data.');
+      throw error;
+    } finally {
+      if (generation === authGenerationRef.current) setDataLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    authApi.me().then(async (currentUser) => {
+      if (!active) return;
+      setUser(currentUser);
+      setAuthStatus('authenticated');
+      try {
+        await loadData();
+      } catch (error) {
+        if (active) {
+          setDataError(error instanceof Error ? error.message : 'Could not load your account data.');
+          if (error instanceof ApiError && error.status === 401) setAuthStatus('anonymous');
+        }
+      }
+      }).catch((error: unknown) => {
+      if (!active) return;
+      if (error instanceof ApiError && error.status === 401) {
+        setAuthStatus('anonymous');
+        setSessionError('');
+      } else {
+        setAuthStatus('error');
+        setSessionError(error instanceof Error ? error.message : 'Unable to check your session.');
+      }
+    });
+    return () => { active = false; };
+  }, [loadData]);
+
+  const handleAuthSubmit = async (mode: 'login' | 'register', values: { username: string; password: string; inviteCode: string }) => {
+    if (mode === 'register') await authApi.register(values.username, values.password, values.inviteCode);
+    else await authApi.login(values.username, values.password);
+    const currentUser = await authApi.me();
+    authGenerationRef.current += 1;
+    setUser(currentUser);
+    setAuthStatus('authenticated');
+    setDataReady(false);
+    setEventTracks([]);
+    setEvents([]);
+    setApiTags([]);
+    await loadData();
+  };
+
+  const handleLogout = async () => {
+    authGenerationRef.current += 1;
+    setDataReady(false);
+    setEventTracks([]);
+    setEvents([]);
+    setApiTags([]);
+    setUser(null);
+    setAuthStatus('anonymous');
+    setSelectedTrackId('all');
+    try {
+      await authApi.logout();
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : 'Signed out locally, but the server could not confirm logout.');
+    }
+  };
+
+  const retrySession = async () => {
+    setSessionError('');
+    setAuthStatus('checking');
+    try {
+      const currentUser = await authApi.me();
+      setUser(currentUser);
+      setAuthStatus('authenticated');
+      await loadData();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        setAuthStatus('anonymous');
+        return;
+      }
+      setSessionError(error instanceof Error ? error.message : 'Unable to check your session.');
+      setAuthStatus('error');
+    }
+  };
 
   // Active track selection: 'all' = Merged Timeline, or specific EventTrack ID (e.g. 'evt-ai-era')
   const [selectedTrackId, setSelectedTrackId] = useState<string>('all');
@@ -62,87 +166,53 @@ export default function App() {
     isOpen: false,
   });
 
-  // Sync event tracks to local storage
-  useEffect(() => {
-    saveStoredEventTracks(eventTracks);
-  }, [eventTracks]);
-
-  // Sync events to local storage
-  useEffect(() => {
-    saveStoredEvents(events);
-  }, [events]);
-
-  // Sync custom tags
-  useEffect(() => {
-    saveStoredCustomTags(customTags);
-  }, [customTags]);
-
   // Handle Event Track selection
   const handleSelectTrack = (trackId: string) => {
     setSelectedTrackId(trackId);
     setFilters((prev) => ({ ...prev, selectedEventId: trackId }));
   };
 
-  // Create or Update Event Track
-  const handleSaveTrack = (
+  // Persist each change before reflecting it in the UI; failed requests leave the prior data intact.
+  const handleSaveTrack = async (
     trackData: Omit<EventTrack, 'id' | 'createdAt' | 'updatedAt'>,
     editId?: string
   ) => {
-    const nowIso = new Date().toISOString();
-    if (editId) {
-      setEventTracks((prev) =>
-        prev.map((t) =>
-          t.id === editId
-            ? {
-                ...t,
-                ...trackData,
-                updatedAt: nowIso,
-              }
-            : t
-        )
-      );
-    } else {
-      const newId = 'evt-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
-      const newTrack: EventTrack = {
-        ...trackData,
-        id: newId,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
-      setEventTracks((prev) => [...prev, newTrack]);
-      // Switch focus to the newly created track
-      setSelectedTrackId(newId);
-      setFilters((prev) => ({ ...prev, selectedEventId: newId }));
+    const saved = editId
+      ? await dataApi.updateTrack(editId, trackData)
+      : await dataApi.createTrack(trackData);
+    setEventTracks((prev) => editId
+      ? prev.map((track) => track.id === editId ? saved : track)
+      : [...prev, saved]);
+    if (!editId) {
+      setSelectedTrackId(saved.id);
+      setFilters((prev) => ({ ...prev, selectedEventId: saved.id }));
     }
     setTrackToEdit(null);
   };
 
-  // Delete Event Track
-  const handleDeleteTrack = (id: string) => {
-    setEventTracks((prev) => prev.filter((t) => t.id !== id));
+  // Delete only after the server confirms; failed requests preserve the local row.
+  const handleDeleteTrack = async (id: string) => {
+    await dataApi.deleteTrack(id);
+    setEventTracks((prev) => prev.filter((track) => track.id !== id));
     if (selectedTrackId === id) {
       setSelectedTrackId('all');
       setFilters((prev) => ({ ...prev, selectedEventId: 'all' }));
     }
   };
 
-  // Compute available tags with frequency count
+  // Combine server-managed tags with occurrence counts from server-backed moments.
   const availableTags = useMemo(() => {
     const tagCountMap: { [key: string]: number } = {};
-    events.forEach((evt) => {
-      evt.tags?.forEach((t) => {
-        tagCountMap[t] = (tagCountMap[t] || 0) + 1;
-      });
+    events.forEach((evt) => evt.tags?.forEach((tag) => {
+      tagCountMap[tag] = (tagCountMap[tag] || 0) + 1;
+    }));
+    apiTags.forEach((tag) => {
+      if (!(tag.name in tagCountMap)) tagCountMap[tag.name] = 0;
     });
-    // Add custom tags with 0 count if not used
-    customTags.forEach((t) => {
-      if (!tagCountMap[t]) tagCountMap[t] = 0;
-    });
-
     return Object.entries(tagCountMap)
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-  }, [events, customTags]);
+  }, [events, apiTags]);
 
   // Compute available distinct years from events
   const availableYears = useMemo(() => {
@@ -227,42 +297,51 @@ export default function App() {
       });
   }, [events, selectedTrackId, filters]);
 
-  // Save (create or update) timeline moment
-  const handleSaveEvent = (
+  // Save a moment server-side first; local state changes only after a confirmed response.
+  const handleSaveEvent = async (
     data: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>,
-    editId?: string
+    editId?: string,
+    imageFiles: File[] = []
   ) => {
-    const nowIso = new Date().toISOString();
-    if (editId) {
-      setEvents((prev) =>
-        prev.map((e) =>
-          e.id === editId
-            ? {
-                ...e,
-                ...data,
-                updatedAt: nowIso,
-              }
-            : e
-        )
-      );
-    } else {
-      const newEvt: TimelineEvent = {
-        ...data,
-        id: 'moment-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
-      setEvents((prev) => [newEvt, ...prev]);
-    }
+    const saved = editId
+      ? await dataApi.updateMoment(editId, data)
+      : await dataApi.createMoment(data);
+    setEvents((prev) => editId
+      ? prev.map((event) => event.id === editId ? saved : event)
+      : [saved, ...prev]);
     setEventToEdit(null);
+    if (imageFiles.length) {
+      let uploaded = 0;
+      try {
+        for (; uploaded < imageFiles.length; uploaded += 1) await dataApi.uploadImage(imageFiles[uploaded], saved.id);
+        const refreshedMoments = await dataApi.moments();
+        setEvents(refreshedMoments);
+      } catch (error) {
+        const remaining = imageFiles.slice(uploaded);
+        if (remaining.length) setPendingImageRetry({ momentId: saved.id, files: remaining });
+        setDataError(`Moment saved; ${uploaded} image(s) uploaded. ${remaining.length} remain and can be retried: ${error instanceof Error ? error.message : 'upload failed'}`);
+      }
+    }
   };
 
-  // Delete event
-  const handleDeleteEvent = (id: string) => {
-    setEvents((prev) => prev.filter((e) => e.id !== id));
-    if (eventToView?.id === id) {
-      setEventToView(null);
-    }
+  // Delete only after the server confirms; failures do not remove data from the view.
+  const handleDeleteEvent = async (id: string) => {
+    await dataApi.deleteMoment(id);
+    setEvents((prev) => prev.filter((event) => event.id !== id));
+    if (eventToView?.id === id) setEventToView(null);
+  };
+
+  const handleAddCustomTag = async (name: string) => {
+    if (apiTags.some((tag) => tag.name.toLowerCase() === name.toLowerCase())) return;
+    const created = await dataApi.createTag(name);
+    setApiTags((prev) => prev.some((tag) => tag.id === created.id) ? prev : [...prev, created]);
+  };
+
+  const handleDeleteUnusedTag = async (id: string) => {
+    const tag = apiTags.find((item) => item.id === id);
+    if (!tag || events.some((event) => event.tags?.includes(tag.name))) return;
+    await dataApi.deleteTag(id);
+    setApiTags((prev) => prev.filter((item) => item.id !== id));
   };
 
   // Tag filter shortcut
@@ -277,78 +356,54 @@ export default function App() {
 
   // Lightbox opener
   const handleOpenLightbox = (images: string[], index: number) => {
-    setLightboxState({
-      images,
-      index,
-      isOpen: true,
-    });
+    setLightboxState({ images, index, isOpen: true });
   };
 
-  // Reset demo data
-  const handleResetToDemo = () => {
-    if (
-      window.confirm(
-        'Reset all timeline events back to the sample memories (AI Era, New Company, Kyoto Ceramics)? Current changes will be replaced.'
-      )
-    ) {
-      setEventTracks(INITIAL_EVENT_TRACKS);
-      setEvents(INITIAL_EVENTS);
-      setSelectedTrackId('all');
-      setFilters({
-        search: '',
-        selectedEventId: 'all',
-        selectedTags: [],
-        selectedEmotions: [],
-        selectedYear: 'all',
-        milestonesOnly: false,
-        hasImagesOnly: false,
-        sortDirection: 'newest',
-      });
+  const runMutation = async (operation: () => Promise<void>) => {
+    try {
+      await operation();
+      setDataError('');
+    } catch (error) {
+      setDataError(error instanceof Error ? error.message : 'The request failed. Your data was not changed.');
     }
   };
 
-  // Import JSON backup
-  const handleImportJson = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const content = e.target?.result as string;
-        const parsed = JSON.parse(content);
-        if (parsed.eventTracks && Array.isArray(parsed.eventTracks) && Array.isArray(parsed.events)) {
-          setEventTracks(parsed.eventTracks);
-          setEvents(parsed.events);
-          if (parsed.customTags && Array.isArray(parsed.customTags)) {
-            setCustomTags(parsed.customTags);
-          }
-          alert(
-            `Successfully restored ${parsed.eventTracks.length} event tracks and ${parsed.events.length} timeline entries!`
-          );
-        } else if (Array.isArray(parsed) && parsed.length > 0) {
-          // Legacy array format
-          const defaultTrackId = eventTracks[0]?.id || 'evt-ai-era';
-          const migrated = parsed.map((item: any) => ({
-            ...item,
-            eventId: item.eventId || defaultTrackId,
-          }));
-          setEvents(migrated);
-          alert(`Successfully restored ${migrated.length} timeline events!`);
-        } else {
-          alert('Invalid backup format. Expected a JSON object with event tracks and events.');
-        }
-      } catch (err) {
-        alert('Could not parse JSON file.');
-      }
-    };
-    reader.readAsText(file);
+  const retryImageUploads = async () => {
+    if (!pendingImageRetry) return;
+    try {
+      for (const file of pendingImageRetry.files) await dataApi.uploadImage(file, pendingImageRetry.momentId);
+      const moments = await dataApi.moments();
+      setEvents(moments);
+      setPendingImageRetry(null);
+      setDataError('');
+    } catch (error) {
+      setDataError(`Image upload did not finish: ${error instanceof Error ? error.message : 'unknown error'}. Retry without losing the saved moment.`);
+    }
   };
+
+  if (authStatus === 'checking') {
+    return <main className="min-h-screen bg-stone-50 dark:bg-stone-950 flex items-center justify-center text-stone-500">Checking your session…</main>;
+  }
+  if (authStatus === 'error') {
+    return <main className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 flex items-center justify-center p-4"><section className="max-w-md rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 p-6"><h1 className="text-xl font-bold mb-2">Memento is temporarily unavailable</h1><p role="alert" className="text-sm text-stone-600 dark:text-stone-300 mb-4">{sessionError}</p><button className="rounded-xl bg-amber-600 text-white px-4 py-2 font-semibold" onClick={() => void retrySession()}>Retry connection</button></section></main>;
+  }
+  if (authStatus === 'anonymous' || !user) {
+    return <AuthScreen initialError={sessionError} onSubmit={handleAuthSubmit} />;
+  }
+  if (!dataReady) {
+    return <main className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 flex items-center justify-center p-4"><section className="max-w-md text-center rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 p-6"><h1 className="text-xl font-bold mb-2">Loading your timeline</h1>{dataLoading ? <p className="text-sm text-stone-500">Fetching account data…</p> : <><p role="alert" className="text-sm text-rose-700 dark:text-rose-300 mb-4">{dataError || 'Your account data could not be loaded. No local sample data was substituted.'}</p><button className="rounded-xl bg-amber-600 text-white px-4 py-2 font-semibold" onClick={() => void loadData().catch(() => undefined)}>Retry loading</button><button className="ml-2 text-sm text-stone-500 underline" onClick={() => void handleLogout()}>Sign out</button></>}</section></main>;
+  }
 
   return (
     <div className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
+        {dataError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200"><span>{dataError}</span><span className="flex gap-3">{pendingImageRetry && <button className="font-semibold underline" onClick={() => void retryImageUploads()}>Retry image upload</button>}<button className="font-semibold underline" onClick={() => setDataError('')}>Dismiss</button></span></div>}
         {/* Header Ribbon & Global Stats */}
         <TimelineHeader
           events={events}
           trackCount={eventTracks.length}
+          username={user.username}
+          onLogout={() => void handleLogout()}
           onAddNewEvent={() => {
             setEventToEdit(null);
             setIsEventModalOpen(true);
@@ -357,11 +412,10 @@ export default function App() {
             setTrackToEdit(null);
             setIsEventTrackModalOpen(true);
           }}
-          onExportJson={() => exportTimelineData(eventTracks, events, customTags)}
-          onImportJson={handleImportJson}
-          onResetToDemo={handleResetToDemo}
+          onExportJson={() => exportTimelineData(eventTracks, events, apiTags.map((tag) => tag.name))}
+          onImportJson={() => setDataError('Importing backups is disabled until a server-side restore contract is available.')}
+          onResetToDemo={() => setDataError('Sample data reset is disabled; account data will never be replaced with demo records.')}
         />
-
         {/* Event-Based Timeline Navigation & Overview */}
         <EventTrackNav
           tracks={eventTracks}
@@ -425,7 +479,7 @@ export default function App() {
                 setEventToEdit(evt);
                 setIsEventModalOpen(true);
               }}
-              onDelete={handleDeleteEvent}
+              onDelete={(id) => runMutation(() => handleDeleteEvent(id))}
               onTagClick={handleTagClick}
               onOpenImageLightbox={handleOpenLightbox}
               onAddNewEvent={() => {
@@ -465,7 +519,7 @@ export default function App() {
                 setEventToEdit(evt);
                 setIsEventModalOpen(true);
               }}
-              onDelete={handleDeleteEvent}
+              onDelete={(id) => runMutation(() => handleDeleteEvent(id))}
               onTagClick={handleTagClick}
             />
           )}
@@ -491,8 +545,8 @@ export default function App() {
           setIsEventTrackModalOpen(false);
           setTrackToEdit(null);
         }}
-        onSave={handleSaveTrack}
-        onDelete={handleDeleteTrack}
+        onSave={(track, editId) => handleSaveTrack(track, editId)}
+        onDelete={(id) => runMutation(() => handleDeleteTrack(id))}
       />
 
       {/* Create / Edit Timeline Moment Modal */}
@@ -512,11 +566,7 @@ export default function App() {
           setTrackToEdit(null);
           setIsEventTrackModalOpen(true);
         }}
-        onAddCustomTag={(tag) => {
-          if (!customTags.includes(tag)) {
-            setCustomTags((prev) => [...prev, tag]);
-          }
-        }}
+        onAddCustomTag={handleAddCustomTag}
       />
 
       {/* Event Details View Modal */}

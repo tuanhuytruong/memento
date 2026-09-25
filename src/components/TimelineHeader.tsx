@@ -20,6 +20,8 @@ interface TimelineHeaderProps {
   onExportJson: () => void;
   onImportJson: (file: File) => void;
   onResetToDemo: () => void;
+  username?: string;
+  onLogout?: () => void;
 }
 
 export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
@@ -30,6 +32,8 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
   onExportJson,
   onImportJson,
   onResetToDemo,
+  username,
+  onLogout,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -72,6 +76,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
 
         {/* Action Controls - cleanly organized */}
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          {username && onLogout && <div className="flex items-center gap-2 mr-1"><span className="text-xs text-stone-500">{username}</span><button type="button" onClick={onLogout} className="px-3 py-2 rounded-xl text-xs font-semibold border border-stone-200 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800">Sign out</button></div>}
           {/* Secondary Utilities: Export / Import / Reset segmented group */}
           <div className="inline-flex items-center rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 p-1 shadow-xs">
             <button

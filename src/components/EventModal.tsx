@@ -26,8 +26,8 @@ interface EventModalProps {
   defaultTrackId?: string;
   existingTags: string[];
   onClose: () => void;
-  onSave: (eventData: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string) => void;
-  onAddCustomTag?: (newTag: string) => void;
+  onSave: (eventData: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles?: File[]) => Promise<void>;
+  onAddCustomTag?: (newTag: string) => Promise<void>;
   onCreateNewTrack?: () => void;
 }
 
@@ -42,8 +42,6 @@ export const EventModal: React.FC<EventModalProps> = ({
   onAddCustomTag,
   onCreateNewTrack,
 }) => {
-  if (!isOpen) return null;
-
   const todayStr = new Date().toISOString().split('T')[0];
   const currentTimeStr = new Date().toTimeString().slice(0, 5);
 
@@ -69,15 +67,20 @@ export const EventModal: React.FC<EventModalProps> = ({
   const [isLocating, setIsLocating] = useState(false);
   const [isMilestone, setIsMilestone] = useState(false);
 
-  // Images
+  // Images: existing server URLs and new local files are tracked separately.
   const [images, setImages] = useState<string[]>([]);
+  const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [isAddingUrl, setIsAddingUrl] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Prefill on edit or reset on create
   useEffect(() => {
+    if (!isOpen) return;
+    setSaveError('');
     if (eventToEdit) {
       setEventId(eventToEdit.eventId || tracks[0]?.id || '');
       setTitle(eventToEdit.title);
@@ -93,6 +96,7 @@ export const EventModal: React.FC<EventModalProps> = ({
       setLocationCountry(eventToEdit.location?.country || '');
       setIsMilestone(!!eventToEdit.isMilestone);
       setImages(eventToEdit.images || []);
+      setImageFiles([]);
     } else {
       const fallbackTrackId =
         defaultTrackId && defaultTrackId !== 'all' ? defaultTrackId : tracks[0]?.id || '';
@@ -110,6 +114,7 @@ export const EventModal: React.FC<EventModalProps> = ({
       setLocationCountry('');
       setIsMilestone(false);
       setImages([]);
+      setImageFiles([]);
     }
   }, [eventToEdit, isOpen, defaultTrackId, tracks]);
 
@@ -122,38 +127,27 @@ export const EventModal: React.FC<EventModalProps> = ({
     }
   };
 
-  const handleAddNewTag = () => {
+  const handleAddNewTag = async () => {
     const trimmed = newTagInput.trim();
     if (!trimmed) return;
-    if (!selectedTags.includes(trimmed)) {
-      setSelectedTags([...selectedTags, trimmed]);
+    try {
+      if (onAddCustomTag) await onAddCustomTag(trimmed);
+      if (!selectedTags.includes(trimmed)) setSelectedTags((prev) => [...prev, trimmed]);
+      setNewTagInput('');
+      setShowNewTagInput(false);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Could not save this tag. Please retry.');
     }
-    if (onAddCustomTag) {
-      onAddCustomTag(trimmed);
-    }
-    setNewTagInput('');
-    setShowNewTagInput(false);
   };
 
-  // Image Upload handler
+  // Keep local files for the authenticated upload endpoint and use object URLs only for previews.
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    Array.from(files).forEach((file: File) => {
-      if (!file.type.startsWith('image/')) return;
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setImages((prev) => [...prev, event.target!.result as string]);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+    const files = (Array.from(e.target.files || []) as File[]).filter((file) => file.type.startsWith('image/'));
+    if (files.length) {
+      setImageFiles((prev) => [...prev, ...files]);
+      setImages((prev) => [...prev, ...files.map((file) => URL.createObjectURL(file))]);
     }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleAddImageUrl = () => {
@@ -165,6 +159,11 @@ export const EventModal: React.FC<EventModalProps> = ({
   };
 
   const removeImage = (index: number) => {
+    const localIndex = images.slice(0, index + 1).filter((image) => image.startsWith('blob:')).length - 1;
+    if (images[index]?.startsWith('blob:') && localIndex >= 0 && localIndex < imageFiles.length) {
+      URL.revokeObjectURL(images[index]);
+      setImageFiles((prev) => prev.filter((_, i) => i !== localIndex));
+    }
     setImages((prev) => prev.filter((_, i) => i !== index));
   };
 
@@ -232,7 +231,7 @@ export const EventModal: React.FC<EventModalProps> = ({
       time: time.trim() || undefined,
       description: description.trim(),
       tags: selectedTags.length > 0 ? selectedTags : ['General'],
-      images,
+      images: images.filter((image) => !image.startsWith('blob:')),
       emotion: selectedEmotion,
       emotionIntensity: selectedEmotion ? emotionIntensity : undefined,
       idea: idea.trim() || undefined,
@@ -240,12 +239,20 @@ export const EventModal: React.FC<EventModalProps> = ({
       isMilestone,
     };
 
-    onSave(payload, eventToEdit?.id);
-    onClose();
+    setSaveError('');
+    setIsSaving(true);
+    onSave(payload, eventToEdit?.id, imageFiles).then(() => {
+      images.filter((image) => image.startsWith('blob:')).forEach((image) => URL.revokeObjectURL(image));
+      onClose();
+    }).catch((error: unknown) => {
+      setSaveError(error instanceof Error ? error.message : 'Could not save this moment. Your edits are still here; retry when ready.');
+    }).finally(() => setIsSaving(false));
   };
 
   // Combine default tags with existing tags
   const allTagOptions = Array.from(new Set([...DEFAULT_TAGS, ...existingTags]));
+
+  if (!isOpen) return null;
 
   return (
     <div
@@ -718,22 +725,26 @@ export const EventModal: React.FC<EventModalProps> = ({
             />
           </div>
 
+          {saveError && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200">{saveError} Your changes are preserved; please retry.</p>}
+
           {/* Footer Action Buttons */}
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-stone-200 dark:border-stone-800">
             <button
               type="button"
               id="cancel-event-button"
               onClick={onClose}
-              className="px-5 py-2.5 text-xs font-semibold rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
+              disabled={isSaving}
+              className="px-5 py-2.5 text-xs font-semibold rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
               id="save-event-button"
-              className="px-6 py-2.5 text-xs font-semibold rounded-xl bg-amber-600 hover:bg-amber-700 text-white shadow-sm transition"
+              disabled={isSaving}
+              className="px-6 py-2.5 text-xs font-semibold rounded-xl bg-amber-600 hover:bg-amber-700 text-white shadow-sm transition disabled:opacity-60"
             >
-              {eventToEdit ? 'Save Changes' : 'Add to Timeline'}
+              {isSaving ? 'Saving…' : eventToEdit ? 'Save Changes' : 'Add to Timeline'}
             </button>
           </div>
         </form>

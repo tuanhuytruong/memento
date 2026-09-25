@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Check, Trash2, Plus } from 'lucide-react';
 import { EventTrack } from '../types';
 import {
@@ -11,7 +11,7 @@ interface EventTrackModalProps {
   isOpen: boolean;
   trackToEdit?: EventTrack | null;
   onClose: () => void;
-  onSave: (trackData: Omit<EventTrack, 'id' | 'createdAt' | 'updatedAt'>, editId?: string) => void;
+  onSave: (trackData: Omit<EventTrack, 'id' | 'createdAt' | 'updatedAt'>, editId?: string) => Promise<void>;
   onDelete?: (id: string) => void;
 }
 
@@ -22,8 +22,6 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
   onSave,
   onDelete,
 }) => {
-  if (!isOpen) return null;
-
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [color, setColor] = useState('indigo');
@@ -31,8 +29,20 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
   const [status, setStatus] = useState<'active' | 'completed' | 'archived'>('active');
   const [tagInput, setTagInput] = useState('');
   const [tags, setTags] = useState<string[]>([]);
+  const [saveError, setSaveError] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const mountedRef = useRef(true);
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setSaveError('');
     if (trackToEdit) {
       setTitle(trackToEdit.title);
       setDescription(trackToEdit.description || '');
@@ -66,6 +76,8 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
     e.preventDefault();
     if (!title.trim()) return;
 
+    setSaveError('');
+    setIsSaving(true);
     onSave(
       {
         title: title.trim(),
@@ -76,11 +88,14 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
         tags,
       },
       trackToEdit?.id
-    );
-    onClose();
+    ).then(onClose).catch((error: unknown) => {
+      setSaveError(error instanceof Error ? error.message : 'Could not save this track. Your edits are still here; please retry.');
+    }).finally(() => setIsSaving(false));
   };
 
   const SelectedIconComponent = getEventIconComponent(icon);
+
+  if (!isOpen) return null;
 
   return (
     <div
@@ -274,6 +289,8 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
             </div>
           )}
 
+          {saveError && <p role="alert" className="mx-6 mb-3 rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200">{saveError} Your changes are preserved; please retry.</p>}
+
           {/* Footer actions */}
           <div className="flex items-center justify-between pt-4 border-t border-stone-200 dark:border-stone-800">
             {trackToEdit && onDelete ? (
@@ -285,8 +302,9 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
                       `Delete event "${trackToEdit.title}"? Any associated moments will remain in the merged timeline.`
                     )
                   ) {
-                    onDelete(trackToEdit.id);
-                    onClose();
+                    Promise.resolve(onDelete(trackToEdit.id)).then(onClose).catch((error: unknown) => {
+                      setSaveError(error instanceof Error ? error.message : 'Could not delete this track. It has not been removed from your view.');
+                    });
                   }
                 }}
                 className="px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 rounded-xl transition flex items-center gap-1"
@@ -308,9 +326,10 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
               <button
                 type="submit"
                 id="save-track-button"
-                className="px-5 py-2 text-xs font-semibold rounded-xl bg-amber-600 hover:bg-amber-700 text-white shadow-sm transition"
+                disabled={isSaving}
+                className="px-5 py-2 text-xs font-semibold rounded-xl bg-amber-600 hover:bg-amber-700 text-white shadow-sm transition disabled:opacity-60"
               >
-                {trackToEdit ? 'Save Changes' : 'Create Event Track'}
+                {isSaving ? 'Saving…' : trackToEdit ? 'Save Changes' : 'Create Event Track'}
               </button>
             </div>
           </div>

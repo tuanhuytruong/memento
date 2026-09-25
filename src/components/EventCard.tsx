@@ -23,7 +23,7 @@ interface EventCardProps {
   isAlternate?: boolean;
   onViewDetails: (event: TimelineEvent) => void;
   onEdit: (event: TimelineEvent) => void;
-  onDelete: (id: string) => void;
+  onDelete: (id: string) => Promise<void>;
   onTagClick: (tag: string) => void;
   onOpenImageLightbox: (images: string[], index: number) => void;
 }
