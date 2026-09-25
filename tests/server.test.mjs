@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 dotenv.config({ path: process.env.ENV_FILE || '.env.local' });
 
 const { app, validateDocument } = await import('../server.mjs');
-const { pool, createInvite, hashInvite } = await import('../memento-db.mjs');
+const { pool, qschema, createInvite, hashInvite } = await import('../memento-db.mjs');
 
 test('document validation preserves event fields and rejects invalid dates', () => {
   const track = validateDocument({ title: 'Roadmap', description: '', color: 'indigo', icon: 'Cpu', tags: [] }, 'track');
@@ -53,7 +53,7 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     const sessionCookie=loggedIn.res.headers.get('set-cookie');
     assert.match(sessionCookie,/HttpOnly/);assert.match(sessionCookie,/Secure/);assert.match(sessionCookie,/SameSite=Lax/);
     token=sessionCookie.match(/memento_session=([^;]+)/)[1];
-    const sessionRow=await pool.query('SELECT token_hash,expires_at FROM "memento_dev".sessions WHERE user_id=$1',[userId]);assert.notEqual(sessionRow.rows[0].token_hash,token);assert.ok(new Date(sessionRow.rows[0].expires_at)>new Date());
+    const sessionRow=await pool.query(`SELECT token_hash,expires_at FROM ${qschema}.sessions WHERE user_id=$1`,[userId]);assert.notEqual(sessionRow.rows[0].token_hash,token);assert.ok(new Date(sessionRow.rows[0].expires_at)>new Date());
     const track=(await request('/api/tracks',{method:'POST',token,body:{title:'Test track',description:'',color:'indigo',icon:'Cpu',tags:[]}}));
     assert.equal(track.res.status,201); trackId=track.data.track.id;
     assert.equal((await request('/api/tracks',{token})).data.tracks.length,1);
@@ -68,7 +68,7 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     assert.equal((await request('/api/tracks/'+trackId,{method:'PUT',token:token2,body:{title:'intrusion'}})).res.status,404);
     const form=new FormData();form.set('momentId',momentId);form.set('file',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lqkAAAAASUVORK5CYII=','base64')],{type:'image/png'}),'test.png');
     const uploaded=await request('/api/images',{method:'POST',token,multipart:form});assert.equal(uploaded.res.status,201);imageId=uploaded.data.image.id;assert.match(uploaded.data.image.url,/^\/api\/images\//);
-    const stored=await pool.query('SELECT object_key FROM "memento_dev".images WHERE id=$1',[imageId]);assert.ok(stored.rows[0].object_key.startsWith('memento_dev/'));
+    const stored=await pool.query(`SELECT object_key FROM ${qschema}.images WHERE id=$1`,[imageId]);assert.ok(stored.rows[0].object_key.startsWith(`${process.env.DB_SCHEMA}/`));
     const moments=await request('/api/moments',{token});assert.deepEqual(moments.data.moments[0].images,[`/api/images/${imageId}`]);
     const updatedMoment=await request(`/api/moments/${momentId}`,{method:'PUT',token,body:{description:'updated through API'}});assert.equal(updatedMoment.res.status,200);assert.equal(updatedMoment.data.moment.description,'updated through API');assert.deepEqual(updatedMoment.data.moment.images,[`/api/images/${imageId}`]);
     assert.equal((await request(`/api/moments/${momentId}`,{method:'DELETE',token:token2})).res.status,404);
@@ -89,10 +89,10 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     if (trackId && token) await request(`/api/tracks/${trackId}`,{method:'DELETE',token}).catch(()=>{});
     if(token) await request('/api/auth/logout',{method:'POST',token}).catch(()=>{});
     if(token2) await request('/api/auth/logout',{method:'POST',token:token2}).catch(()=>{});
-    if(userId) await pool.query('DELETE FROM "memento_dev".users WHERE id=$1',[userId]).catch(()=>{});
-    if(userId2) await pool.query('DELETE FROM "memento_dev".users WHERE id=$1',[userId2]).catch(()=>{});
-    if(inviteHash1) await pool.query('DELETE FROM "memento_dev".invites WHERE code_hash=$1',[inviteHash1]).catch(()=>{});
-    if(inviteHash2) await pool.query('DELETE FROM "memento_dev".invites WHERE code_hash=$1',[inviteHash2]).catch(()=>{});
+    if(userId) await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`,[userId]).catch(()=>{});
+    if(userId2) await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`,[userId2]).catch(()=>{});
+    if(inviteHash1) await pool.query(`DELETE FROM ${qschema}.invites WHERE code_hash=$1`,[inviteHash1]).catch(()=>{});
+    if(inviteHash2) await pool.query(`DELETE FROM ${qschema}.invites WHERE code_hash=$1`,[inviteHash2]).catch(()=>{});
     await new Promise(resolve=>server.close(resolve));
   }
 });
