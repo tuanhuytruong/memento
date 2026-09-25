@@ -13,8 +13,14 @@ const app = express();
 const PORT = Number(process.env.API_PORT || 3092);
 const SESSION_DAYS = 14;
 const MAX_IMAGE = 10 * 1024 * 1024;
-const R2_PREFIX = process.env.R2_PREFIX || `${process.env.DB_SCHEMA}/`;
-if (R2_PREFIX !== 'memento_dev/') throw new Error('R2_PREFIX must be exactly memento_dev/ for this deployment');
+const DB_SCHEMA = process.env.DB_SCHEMA;
+if (DB_SCHEMA !== 'memento' && DB_SCHEMA !== 'memento_dev') {
+  throw new Error('DB_SCHEMA must be either memento or memento_dev');
+}
+const R2_PREFIX = process.env.R2_PREFIX || `${DB_SCHEMA}/`;
+if (R2_PREFIX !== `${DB_SCHEMA}/`) {
+  throw new Error(`R2_PREFIX must be exactly ${DB_SCHEMA}/ for this deployment`);
+}
 for (const key of ['DATABASE_URL', 'SESSION_SECRET', 'INVITE_ADMIN_SECRET', 'R2_BUCKET', 'R2_ENDPOINT', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY']) {
   if (!process.env[key]) throw new Error(`Missing required environment variable: ${key}`);
 }
