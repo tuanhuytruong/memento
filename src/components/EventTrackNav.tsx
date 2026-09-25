@@ -147,7 +147,7 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
 
       {/* Overview Banner for Selected State */}
       {isMergedView ? (
-        <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-stone-900 to-stone-800 text-white shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-stone-900 to-stone-800 text-white shadow-sm">
           <div className="flex items-start sm:items-center gap-3.5">
             <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-400/30 flex items-center justify-center text-amber-300 shrink-0">
               <Layers className="w-6 h-6" />
@@ -166,15 +166,6 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
                 {tracks.map((t) => t.title).join(', ')}).
               </p>
             </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={onAddNewMoment}
-              className="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-amber-500 hover:bg-amber-600 text-white shadow-xs transition flex items-center gap-1.5 active:scale-98"
-            >
-              <Plus className="w-4 h-4" /> Add Timeline Entry
-            </button>
           </div>
         </div>
       ) : activeTrack ? (
