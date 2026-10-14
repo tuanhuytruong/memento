@@ -206,10 +206,10 @@ app.get('/api/tracks', auth, async (req,res,next) => { try {
     SELECT t.document FROM ${qschema}.track_collaborators c JOIN ${qschema}.tracks t ON t.owner_id=c.owner_id AND t.id=c.track_id
     WHERE c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL AND c.expires_at > now()
 `, [req.user.id]);
-  res.json({tracks:rows.map(x=>x.document)});
+  res.json({tracks:rows.map(x=>({ ...x.document, accessRole: x.role }))});
 } catch(e){next(e);} });
 app.post('/api/tracks', auth, async (req,res,next) => {
-  try { const d=validateDocument(req.body,'track'); if(!d) return fail(res,400,'Invalid track'); d.id=typeof d.id==='string'&&d.id.length<128?d.id:id(); await pool.query(`INSERT INTO ${qschema}.tracks(owner_id,id,document) VALUES($1,$2,$3)`,[req.user.id,d.id,d]); await persistTags(req.user.id,d.tags); res.status(201).json({track:d}); }
+  try { const d=validateDocument(req.body,'track'); if(!d) return fail(res,400,'Invalid track'); d.id=typeof d.id==='string'&&d.id.length<128?d.id:id(); await pool.query(`INSERT INTO ${qschema}.tracks(owner_id,id,document) VALUES($1,$2,$3)`,[req.user.id,d.id,d]); await persistTags(req.user.id,d.tags); res.status(201).json({track:{...d,accessRole:'owner'}}); }
   catch(e){if(e.code==='23505')return fail(res,409,'Track already exists');next(e);}
 });
 app.put('/api/tracks/:id', auth, async (req,res,next) => {

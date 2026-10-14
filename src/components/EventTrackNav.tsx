@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   Clock,
   Archive,
+  Share2,
 } from 'lucide-react';
 import { EventTrack, TimelineEvent } from '../types';
 import {
@@ -27,6 +28,8 @@ interface EventTrackNavProps {
   onAddNewTrack: () => void;
   onEditTrack: (track: EventTrack) => void;
   onAddNewMoment: () => void;
+  onShareTrack: (track: EventTrack) => void;
+  canEditSelectedTrack: boolean;
 }
 
 export const EventTrackNav: React.FC<EventTrackNavProps> = ({
@@ -37,6 +40,8 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
   onAddNewTrack,
   onEditTrack,
   onAddNewMoment,
+  onShareTrack,
+  canEditSelectedTrack,
 }) => {
   const activeTrack = tracks.find((t) => t.id === selectedTrackId);
   const isMergedView = selectedTrackId === 'all';
@@ -238,24 +243,11 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
                   </div>
                 </div>
 
-                {/* Actions */}
+                {/* Track owners manage sharing; shared viewers have no mutation controls. */}
                 <div className="flex items-center gap-2 self-end md:self-auto shrink-0">
-                  <button
-                    onClick={() => onEditTrack(activeTrack)}
-                    className="px-3 py-2 rounded-xl text-xs font-semibold border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 transition flex items-center gap-1.5 shadow-xs"
-                    title="Edit Event Track title, color, or icon"
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                    <span>Edit Track</span>
-                  </button>
-
-                  <button
-                    onClick={onAddNewMoment}
-                    className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white shadow-xs transition flex items-center gap-1.5 active:scale-98 ${theme.accentBg} hover:opacity-90`}
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Add to {activeTrack.title}</span>
-                  </button>
+                  {activeTrack.accessRole === 'owner' && <button onClick={() => onShareTrack(activeTrack)} className="px-3 py-2 rounded-xl text-xs font-semibold border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 transition flex items-center gap-1.5 shadow-xs"><Share2 className="w-3.5 h-3.5" /><span>Share</span></button>}
+                  {activeTrack.accessRole !== 'viewer' && <button onClick={() => onEditTrack(activeTrack)} className="px-3 py-2 rounded-xl text-xs font-semibold border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 transition flex items-center gap-1.5 shadow-xs" title="Edit Event Track title, color, or icon"><Edit2 className="w-3.5 h-3.5" /><span>Edit Track</span></button>}
+                  {canEditSelectedTrack && <button onClick={onAddNewMoment} className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white shadow-xs transition flex items-center gap-1.5 active:scale-98 ${theme.accentBg} hover:opacity-90`}><Plus className="w-4 h-4" /><span>Add to {activeTrack.title}</span></button>}
                 </div>
               </div>
             </div>

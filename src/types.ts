@@ -39,6 +39,8 @@ export interface EventTrack {
   status?: 'active' | 'completed' | 'archived';
   createdAt: string;
   updatedAt: string;
+  /** Server-generated permission label; omitted only briefly after creating an owned track. */
+  accessRole?: 'owner' | 'viewer' | 'editor';
 }
 
 export interface TimelineEvent {
