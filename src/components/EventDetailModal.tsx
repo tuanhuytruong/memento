@@ -49,6 +49,7 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
   const relativeTime = getRelativeTime(event.date);
 
   const eventTrack = event.eventId ? tracks.find((t) => t.id === event.eventId) : undefined;
+  const canEdit = eventTrack?.accessRole !== 'viewer';
   const trackTheme = eventTrack ? getEventTheme(eventTrack.color) : null;
   const TrackIcon = eventTrack ? getEventIconComponent(eventTrack.icon) : null;
 
@@ -102,28 +103,30 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => {
-                onClose();
-                onEdit(event);
-              }}
-              className="p-2 text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition"
-              title="Edit event"
-            >
-              <Edit className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => {
-                if (window.confirm('Delete this timeline event?')) {
-                  onDelete(event.id);
+            {canEdit && <>
+              <button
+                onClick={() => {
                   onClose();
-                }
-              }}
-              className="p-2 text-stone-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
-              title="Delete event"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+                  onEdit(event);
+                }}
+                className="p-2 text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition"
+                title="Edit event"
+              >
+                <Edit className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => {
+                  if (window.confirm('Delete this timeline event?')) {
+                    onDelete(event.id);
+                    onClose();
+                  }
+                }}
+                className="p-2 text-stone-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
+                title="Delete event"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </>}
             <button
               onClick={onClose}
               className="p-2 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition ml-1"

@@ -121,8 +121,8 @@ export const EventCard: React.FC<EventCardProps> = ({
             )}
           </div>
 
-          {/* Quick Actions */}
-          <div
+          {/* Quick Actions: viewers have read-only access. */}
+          {track?.accessRole !== 'viewer' && <div
             className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity"
             onClick={(e) => e.stopPropagation()}
           >
@@ -144,7 +144,7 @@ export const EventCard: React.FC<EventCardProps> = ({
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
-          </div>
+          </div>}
         </div>
 
         {/* Title & Emotion */}
