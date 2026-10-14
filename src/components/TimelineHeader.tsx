@@ -18,6 +18,7 @@ interface TimelineHeaderProps {
   onExportJson: () => void;
   username?: string;
   onLogout?: () => void;
+  canCreateEntry?: boolean;
 }
 
 export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
@@ -27,6 +28,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
   onExportJson,
   username,
   onLogout,
+  canCreateEntry = true,
 }) => {
   const [accountOpen, setAccountOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -70,14 +72,14 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
 
         {/* Actions: 1 primary + overflow + avatar */}
         <div className="flex items-center gap-2 shrink-0">
-          <button
+          {canCreateEntry && <button
             id="open-create-event-modal"
             onClick={onAddNewEvent}
             className="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition flex items-center gap-2 active:scale-98 whitespace-nowrap"
           >
             <Plus className="w-4 h-4" />
             <span>New entry</span>
-          </button>
+          </button>}
 
           <div className="relative" data-overflow-menu>
             <button

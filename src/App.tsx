@@ -423,6 +423,7 @@ export default function App() {
             setIsEventModalOpen(true);
           }}
           onExportJson={() => exportTimelineData(eventTracks, events, apiTags.map((tag) => tag.name))}
+          canCreateEntry={eventTracks.some((track) => track.accessRole !== 'viewer')}
         />
         {/* Event-Based Timeline Navigation & Overview */}
         <EventTrackNav

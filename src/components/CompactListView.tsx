@@ -175,31 +175,15 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
                     )}
                   </td>
 
-                  {/* Actions */}
+                  {/* Viewers have no edit/delete controls. */}
                   <td className="py-3 px-4 text-right align-top whitespace-nowrap">
-                    <div
+                    {trackMap.get(evt.eventId)?.accessRole !== 'viewer' && <div
                       className="inline-flex items-center gap-1"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <button
-                        onClick={() => onEdit(evt)}
-                        className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
-                        title="Edit event"
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (window.confirm('Delete this event?')) {
-                            onDelete(evt.id);
-                          }
-                        }}
-                        className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
-                        title="Delete event"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+                      <button onClick={() => onEdit(evt)} className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition" title="Edit event"><Edit2 className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => { if (window.confirm('Delete this event?')) onDelete(evt.id); }} className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition" title="Delete event"><Trash2 className="w-3.5 h-3.5" /></button>
+                    </div>}
                   </td>
                 </tr>
               );
