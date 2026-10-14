@@ -40,6 +40,6 @@ try {
     finally { client.release(); }
   }
 } finally {
-  await pool.query('SELECT pg_advisory_unlock(hashtext($1))', ['memento_dev:migrations']).catch(() => {});
+  await pool.query('SELECT pg_advisory_unlock(hashtext($1))', [`${schema}:migrations`]).catch(() => {});
   await pool.end();
 }
