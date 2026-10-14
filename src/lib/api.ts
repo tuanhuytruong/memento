@@ -83,6 +83,26 @@ export interface ApiTag {
   name: string;
 }
 
+export type CollaboratorRole = 'viewer' | 'editor';
+export interface TrackCollaborator {
+  id: string;
+  user_id: string;
+  username: string;
+  role: CollaboratorRole;
+  invited_at: string;
+  expires_at: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
+}
+export interface CollaborationInvitation {
+  id: string;
+  role: CollaboratorRole;
+  invited_at: string;
+  expires_at: string;
+  owner_username: string;
+  track: EventTrack;
+}
+
 export const authApi = {
   me: async () => {
     const payload = await request<{ user?: AuthUser }>('/auth/me');
@@ -133,6 +153,11 @@ export const dataApi = {
     return { id: String(id), name: resultName };
   },
   deleteTag: (id: string) => request(`/tags/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  collaborators: async (trackId: string) => unwrapList<TrackCollaborator>(await request(`/tracks/${encodeURIComponent(trackId)}/collaborators`), ['collaborators']),
+  inviteCollaborator: (trackId: string, username: string, role: CollaboratorRole) => request(`/tracks/${encodeURIComponent(trackId)}/collaborators`, { method: 'POST', body: JSON.stringify({ username, role }) }),
+  revokeCollaborator: (trackId: string, userId: string) => request(`/tracks/${encodeURIComponent(trackId)}/collaborators/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
+  collaborationInvitations: async () => unwrapList<CollaborationInvitation>(await request('/collaboration-invitations'), ['invitations']),
+  acceptCollaborationInvitation: (id: string) => request(`/collaboration-invitations/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
   uploadImage: async (file: File, momentId: string) => {
     const form = new FormData();
     form.append('file', file);

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
 import { exportTimelineData } from './lib/storage';
-import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag } from './lib/api';
+import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation } from './lib/api';
+import { CollaborationModal, SharedInvitations } from './components/CollaborationModal';
 import { AuthScreen } from './components/AuthScreen';
 import { TimelineHeader } from './components/TimelineHeader';
 import { EventTrackNav } from './components/EventTrackNav';
@@ -25,6 +26,8 @@ export default function App() {
   const [eventTracks, setEventTracks] = useState<EventTrack[]>([]);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [apiTags, setApiTags] = useState<ApiTag[]>([]);
+  const [collaborationInvitations, setCollaborationInvitations] = useState<CollaborationInvitation[]>([]);
+  const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
   const authGenerationRef = useRef(0);
 
   const loadData = useCallback(async () => {
@@ -32,11 +35,12 @@ export default function App() {
     setDataLoading(true);
     setDataError('');
     try {
-      const accountData = await loadAccountData();
+      const [accountData, invitations] = await Promise.all([loadAccountData(), dataApi.collaborationInvitations()]);
       if (generation !== authGenerationRef.current) return;
       setEventTracks(accountData.tracks);
       setEvents(accountData.moments);
       setApiTags(accountData.tags);
+      setCollaborationInvitations(invitations);
       setDataReady(true);
     } catch (error) {
       if (generation !== authGenerationRef.current) throw error;
@@ -46,6 +50,7 @@ export default function App() {
         setEventTracks([]);
         setEvents([]);
         setApiTags([]);
+        setCollaborationInvitations([]);
         setDataReady(false);
       }
       setDataError(error instanceof Error ? error.message : 'Could not load your account data.');
@@ -171,6 +176,14 @@ export default function App() {
     setSelectedTrackId(trackId);
     setFilters((prev) => ({ ...prev, selectedEventId: trackId }));
   };
+
+  const acceptInvitation = async (id: string) => {
+    await dataApi.acceptCollaborationInvitation(id);
+    await loadData();
+  };
+
+  const selectedTrack = eventTracks.find((track) => track.id === selectedTrackId) || null;
+  const canEditSelectedTrack = selectedTrack?.accessRole !== 'viewer';
 
   // Persist each change before reflecting it in the UI; failed requests leave the prior data intact.
   const handleSaveTrack = async (
@@ -398,6 +411,7 @@ export default function App() {
     <div className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
         {dataError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200"><span>{dataError}</span><span className="flex gap-3">{pendingImageRetry && <button className="font-semibold underline" onClick={() => void retryImageUploads()}>Retry image upload</button>}<button className="font-semibold underline" onClick={() => setDataError('')}>Dismiss</button></span></div>}
+        <SharedInvitations invitations={collaborationInvitations} onAccept={(id) => void acceptInvitation(id).catch((error) => setDataError(error instanceof Error ? error.message : 'Could not accept invitation.'))} />
         {/* Header Ribbon & Global Stats */}
         <TimelineHeader
           events={events}
@@ -421,13 +435,19 @@ export default function App() {
             setIsEventTrackModalOpen(true);
           }}
           onEditTrack={(track) => {
+            if (track.accessRole === 'viewer' || track.accessRole === 'editor') return;
             setTrackToEdit(track);
             setIsEventTrackModalOpen(true);
           }}
           onAddNewMoment={() => {
+            if (!canEditSelectedTrack) return;
             setEventToEdit(null);
             setIsEventModalOpen(true);
           }}
+          onShareTrack={(track) => {
+            if (track.accessRole !== 'viewer' && track.accessRole !== 'editor') setShareTrack(track);
+          }}
+          canEditSelectedTrack={canEditSelectedTrack}
         />
 
         {/* Filter and Control Toolbar */}
@@ -579,6 +599,16 @@ export default function App() {
         onOpenImageLightbox={handleOpenLightbox}
       />
 
+      <CollaborationModal
+        track={shareTrack}
+        isOpen={!!shareTrack}
+        onClose={() => setShareTrack(null)}
+        onInvite={async (username, role) => { await dataApi.inviteCollaborator(shareTrack!.id, username, role); }}
+        onLoadCollaborators={() => dataApi.collaborators(shareTrack!.id)}
+        onRevoke={async (userId) => { await dataApi.revokeCollaborator(shareTrack!.id, userId); }}
+        invitations={collaborationInvitations}
+        onAccept={acceptInvitation}
+      />
       {/* Image Lightbox viewer */}
       <ImageLightbox
         images={lightboxState.images}
