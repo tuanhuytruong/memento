@@ -157,10 +157,57 @@ export function validateDocument(input, kind) {
   return d;
 }
 function safeMoment(doc, imageRows) {
-  const images = imageRows.map(x => `/api/images/${x.id}`);
-  return { ...doc, images };
+  return { ...doc, images: imageRows.map(x => `/api/images/${x.id}`) };
 }
-app.get('/api/tracks', auth, async (req,res,next) => { try { const {rows}=await pool.query(`SELECT document FROM ${qschema}.tracks WHERE owner_id=$1 ORDER BY created_at,id`,[req.user.id]); res.json({tracks:rows.map(x=>x.document)}); } catch(e){next(e);} });
+
+async function trackAccess(userId, trackId) {
+  const { rows } = await pool.query(`
+    SELECT t.owner_id,t.id,t.document,'owner'::text AS role
+    FROM ${qschema}.tracks t WHERE t.owner_id=$1 AND t.id=$2
+    UNION ALL
+    SELECT t.owner_id,t.id,t.document,c.role
+    FROM ${qschema}.track_collaborators c
+    JOIN ${qschema}.tracks t ON t.owner_id=c.owner_id AND t.id=c.track_id
+    WHERE c.recipient_id=$1 AND c.track_id=$2 AND c.accepted_at IS NOT NULL
+      AND c.revoked_at IS NULL AND c.expires_at > now()`, [userId, trackId]);
+  return rows[0] || null;
+}
+async function momentAccess(userId, momentId) {
+  const { rows } = await pool.query(`
+    SELECT m.owner_id,m.id,m.event_id,m.document,'owner'::text AS role
+    FROM ${qschema}.moments m WHERE m.owner_id=$1 AND m.id=$2
+    UNION ALL
+    SELECT m.owner_id,m.id,m.event_id,m.document,c.role
+    FROM ${qschema}.moments m
+    JOIN ${qschema}.track_collaborators c ON c.owner_id=m.owner_id AND c.track_id=m.event_id
+    WHERE m.id=$2 AND c.recipient_id=$1 AND c.accepted_at IS NOT NULL
+      AND c.revoked_at IS NULL AND c.expires_at > now()`, [userId, momentId]);
+  return rows[0] || null;
+}
+async function imageAccess(userId, imageId) {
+  const { rows } = await pool.query(`
+    SELECT i.id,i.object_key,i.content_type,i.size,m.owner_id,m.event_id,'owner'::text AS role
+    FROM ${qschema}.images i JOIN ${qschema}.moments m ON m.owner_id=i.owner_id AND m.id=i.moment_id
+    WHERE i.id=$2 AND i.owner_id=$1
+    UNION ALL
+    SELECT i.id,i.object_key,i.content_type,i.size,m.owner_id,m.event_id,c.role
+    FROM ${qschema}.images i JOIN ${qschema}.moments m ON m.owner_id=i.owner_id AND m.id=i.moment_id
+    JOIN ${qschema}.track_collaborators c ON c.owner_id=m.owner_id AND c.track_id=m.event_id
+    WHERE i.id=$2 AND c.recipient_id=$1 AND c.accepted_at IS NOT NULL
+      AND c.revoked_at IS NULL AND c.expires_at > now()`, [userId, imageId]);
+  return rows[0] || null;
+}
+const isEditor = access => access?.role === 'owner' || access?.role === 'editor';
+
+app.get('/api/tracks', auth, async (req,res,next) => { try {
+  const {rows}=await pool.query(`
+    SELECT document FROM ${qschema}.tracks WHERE owner_id=$1
+    UNION ALL
+    SELECT t.document FROM ${qschema}.track_collaborators c JOIN ${qschema}.tracks t ON t.owner_id=c.owner_id AND t.id=c.track_id
+    WHERE c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL AND c.expires_at > now()
+`, [req.user.id]);
+  res.json({tracks:rows.map(x=>x.document)});
+} catch(e){next(e);} });
 app.post('/api/tracks', auth, async (req,res,next) => {
   try { const d=validateDocument(req.body,'track'); if(!d) return fail(res,400,'Invalid track'); d.id=typeof d.id==='string'&&d.id.length<128?d.id:id(); await pool.query(`INSERT INTO ${qschema}.tracks(owner_id,id,document) VALUES($1,$2,$3)`,[req.user.id,d.id,d]); await persistTags(req.user.id,d.tags); res.status(201).json({track:d}); }
   catch(e){if(e.code==='23505')return fail(res,409,'Track already exists');next(e);}
@@ -170,64 +217,63 @@ app.put('/api/tracks/:id', auth, async (req,res,next) => {
   try { await c.query('BEGIN'); const old=await c.query(`SELECT document FROM ${qschema}.tracks WHERE owner_id=$1 AND id=$2 FOR UPDATE`,[req.user.id,req.params.id]); if(!old.rowCount){await c.query('ROLLBACK');return fail(res,404,'Track not found');} const d=validateDocument({...old.rows[0].document,...req.body,id:req.params.id},'track'); if(!d){await c.query('ROLLBACK');return fail(res,400,'Invalid track');} await c.query(`UPDATE ${qschema}.tracks SET document=$3,updated_at=now() WHERE owner_id=$1 AND id=$2`,[req.user.id,req.params.id,d]); await c.query('COMMIT');await persistTags(req.user.id,d.tags);res.json({track:d}); }
   catch(e){await c.query('ROLLBACK').catch(()=>{});next(e);}finally{c.release();}
 });
-async function deleteImageObjects(rows) {
-  let complete = true;
-  for (const row of rows) {
-    try { await s3.send(new DeleteObjectCommand({Bucket:process.env.R2_BUCKET,Key:row.object_key})); }
-    catch { complete = false; process.stderr.write(`Private R2 cleanup failed for image ${row.id}; metadata retained\\n`); }
-  }
-  return complete;
-}
+async function deleteImageObjects(rows) { let complete=true; for(const row of rows){try{await s3.send(new DeleteObjectCommand({Bucket:process.env.R2_BUCKET,Key:row.object_key}));}catch{complete=false;process.stderr.write(`Private R2 cleanup failed for image ${row.id}; metadata retained\n`);}}return complete; }
 app.delete('/api/tracks/:id', auth, async (req,res,next) => {
-  const c=await pool.connect();
-  try { await c.query('BEGIN'); const track=await c.query(`SELECT id FROM ${qschema}.tracks WHERE owner_id=$1 AND id=$2 FOR UPDATE`,[req.user.id,req.params.id]); if(!track.rowCount){await c.query('ROLLBACK');return fail(res,404,'Track not found');} const imgs=await c.query(`SELECT i.id,i.object_key FROM ${qschema}.images i JOIN ${qschema}.moments m ON m.owner_id=i.owner_id AND m.id=i.moment_id WHERE i.owner_id=$1 AND m.event_id=$2`,[req.user.id,req.params.id]); await c.query('COMMIT'); if (!(await deleteImageObjects(imgs.rows))) return fail(res,503,'Image storage cleanup incomplete; retry deletion'); await pool.query(`DELETE FROM ${qschema}.tracks WHERE owner_id=$1 AND id=$2`,[req.user.id,req.params.id]);res.json({ok:true}); }
-  catch(e){await c.query('ROLLBACK').catch(()=>{});next(e);}finally{c.release();}
-});
-app.get('/api/moments', auth, async (req,res,next) => { try { const {rows}=await pool.query(`SELECT m.document,m.id FROM ${qschema}.moments m WHERE m.owner_id=$1 ORDER BY m.document->>'date' DESC,m.id`,[req.user.id]); const out=[]; for(const row of rows){const imgs=await pool.query(`SELECT id FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2 ORDER BY created_at`,[req.user.id,row.id]);out.push(safeMoment(row.document,imgs.rows));}res.json({moments:out});}catch(e){next(e);} });
-app.post('/api/moments', auth, async (req,res,next) => {
-  try { const d=validateDocument(req.body,'moment');if(!d)return fail(res,400,'Invalid moment');d.id=typeof d.id==='string'&&d.id.length<128?d.id:id(); const track=await pool.query(`SELECT 1 FROM ${qschema}.tracks WHERE owner_id=$1 AND id=$2`,[req.user.id,d.eventId]);if(!track.rowCount)return fail(res,400,'Track not found'); if(d.images.length)return fail(res,400,'Images must be uploaded using POST /api/images'); d.images=[]; await pool.query(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document) VALUES($1,$2,$3,$4)`,[req.user.id,d.id,d.eventId,d]);await persistTags(req.user.id,d.tags);res.status(201).json({moment:d}); }
-  catch(e){if(e.code==='23505')return fail(res,409,'Moment already exists');next(e);}
-});
-app.put('/api/moments/:id', auth, async (req,res,next) => {
-  try {const old=await pool.query(`SELECT document,event_id FROM ${qschema}.moments WHERE owner_id=$1 AND id=$2`,[req.user.id,req.params.id]);if(!old.rowCount)return fail(res,404,'Moment not found');const requested={...old.rows[0].document,...req.body,id:req.params.id};if(requested.images?.some(x=>!String(x).startsWith('/api/images/')))return fail(res,400,'Invalid image URL');const d=validateDocument(requested,'moment');if(!d)return fail(res,400,'Invalid moment');if(d.eventId!==old.rows[0].event_id){const track=await pool.query(`SELECT 1 FROM ${qschema}.tracks WHERE owner_id=$1 AND id=$2`,[req.user.id,d.eventId]);if(!track.rowCount)return fail(res,400,'Track not found');}const imgs=await pool.query(`SELECT id FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2`,[req.user.id,req.params.id]);d.images=imgs.rows.map(x=>`/api/images/${x.id}`);await pool.query(`UPDATE ${qschema}.moments SET event_id=$3,document=$4,updated_at=now() WHERE owner_id=$1 AND id=$2`,[req.user.id,req.params.id,d.eventId,d]);await persistTags(req.user.id,d.tags);res.json({moment:d});}
-  catch(e){next(e);}
-});
-app.delete('/api/moments/:id', auth, async (req,res,next) => {
-  try {const rows=await pool.query(`SELECT id,object_key FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2`,[req.user.id,req.params.id]); const m=await pool.query(`SELECT 1 FROM ${qschema}.moments WHERE owner_id=$1 AND id=$2`,[req.user.id,req.params.id]);if(!m.rowCount)return fail(res,404,'Moment not found');if (!(await deleteImageObjects(rows.rows))) return fail(res,503,'Image storage cleanup incomplete; retry deletion');await pool.query(`DELETE FROM ${qschema}.moments WHERE owner_id=$1 AND id=$2`,[req.user.id,req.params.id]);res.json({ok:true});}catch(e){next(e);}
+  const c=await pool.connect(); try { await c.query('BEGIN');const track=await c.query(`SELECT id FROM ${qschema}.tracks WHERE owner_id=$1 AND id=$2 FOR UPDATE`,[req.user.id,req.params.id]);if(!track.rowCount){await c.query('ROLLBACK');return fail(res,404,'Track not found');}const imgs=await c.query(`SELECT i.id,i.object_key FROM ${qschema}.images i JOIN ${qschema}.moments m ON m.owner_id=i.owner_id AND m.id=i.moment_id WHERE i.owner_id=$1 AND m.event_id=$2`,[req.user.id,req.params.id]);await c.query('COMMIT');if(!(await deleteImageObjects(imgs.rows)))return fail(res,503,'Image storage cleanup incomplete; retry deletion');await pool.query(`DELETE FROM ${qschema}.tracks WHERE owner_id=$1 AND id=$2`,[req.user.id,req.params.id]);res.json({ok:true}); }catch(e){await c.query('ROLLBACK').catch(()=>{});next(e);}finally{c.release();}
 });
 
-const upload = multer({ storage:multer.memoryStorage(), limits:{fileSize:MAX_IMAGE,files:1} });
-function imageType(buffer) {
-  if(buffer.length>=3&&buffer[0]===0xff&&buffer[1]===0xd8&&buffer[2]===0xff)return 'image/jpeg';
-  if(buffer.length>=8&&buffer.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))return 'image/png';
-  if(buffer.length>=6&&['GIF87a','GIF89a'].includes(buffer.toString('ascii',0,6)))return 'image/gif';
-  if(buffer.length>=12&&buffer.toString('ascii',0,4)==='RIFF'&&buffer.toString('ascii',8,12)==='WEBP')return 'image/webp';
-  return null;
-}
-app.post('/api/images', auth, upload.single('file'), async (req,res,next) => {
-  let objectKey;
-  try { if(!req.file||typeof req.body.momentId!=='string')return fail(res,400,'file and momentId are required');const type=imageType(req.file.buffer);if(!type||req.file.mimetype!==type)return fail(res,415,'Unsupported or invalid image'); const moment=await pool.query(`SELECT 1 FROM ${qschema}.moments WHERE owner_id=$1 AND id=$2`,[req.user.id,req.body.momentId]);if(!moment.rowCount)return fail(res,404,'Moment not found');const imageId=id();objectKey=`${R2_PREFIX}${crypto.randomUUID()}/${imageId}`;await s3.send(new PutObjectCommand({Bucket:process.env.R2_BUCKET,Key:objectKey,Body:req.file.buffer,ContentType:type,CacheControl:'private, no-store'}));try{await pool.query(`INSERT INTO ${qschema}.images(id,owner_id,moment_id,object_key,content_type,size) VALUES($1,$2,$3,$4,$5,$6)`,[imageId,req.user.id,req.body.momentId,objectKey,type,req.file.size]);}catch(e){await s3.send(new DeleteObjectCommand({Bucket:process.env.R2_BUCKET,Key:objectKey})).catch(()=>{process.stderr.write(`R2 orphan cleanup failed for image ${imageId}\n`);});throw e;}res.status(201).json({image:{id:imageId,url:`/api/images/${imageId}`,momentId:req.body.momentId,contentType:type,size:req.file.size}}); }
-  catch(e){next(e);}
-});
-app.get('/api/images/:id', auth, async (req,res,next) => {
-  try {const {rows}=await pool.query(`SELECT object_key,content_type,size FROM ${qschema}.images WHERE id=$1 AND owner_id=$2`,[req.params.id,req.user.id]);if(!rows[0])return fail(res,404,'Image not found');const obj=await s3.send(new GetObjectCommand({Bucket:process.env.R2_BUCKET,Key:rows[0].object_key}));res.set({'Content-Type':rows[0].content_type,'Content-Length':String(rows[0].size),'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'});obj.Body.pipe(res);obj.Body.on('error',next);}
-  catch(e){next(e);}
-});
-app.delete('/api/images/:id', auth, async (req,res,next) => { try {const {rows}=await pool.query(`SELECT id,object_key FROM ${qschema}.images WHERE id=$1 AND owner_id=$2`,[req.params.id,req.user.id]);if(!rows[0])return fail(res,404,'Image not found');if (!(await deleteImageObjects(rows))) return fail(res,503,'Image storage cleanup incomplete; retry deletion');await pool.query(`DELETE FROM ${qschema}.images WHERE id=$1 AND owner_id=$2`,[req.params.id,req.user.id]);res.json({ok:true});}catch(e){next(e);} });
-app.get('/api/tags', auth, async (req,res,next) => {try{const {rows}=await pool.query(`SELECT name FROM ${qschema}.tags WHERE owner_id=$1 ORDER BY name`,[req.user.id]);res.json({tags:rows.map(x=>x.name)});}catch(e){next(e);}});
-app.post('/api/tags', auth, async (req,res,next) => {try{const tag=req.body?.tag;if(typeof tag!=='string'||!tag.trim()||tag.trim().length>64)return fail(res,400,'Invalid tag');const value=tag.trim();await pool.query(`INSERT INTO ${qschema}.tags(owner_id,name) VALUES($1,$2) ON CONFLICT DO NOTHING`,[req.user.id,value]);res.status(201).json({tag:value});}catch(e){next(e);}});
-app.delete('/api/tags/:tag', auth, async (req,res,next) => {try{const tag=req.params.tag;await pool.query(`DELETE FROM ${qschema}.tags WHERE owner_id=$1 AND name=$2`,[req.user.id,tag]);const {rows}=await pool.query(`SELECT id,document FROM ${qschema}.moments WHERE owner_id=$1`,[req.user.id]);for(const row of rows){const d=row.document;if(Array.isArray(d.tags)&&d.tags.includes(tag)){d.tags=d.tags.filter(x=>x!==tag);d.updatedAt=new Date().toISOString();await pool.query(`UPDATE ${qschema}.moments SET document=$3,updated_at=now() WHERE owner_id=$1 AND id=$2`,[req.user.id,row.id,d]);}}const tracks=await pool.query(`SELECT id,document FROM ${qschema}.tracks WHERE owner_id=$1`,[req.user.id]);for(const row of tracks.rows){const d=row.document;if(Array.isArray(d.tags)&&d.tags.includes(tag)){d.tags=d.tags.filter(x=>x!==tag);d.updatedAt=new Date().toISOString();await pool.query(`UPDATE ${qschema}.tracks SET document=$3,updated_at=now() WHERE owner_id=$1 AND id=$2`,[req.user.id,row.id,d]);}}res.json({ok:true});}catch(e){next(e);}});
+// Collaboration invitations are deliberately separate from registration invites. Only the owner can create, list, or revoke them.
+app.post('/api/tracks/:id/collaborators', auth, async (req,res,next) => { try {
+  const {username,role}=req.body||{};
+  if(!usernameValid(username)||!['viewer','editor'].includes(role)) return fail(res,400,'Invalid collaborator');
+  const recipient=await pool.query(`SELECT id,username FROM ${qschema}.users WHERE username=$1`,[username]);
+  if(!recipient.rowCount) return fail(res,404,'User not found');
+  if(recipient.rows[0].id===req.user.id) return fail(res,400,'Cannot invite the track owner');
+  const inserted=await pool.query(`INSERT INTO ${qschema}.track_collaborators(id,owner_id,track_id,recipient_id,role,expires_at)
+    SELECT $1,t.owner_id,t.id,$2,$3,now() + interval '7 days' FROM ${qschema}.tracks t WHERE t.owner_id=$4 AND t.id=$5
+    ON CONFLICT(owner_id,track_id,recipient_id) DO UPDATE SET role=EXCLUDED.role, invited_at=now(), expires_at=EXCLUDED.expires_at, accepted_at=NULL, revoked_at=NULL
+    RETURNING id,role,expires_at`,[id(),recipient.rows[0].id,role,req.user.id,req.params.id]);
+  if(!inserted.rowCount)return fail(res,404,'Track not found');
+  res.status(201).json({collaborator:{...inserted.rows[0],username:recipient.rows[0].username}});
+} catch(e){next(e);} });
+app.get('/api/tracks/:id/collaborators', auth, async (req,res,next) => { try {
+  const {rows}=await pool.query(`SELECT c.id,u.id AS user_id,u.username,c.role,c.invited_at,c.expires_at,c.accepted_at,c.revoked_at FROM ${qschema}.track_collaborators c JOIN ${qschema}.users u ON u.id=c.recipient_id WHERE c.owner_id=$1 AND c.track_id=$2 ORDER BY c.invited_at DESC`,[req.user.id,req.params.id]);
+  const exists=await pool.query(`SELECT 1 FROM ${qschema}.tracks WHERE owner_id=$1 AND id=$2`,[req.user.id,req.params.id]); if(!exists.rowCount)return fail(res,404,'Track not found'); res.json({collaborators:rows});
+} catch(e){next(e);} });
+app.delete('/api/tracks/:id/collaborators/:userId', auth, async (req,res,next) => { try {
+  const result=await pool.query(`UPDATE ${qschema}.track_collaborators SET revoked_at=now() WHERE owner_id=$1 AND track_id=$2 AND recipient_id=$3 AND revoked_at IS NULL`,[req.user.id,req.params.id,req.params.userId]);
+  if(!result.rowCount)return fail(res,404,'Collaborator not found');res.json({ok:true});
+} catch(e){next(e);} });
+app.get('/api/collaboration-invitations', auth, async (req,res,next) => { try {
+  const {rows}=await pool.query(`SELECT c.id,c.role,c.invited_at,c.expires_at,t.document AS track,u.username AS owner_username FROM ${qschema}.track_collaborators c JOIN ${qschema}.tracks t ON t.owner_id=c.owner_id AND t.id=c.track_id JOIN ${qschema}.users u ON u.id=c.owner_id WHERE c.recipient_id=$1 AND c.accepted_at IS NULL AND c.revoked_at IS NULL AND c.expires_at > now() ORDER BY c.invited_at DESC`,[req.user.id]);res.json({invitations:rows});
+} catch(e){next(e);} });
+app.post('/api/collaboration-invitations/:id/accept', auth, async (req,res,next) => { try {
+  const result=await pool.query(`UPDATE ${qschema}.track_collaborators SET accepted_at=now() WHERE id=$1 AND recipient_id=$2 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now() RETURNING id,role,accepted_at`,[req.params.id,req.user.id]);
+  if(!result.rowCount)return fail(res,404,'Invitation not found or expired');res.json({invitation:result.rows[0]});
+} catch(e){next(e);} });
+
+app.get('/api/moments', auth, async (req,res,next) => { try {
+  const {rows}=await pool.query(`SELECT m.document,m.id FROM ${qschema}.moments m WHERE m.owner_id=$1 UNION ALL SELECT m.document,m.id FROM ${qschema}.moments m JOIN ${qschema}.track_collaborators c ON c.owner_id=m.owner_id AND c.track_id=m.event_id WHERE c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL AND c.expires_at > now()`,[req.user.id]);
+  const out=[];for(const row of rows){const imgs=await pool.query(`SELECT id FROM ${qschema}.images WHERE owner_id=(SELECT owner_id FROM ${qschema}.moments WHERE id=$1 LIMIT 1) AND moment_id=$1 ORDER BY created_at`,[row.id]);out.push(safeMoment(row.document,imgs.rows));}res.json({moments:out});
+} catch(e){next(e);} });
+app.post('/api/moments', auth, async (req,res,next) => { try {
+  const d=validateDocument(req.body,'moment');if(!d)return fail(res,400,'Invalid moment');if(d.images.length)return fail(res,400,'Images must be uploaded using POST /api/images');const access=await trackAccess(req.user.id,d.eventId);if(!access)return fail(res,400,'Track not found');if(!isEditor(access))return fail(res,403,'Editor access required');d.id=typeof d.id==='string'&&d.id.length<128?d.id:id();d.images=[];await pool.query(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document) VALUES($1,$2,$3,$4)`,[access.owner_id,d.id,d.eventId,d]);await persistTags(access.owner_id,d.tags);res.status(201).json({moment:d});
+} catch(e){if(e.code==='23505')return fail(res,409,'Moment already exists');next(e);} });
+app.put('/api/moments/:id', auth, async (req,res,next) => { try {
+  const old=await momentAccess(req.user.id,req.params.id);if(!old)return fail(res,404,'Moment not found');if(!isEditor(old))return fail(res,403,'Editor access required');if(old.role==='editor' && req.body?.eventId!=null && req.body.eventId!==old.event_id)return fail(res,403,'Editors cannot move a shared moment');const requested={...old.document,...req.body,id:req.params.id,eventId:old.role==='editor'?old.event_id:(req.body?.eventId??old.event_id)};if(requested.images?.some(x=>!String(x).startsWith('/api/images/')))return fail(res,400,'Invalid image URL');const d=validateDocument(requested,'moment');if(!d)return fail(res,400,'Invalid moment');if(d.eventId!==old.event_id){const track=await trackAccess(req.user.id,d.eventId);if(!track)return fail(res,400,'Track not found');}const imgs=await pool.query(`SELECT id FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2`,[old.owner_id,req.params.id]);d.images=imgs.rows.map(x=>`/api/images/${x.id}`);await pool.query(`UPDATE ${qschema}.moments SET event_id=$3,document=$4,updated_at=now() WHERE owner_id=$1 AND id=$2`,[old.owner_id,req.params.id,d.eventId,d]);await persistTags(old.owner_id,d.tags);res.json({moment:d});
+} catch(e){next(e);} });
+app.delete('/api/moments/:id', auth, async (req,res,next) => { try {const m=await momentAccess(req.user.id,req.params.id);if(!m)return fail(res,404,'Moment not found');if(!isEditor(m))return fail(res,403,'Editor access required');const rows=await pool.query(`SELECT id,object_key FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2`,[m.owner_id,req.params.id]);if(!(await deleteImageObjects(rows.rows)))return fail(res,503,'Image storage cleanup incomplete; retry deletion');await pool.query(`DELETE FROM ${qschema}.moments WHERE owner_id=$1 AND id=$2`,[m.owner_id,req.params.id]);res.json({ok:true});}catch(e){next(e);}});
+
+const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:MAX_IMAGE,files:1}});
+function imageType(buffer){if(buffer.length>=3&&buffer[0]===0xff&&buffer[1]===0xd8&&buffer[2]===0xff)return'image/jpeg';if(buffer.length>=8&&buffer.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))return'image/png';if(buffer.length>=6&&['GIF87a','GIF89a'].includes(buffer.toString('ascii',0,6)))return'image/gif';if(buffer.length>=12&&buffer.toString('ascii',0,4)==='RIFF'&&buffer.toString('ascii',8,12)==='WEBP')return'image/webp';return null;}
+app.post('/api/images',auth,upload.single('file'),async(req,res,next)=>{let objectKey;try{if(!req.file||typeof req.body.momentId!=='string')return fail(res,400,'file and momentId are required');const type=imageType(req.file.buffer);if(!type||req.file.mimetype!==type)return fail(res,415,'Unsupported or invalid image');const moment=await momentAccess(req.user.id,req.body.momentId);if(!moment)return fail(res,404,'Moment not found');if(!isEditor(moment))return fail(res,403,'Editor access required');const imageId=id();objectKey=`${R2_PREFIX}${crypto.randomUUID()}/${imageId}`;await s3.send(new PutObjectCommand({Bucket:process.env.R2_BUCKET,Key:objectKey,Body:req.file.buffer,ContentType:type,CacheControl:'private, no-store'}));try{await pool.query(`INSERT INTO ${qschema}.images(id,owner_id,moment_id,object_key,content_type,size) VALUES($1,$2,$3,$4,$5,$6)`,[imageId,moment.owner_id,req.body.momentId,objectKey,type,req.file.size]);}catch(e){await s3.send(new DeleteObjectCommand({Bucket:process.env.R2_BUCKET,Key:objectKey})).catch(()=>{});throw e;}res.status(201).json({image:{id:imageId,url:`/api/images/${imageId}`,momentId:req.body.momentId,contentType:type,size:req.file.size}});}catch(e){next(e);}});
+app.get('/api/images/:id',auth,async(req,res,next)=>{try{const image=await imageAccess(req.user.id,req.params.id);if(!image)return fail(res,404,'Image not found');const obj=await s3.send(new GetObjectCommand({Bucket:process.env.R2_BUCKET,Key:image.object_key}));res.set({'Content-Type':image.content_type,'Content-Length':String(image.size),'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'});obj.Body.pipe(res);obj.Body.on('error',next);}catch(e){next(e);}});
+app.delete('/api/images/:id',auth,async(req,res,next)=>{try{const image=await imageAccess(req.user.id,req.params.id);if(!image)return fail(res,404,'Image not found');if(!isEditor(image))return fail(res,403,'Editor access required');if(!(await deleteImageObjects([image])))return fail(res,503,'Image storage cleanup incomplete; retry deletion');await pool.query(`DELETE FROM ${qschema}.images WHERE id=$1`,[image.id]);res.json({ok:true});}catch(e){next(e);}});
+
+app.get('/api/tags',auth,async(req,res,next)=>{try{const {rows}=await pool.query(`SELECT name FROM ${qschema}.tags WHERE owner_id=$1 UNION SELECT DISTINCT jsonb_array_elements_text(m.document->'tags') AS name FROM ${qschema}.moments m JOIN ${qschema}.track_collaborators c ON c.owner_id=m.owner_id AND c.track_id=m.event_id WHERE c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL AND c.expires_at > now() UNION SELECT DISTINCT jsonb_array_elements_text(t.document->'tags') AS name FROM ${qschema}.tracks t JOIN ${qschema}.track_collaborators c ON c.owner_id=t.owner_id AND c.track_id=t.id WHERE c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL AND c.expires_at > now() ORDER BY name`,[req.user.id]);res.json({tags:rows.map(x=>x.name)});}catch(e){next(e);}});
+app.post('/api/tags',auth,async(req,res,next)=>{try{const tag=req.body?.tag;if(typeof tag!=='string'||!tag.trim()||tag.trim().length>64)return fail(res,400,'Invalid tag');const value=tag.trim();const trackId=req.body?.trackId;if(trackId!=null){if(typeof trackId!=='string')return fail(res,400,'Invalid track');const access=await trackAccess(req.user.id,trackId);if(!access)return fail(res,404,'Track not found');if(!isEditor(access))return fail(res,403,'Editor access required');await persistTags(access.owner_id,[value]);}else await persistTags(req.user.id,[value]);res.status(201).json({tag:value});}catch(e){next(e);}});
+app.delete('/api/tags/:tag',auth,async(req,res,next)=>{try{const tag=req.params.tag;const trackId=req.query.trackId;if(trackId){const access=await trackAccess(req.user.id,trackId);if(!access)return fail(res,404,'Track not found');if(!isEditor(access))return fail(res,403,'Editor access required');const docs=await pool.query(`SELECT id,document,'moment' AS kind FROM ${qschema}.moments WHERE owner_id=$1 AND event_id=$2 UNION ALL SELECT id,document,'track' AS kind FROM ${qschema}.tracks WHERE owner_id=$1 AND id=$2`,[access.owner_id,trackId]);for(const row of docs.rows){const d=row.document;if(Array.isArray(d.tags)&&d.tags.includes(tag)){d.tags=d.tags.filter(x=>x!==tag);d.updatedAt=new Date().toISOString();await pool.query(`UPDATE ${qschema}.${row.kind==='track'?'tracks':'moments'} SET document=$3,updated_at=now() WHERE owner_id=$1 AND id=$2`,[access.owner_id,row.id,d]);}}return res.json({ok:true});}await pool.query(`DELETE FROM ${qschema}.tags WHERE owner_id=$1 AND name=$2`,[req.user.id,tag]);const rows=await pool.query(`SELECT id,document,'moment' AS kind FROM ${qschema}.moments WHERE owner_id=$1 UNION ALL SELECT id,document,'track' AS kind FROM ${qschema}.tracks WHERE owner_id=$1`,[req.user.id]);for(const row of rows.rows){const d=row.document;if(Array.isArray(d.tags)&&d.tags.includes(tag)){d.tags=d.tags.filter(x=>x!==tag);d.updatedAt=new Date().toISOString();await pool.query(`UPDATE ${qschema}.${row.kind==='track'?'tracks':'moments'} SET document=$3,updated_at=now() WHERE owner_id=$1 AND id=$2`,[req.user.id,row.id,d]);}}res.json({ok:true});}catch(e){next(e);}});
 
 export { app };
-app.use((err, req, res, next) => {
-  if (res.headersSent) return next(err);
-  if (err instanceof multer.MulterError) return res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: 'Invalid upload' });
-  if (err?.code === '23505') return fail(res, 409, 'Resource already exists');
-  if (err?.name === 'NoSuchKey') return fail(res, 404, 'Image not found');
-  res.status(500).json({ error: 'Internal server error' });
-});
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const server=app.listen(PORT,'127.0.0.1',()=>console.log(`Memento API listening on 127.0.0.1:${PORT}`));
-  const stop=()=>server.close(async()=>{await pool.end();process.exit(0);});
-  process.on('SIGTERM',stop);process.on('SIGINT',stop);
-}
+app.use((err,req,res,next)=>{if(res.headersSent)return next(err);if(err instanceof multer.MulterError)return res.status(err.code==='LIMIT_FILE_SIZE'?413:400).json({error:'Invalid upload'});if(err?.code==='23505')return fail(res,409,'Resource already exists');if(err?.name==='NoSuchKey')return fail(res,404,'Image not found');res.status(500).json({error:'Internal server error'});});
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){const server=app.listen(PORT,'127.0.0.1',()=>console.log(`Memento API listening on 127.0.0.1:${PORT}`));const stop=()=>server.close(async()=>{await pool.end();process.exit(0);});process.on('SIGTERM',stop);process.on('SIGINT',stop);}
