@@ -14,6 +14,8 @@ import { GalleryView } from './components/GalleryView';
 import { EventModal } from './components/EventModal';
 import { EventDetailModal } from './components/EventDetailModal';
 import { ImageLightbox } from './components/ImageLightbox';
+import { BlindboxMemory } from './components/BlindboxMemory';
+import { Dices } from 'lucide-react';
 
 export default function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -28,6 +30,7 @@ export default function App() {
   const [apiTags, setApiTags] = useState<ApiTag[]>([]);
   const [collaborationInvitations, setCollaborationInvitations] = useState<CollaborationInvitation[]>([]);
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
+  const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const authGenerationRef = useRef(0);
 
   const loadData = useCallback(async () => {
@@ -180,6 +183,12 @@ export default function App() {
   const acceptInvitation = async (id: string) => {
     await dataApi.acceptCollaborationInvitation(id);
     await loadData();
+  };
+
+  const openBlindboxMemory = (event: TimelineEvent) => {
+    setIsBlindboxOpen(false);
+    handleSelectTrack(event.eventId);
+    setEventToView(event);
   };
 
   const selectedTrack = eventTracks.find((track) => track.id === selectedTrackId) || null;
@@ -611,6 +620,8 @@ export default function App() {
         invitations={collaborationInvitations}
         onAccept={acceptInvitation}
       />
+      <button type="button" onClick={() => setIsBlindboxOpen(true)} title="Open a random memory" aria-label="Open a random memory" className="fixed bottom-[max(1.5rem,env(safe-area-inset-bottom))] right-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full bg-amber-600 text-white shadow-lg transition hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-300 sm:right-6"><Dices className="h-5 w-5" /></button>
+      <BlindboxMemory open={isBlindboxOpen} events={events} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />
       {/* Image Lightbox viewer */}
       <ImageLightbox
         images={lightboxState.images}
