@@ -106,7 +106,7 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     const stored=await pool.query('SELECT object_key FROM "memento_dev".images WHERE id=$1',[imageId]);assert.ok(stored.rows[0].object_key.startsWith('memento_dev/'));
     const moments=await request('/api/moments',{token});assert.deepEqual(moments.data.moments[0].images,[`/api/images/${imageId}`]);
     const updatedMoment=await request(`/api/moments/${momentId}`,{method:'PUT',token,body:{description:'updated through API'}});assert.equal(updatedMoment.res.status,200);assert.equal(updatedMoment.data.moment.description,'updated through API');assert.deepEqual(updatedMoment.data.moment.images,[`/api/images/${imageId}`]);
-    const fetched=await request(`/api/images/${imageId}`,{token});assert.equal(fetched.res.status,200);assert.equal(fetched.res.headers.get('content-type'),'image/png');assert.ok(fetched.data.byteLength>0);
+    const fetched=await request(`/api/images/${imageId}`,{token});assert.equal(fetched.res.status,200);assert.equal(fetched.res.headers.get('content-type'),'image/png');assert.equal(fetched.res.headers.get('cache-control'),'private, max-age=300, must-revalidate');assert.ok(fetched.data.byteLength>0);
     assert.equal((await request(`/api/images/${imageId}`,{token:token2})).res.status,200);
     assert.equal((await request(`/api/tracks/${trackId}/collaborators/${userId2}`,{method:'DELETE',token})).res.status,200);
     assert.equal((await request(`/api/images/${imageId}`,{token:token2})).res.status,404);

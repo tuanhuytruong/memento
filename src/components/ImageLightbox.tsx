@@ -77,6 +77,7 @@ export const ImageLightbox: React.FC<ImageLightboxProps> = ({
       >
         <img
           src={currentImage}
+          decoding="async"
           alt="Timeline attachment enlarged"
           className="max-h-[80vh] max-w-full rounded-xl object-contain shadow-2xl"
         />

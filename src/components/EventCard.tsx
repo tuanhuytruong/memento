@@ -192,6 +192,8 @@ export const EventCard: React.FC<EventCardProps> = ({
               <div className="relative group/img max-h-60 overflow-hidden">
                 <img
                   src={event.images[0]}
+                  loading="lazy"
+                  decoding="async"
                   alt={event.title}
                   className="w-full h-48 sm:h-56 object-cover hover:scale-103 transition-transform duration-500"
                 />
@@ -209,6 +211,8 @@ export const EventCard: React.FC<EventCardProps> = ({
                   >
                     <img
                       src={img}
+                      loading="lazy"
+                      decoding="async"
                       alt="Thumbnail"
                       className="w-full h-full object-cover hover:scale-105 transition-transform"
                     />
