@@ -199,7 +199,7 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
           {event.images && event.images.length > 0 && (
             <div className="space-y-2">
               <div className="relative group rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-800 max-h-[420px] flex items-center justify-center border border-stone-200 dark:border-stone-700">
-                <PrivateImage src={event.images[activeImageIndex] || event.images[0]} variant="display" alt={event.title} className="max-h-[420px] cursor-pointer hover:opacity-95 transition" onClick={() => onOpenImageLightbox(event.images, activeImageIndex)} />
+                <PrivateImage src={event.images[activeImageIndex] || event.images[0]} variant="display" fit="contain" alt={event.title} className="h-[min(56vh,420px)] w-full cursor-pointer hover:opacity-95 transition" onClick={() => onOpenImageLightbox(event.images, activeImageIndex)} />
                 <button
                   onClick={() => onOpenImageLightbox(event.images, activeImageIndex)}
                   className="absolute bottom-3 right-3 p-2 rounded-lg bg-black/60 text-white hover:bg-black/80 transition"
