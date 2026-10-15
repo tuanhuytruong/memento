@@ -1,4 +1,4 @@
-import type { EventTrack, TimelineEvent } from '../types';
+import type { EventTrack, MemoryReaction, TimelineEvent } from '../types';
 
 const API = '/api';
 
@@ -130,6 +130,7 @@ export const dataApi = {
     requireResource<EventTrack>(await request(`/tracks/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(track) }), ['track'], 'track'),
   deleteTrack: (id: string) => request(`/tracks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   moments: async () => unwrapList<TimelineEvent>(await request('/moments'), ['moments']),
+  toggleReaction: async (momentId: string, emoji: MemoryReaction['emoji']) => request<{ reactions: MemoryReaction[]; selectedEmojis: string[] }>(`/moments/${encodeURIComponent(momentId)}/reactions`, { method: 'POST', body: JSON.stringify({ emoji }) }),
   createMoment: async (moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>) =>
     requireResource<TimelineEvent>(await request('/moments', { method: 'POST', body: JSON.stringify(moment) }), ['moment'], 'moment'),
   updateMoment: async (id: string, moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>) =>

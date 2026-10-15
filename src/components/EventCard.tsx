@@ -15,7 +15,7 @@ import { TimelineEvent, EventTrack } from '../types';
 import { getEmotionMeta } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { formatDateDisplay, getRelativeTime } from '../lib/storage';
-import { imageUrl } from '../lib/imageUrl';
+import { PrivateImage } from './PrivateImage';
 
 interface EventCardProps {
   event: TimelineEvent;
@@ -191,13 +191,7 @@ export const EventCard: React.FC<EventCardProps> = ({
           >
             {event.images.length === 1 ? (
               <div className="relative group/img max-h-60 overflow-hidden">
-                <img
-                  src={imageUrl(event.images[0], 'thumb')}
-                  loading="lazy"
-                  decoding="async"
-                  alt={event.title}
-                  className="w-full h-48 sm:h-56 object-cover hover:scale-103 transition-transform duration-500"
-                />
+                <PrivateImage src={event.images[0]} variant="thumb" loading="lazy" alt={event.title} className="h-48 sm:h-56 hover:scale-103 transition-transform duration-500" />
               </div>
             ) : (
               <div className="grid grid-cols-3 gap-1.5 max-h-40 overflow-hidden p-1">
@@ -210,13 +204,7 @@ export const EventCard: React.FC<EventCardProps> = ({
                       onOpenImageLightbox(event.images, idx);
                     }}
                   >
-                    <img
-                      src={imageUrl(img, 'thumb')}
-                      loading="lazy"
-                      decoding="async"
-                      alt="Thumbnail"
-                      className="w-full h-full object-cover hover:scale-105 transition-transform"
-                    />
+                    <PrivateImage src={img} variant="thumb" loading="lazy" alt="Thumbnail" className="h-full hover:scale-105 transition-transform" />
                     {idx === 2 && event.images.length > 3 && (
                       <div className="absolute inset-0 bg-black/60 text-white font-bold text-xs flex items-center justify-center">
                         +{event.images.length - 3} more

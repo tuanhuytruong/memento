@@ -19,6 +19,7 @@ import { getEmotionMeta } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { formatDateDisplay, getRelativeTime } from '../lib/storage';
 import { imageUrl } from '../lib/imageUrl';
+import { PrivateImage } from './PrivateImage';
 
 interface EventDetailModalProps {
   event: TimelineEvent | null;
@@ -30,6 +31,7 @@ interface EventDetailModalProps {
   onDelete: (id: string) => Promise<void>;
   onTagClick?: (tag: string) => void;
   onOpenImageLightbox: (images: string[], index: number) => void;
+  onToggleReaction: (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉') => Promise<void>;
 }
 
 export const EventDetailModal: React.FC<EventDetailModalProps> = ({
@@ -42,6 +44,7 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
   onDelete,
   onTagClick,
   onOpenImageLightbox,
+  onToggleReaction,
 }) => {
   if (!isOpen || !event) return null;
 
@@ -196,13 +199,7 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
           {event.images && event.images.length > 0 && (
             <div className="space-y-2">
               <div className="relative group rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-800 max-h-[420px] flex items-center justify-center border border-stone-200 dark:border-stone-700">
-                <img
-                  src={imageUrl(event.images[activeImageIndex] || event.images[0], 'display')}
-                  decoding="async"
-                  alt={event.title}
-                  className="w-full h-full max-h-[420px] object-cover cursor-pointer hover:opacity-95 transition"
-                  onClick={() => onOpenImageLightbox(event.images, activeImageIndex)}
-                />
+                <PrivateImage src={event.images[activeImageIndex] || event.images[0]} variant="display" alt={event.title} className="max-h-[420px] cursor-pointer hover:opacity-95 transition" onClick={() => onOpenImageLightbox(event.images, activeImageIndex)} />
                 <button
                   onClick={() => onOpenImageLightbox(event.images, activeImageIndex)}
                   className="absolute bottom-3 right-3 p-2 rounded-lg bg-black/60 text-white hover:bg-black/80 transition"
@@ -247,13 +244,21 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
                           : 'border-transparent opacity-60 hover:opacity-100'
                       }`}
                     >
-                      <img src={imageUrl(img, 'thumb')} loading="lazy" decoding="async" alt="Thumbnail" className="w-full h-full object-cover" />
+                      <PrivateImage src={img} variant="thumb" loading="lazy" alt="Thumbnail" className="h-full" />
                     </button>
                   ))}
                 </div>
               )}
             </div>
           )}
+
+          <section className="flex flex-wrap items-center gap-2 border-t border-stone-100 pt-4 dark:border-stone-800">
+            <span className="mr-1 text-xs font-semibold text-stone-500">React</span>
+            {(['❤️', '🥹', '😂', '✨', '🙌', '🎉'] as const).map((emoji) => {
+              const reaction = event.reactions?.find((item) => item.emoji === emoji);
+              return <button key={emoji} type="button" title={reaction?.usernames?.length ? reaction.usernames.join(', ') : `React ${emoji}`} onClick={() => void onToggleReaction(event, emoji)} className={`min-h-9 rounded-full border px-2 text-sm transition ${reaction?.selected ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/30' : 'border-stone-200 hover:bg-stone-100 dark:border-stone-700 dark:hover:bg-stone-800'}`}>{emoji}{reaction?.count ? <span className="ml-1 text-xs font-semibold">{reaction.count}</span> : null}</button>;
+            })}
+          </section>
 
           {/* Dedicated Idea / Key Takeaway Card */}
           {event.idea && (
