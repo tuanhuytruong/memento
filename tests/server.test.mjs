@@ -87,12 +87,22 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     const pending=await request('/api/collaboration-invitations',{token:token2});assert.equal(pending.data.invitations.length,1);const collaborationId=pending.data.invitations[0].id;
     assert.equal((await request(`/api/collaboration-invitations/${collaborationId}/accept`,{method:'POST',token:token2})).res.status,200);
     const sharedTracks=(await request('/api/tracks',{token:token2})).data.tracks;assert.equal(sharedTracks.length,1);assert.equal(sharedTracks[0].id,trackId);
-    assert.equal((await request('/api/moments',{token:token2})).data.moments.length,1);
+    const viewerMoments=await request('/api/moments',{token:token2});assert.equal(viewerMoments.data.moments.length,1);assert.deepEqual(viewerMoments.data.moments[0].reactions,[]);
+    const viewerHeart=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'❤️'}});assert.equal(viewerHeart.res.status,200);assert.deepEqual(viewerHeart.data.selectedEmojis,['❤️']);assert.equal(viewerHeart.data.reactions[0].count,1);assert.deepEqual(viewerHeart.data.reactions[0].usernames,[secondUsername]);
+    const viewerParty=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'🎉'}});assert.equal(viewerParty.res.status,200);assert.deepEqual(viewerParty.data.selectedEmojis,['❤️','🎉']);
+    const viewerPartyRemoved=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'🎉'}});assert.equal(viewerPartyRemoved.res.status,200);assert.deepEqual(viewerPartyRemoved.data.selectedEmojis,['❤️']);
+    const ownerReactions=await request(`/api/moments/${momentId}/reactions`,{token});assert.equal(ownerReactions.res.status,200);assert.deepEqual(ownerReactions.data.selectedEmojis,[]);assert.equal(ownerReactions.data.reactions.reduce((n,reaction)=>n+reaction.count,0),1);
+    const ownerAdded=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token,body:{emoji:'✨'}});assert.deepEqual(ownerAdded.data.selectedEmojis,['✨']);assert.equal(ownerAdded.data.reactions.reduce((n,reaction)=>n+reaction.count,0),2);
+    const ownerRemoved=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token,body:{emoji:'✨'}});assert.deepEqual(ownerRemoved.data.selectedEmojis,[]);assert.equal(ownerRemoved.data.reactions.reduce((n,reaction)=>n+reaction.count,0),1);
+    const ownerMoments=await request('/api/moments',{token});assert.equal(ownerMoments.data.moments[0].reactions.reduce((n,reaction)=>n+reaction.count,0),1);
+    assert.equal((await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'nope'}})).res.status,400);
     assert.equal((await request(`/api/moments/${momentId}`,{method:'PUT',token:token2,body:{title:'nope'}})).res.status,403);
     assert.equal((await request('/api/moments',{method:'POST',token:token2,body:{eventId:trackId,title:'nope',date:'2026-09-25',tags:[],images:[]}})).res.status,403);
     assert.equal((await request(`/api/tracks/${trackId}/collaborators`,{method:'POST',token:token2,body:{username,role:'editor'}})).res.status,404);
     // Owner revokes viewer access, then re-invites as editor. Editors are constrained to this one track.
     assert.equal((await request(`/api/tracks/${trackId}/collaborators/${userId2}`,{method:'DELETE',token})).res.status,200);
+    assert.equal((await request(`/api/moments/${momentId}/reactions`,{token:token2})).res.status,404);
+    assert.equal((await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'❤️'}})).res.status,404);
     assert.equal((await request('/api/tracks',{token:token2})).data.tracks.length,0);
     const editorInvite=await request(`/api/tracks/${trackId}/collaborators`,{method:'POST',token,body:{username:secondUsername,role:'editor'}});assert.equal(editorInvite.res.status,201);
     const editorPending=await request('/api/collaboration-invitations',{token:token2});assert.equal(editorPending.data.invitations.length,1);
@@ -101,6 +111,7 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     assert.equal((await request(`/api/moments/${editorMoment.data.moment.id}`,{method:'PUT',token:token2,body:{eventId:'other-track'}})).res.status,403);
     assert.equal((await request(`/api/tracks/${trackId}`,{method:'DELETE',token:token2})).res.status,404);
     assert.equal((await request(`/api/moments/${editorMoment.data.moment.id}`,{method:'DELETE',token:token2})).res.status,200);
+    const editorReaction=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'😂'}});assert.equal(editorReaction.res.status,200);assert.deepEqual(editorReaction.data.selectedEmojis,['❤️','😂']);
     const form=new FormData();form.set('momentId',momentId);form.set('file',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVQImWNgZGJmZGJmgFAAAK4AGRLRbNUAAAAASUVORK5CYII=','base64')],{type:'image/png'}),'test.png');
     const uploaded=await request('/api/images',{method:'POST',token,multipart:form});assert.equal(uploaded.res.status,201);imageId=uploaded.data.image.id;assert.match(uploaded.data.image.url,/^\/api\/images\//);
     const stored=await pool.query(`SELECT object_key,thumb_object_key,display_object_key FROM ${qschema}.images WHERE id=$1`,[imageId]);assert.ok(stored.rows[0].object_key.startsWith(`${process.env.DB_SCHEMA}/`));assert.ok(stored.rows[0].thumb_object_key?.startsWith(`${process.env.DB_SCHEMA}/`));assert.ok(stored.rows[0].display_object_key?.startsWith(`${process.env.DB_SCHEMA}/`));
@@ -114,7 +125,8 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     assert.deepEqual((await request('/api/tags',{token})).data.tags,['shared-tag','verified']);
     assert.equal((await request('/api/tags/verified',{method:'DELETE',token})).res.status,200);
     assert.equal((await request(`/api/images/${imageId}`,{method:'DELETE',token})).res.status,200);imageId=undefined;
-    assert.equal((await request('/api/moments/'+momentId,{method:'DELETE',token})).res.status,200);momentId=undefined;
+    assert.equal((await request('/api/moments/'+momentId,{method:'DELETE',token})).res.status,200);
+    assert.equal((await pool.query('SELECT 1 FROM "memento_dev".moment_reactions WHERE moment_owner_id=$1 AND moment_id=$2',[userId,momentId])).rowCount,0);momentId=undefined;
     assert.equal((await request('/api/tracks/'+trackId,{method:'DELETE',token})).res.status,200);trackId=undefined;
     assert.equal((await request('/api/auth/logout',{method:'POST',token})).res.status,200);
     assert.equal((await request('/api/auth/me',{token})).res.status,401);token=undefined;

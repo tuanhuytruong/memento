@@ -163,8 +163,23 @@ export function validateDocument(input, kind) {
   }
   return d;
 }
-function safeMoment(doc, imageRows) {
-  return { ...doc, images: imageRows.map(x => `/api/images/${x.id}`) };
+function safeMoment(doc, imageRows, reactions = []) {
+  return { ...doc, images: imageRows.map(x => `/api/images/${x.id}`), reactions };
+}
+const REACTION_EMOJIS = new Set(['❤️', '🥹', '😂', '✨', '🙌', '🎉']);
+async function reactionSummaries(userId, moments, client = pool) {
+  if (!moments.length) return new Map();
+  const owners = moments.map(moment => moment.owner_id);
+  const ids = moments.map(moment => moment.id);
+  const { rows } = await client.query(`
+    SELECT r.moment_owner_id,r.moment_id,r.emoji,COUNT(*)::int AS count,
+      BOOL_OR(r.user_id=$1) AS selected, ARRAY_AGG(u.username ORDER BY u.username) AS usernames
+    FROM ${qschema}.moment_reactions r JOIN ${qschema}.users u ON u.id=r.user_id
+    WHERE (r.moment_owner_id,r.moment_id) IN (SELECT * FROM unnest($2::uuid[],$3::text[]))
+    GROUP BY r.moment_owner_id,r.moment_id,r.emoji ORDER BY r.moment_owner_id,r.moment_id,r.emoji`, [userId, owners, ids]);
+  const summaries = new Map();
+  for (const row of rows) { const key = `${row.moment_owner_id}:${row.moment_id}`; const summary = summaries.get(key) || []; summary.push({ emoji: row.emoji, count: row.count, selected: row.selected, usernames: row.usernames }); summaries.set(key, summary); }
+  return summaries;
 }
 
 async function trackAccess(userId, trackId) {
@@ -261,8 +276,18 @@ app.post('/api/collaboration-invitations/:id/accept', auth, async (req,res,next)
 } catch(e){next(e);} });
 
 app.get('/api/moments', auth, async (req,res,next) => { try {
-  const {rows}=await pool.query(`SELECT m.document,m.id FROM ${qschema}.moments m WHERE m.owner_id=$1 UNION ALL SELECT m.document,m.id FROM ${qschema}.moments m JOIN ${qschema}.track_collaborators c ON c.owner_id=m.owner_id AND c.track_id=m.event_id WHERE c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL AND c.expires_at > now()`,[req.user.id]);
-  const out=[];for(const row of rows){const imgs=await pool.query(`SELECT id FROM ${qschema}.images WHERE owner_id=(SELECT owner_id FROM ${qschema}.moments WHERE id=$1 LIMIT 1) AND moment_id=$1 ORDER BY created_at`,[row.id]);out.push(safeMoment(row.document,imgs.rows));}res.json({moments:out});
+  const {rows}=await pool.query(`SELECT m.owner_id,m.document,m.id FROM ${qschema}.moments m WHERE m.owner_id=$1 UNION ALL SELECT m.owner_id,m.document,m.id FROM ${qschema}.moments m JOIN ${qschema}.track_collaborators c ON c.owner_id=m.owner_id AND c.track_id=m.event_id WHERE c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL AND c.expires_at > now()`,[req.user.id]);
+  const owners=rows.map(row=>row.owner_id), ids=rows.map(row=>row.id);
+  const [images,reactions]=await Promise.all([rows.length ? pool.query(`SELECT owner_id,moment_id,id FROM ${qschema}.images WHERE (owner_id,moment_id) IN (SELECT * FROM unnest($1::uuid[],$2::text[])) ORDER BY created_at`,[owners,ids]) : {rows:[]},reactionSummaries(req.user.id,rows)]);
+  const imagesByMoment=new Map(); for(const image of images.rows){const key=`${image.owner_id}:${image.moment_id}`;const list=imagesByMoment.get(key)||[];list.push(image);imagesByMoment.set(key,list);}
+  res.json({moments:rows.map(row=>safeMoment(row.document,imagesByMoment.get(`${row.owner_id}:${row.id}`)||[],reactions.get(`${row.owner_id}:${row.id}`)||[]))});
+} catch(e){next(e);} });
+app.get('/api/moments/:id/reactions', auth, async (req,res,next) => { try {
+  const moment=await momentAccess(req.user.id,req.params.id);if(!moment)return fail(res,404,'Moment not found'); const reactions=(await reactionSummaries(req.user.id,[moment])).get(`${moment.owner_id}:${moment.id}`)||[]; res.json({reactions,selectedEmojis:reactions.filter(reaction=>reaction.selected).map(reaction=>reaction.emoji)});
+} catch(e){next(e);} });
+app.post('/api/moments/:id/reactions', auth, async (req,res,next) => { try {
+  const emoji=req.body?.emoji;if(!REACTION_EMOJIS.has(emoji))return fail(res,400,'Invalid reaction'); const moment=await momentAccess(req.user.id,req.params.id);if(!moment)return fail(res,404,'Moment not found'); const client=await pool.connect();
+  try { await client.query('BEGIN'); const removed=await client.query(`DELETE FROM ${qschema}.moment_reactions WHERE moment_owner_id=$1 AND moment_id=$2 AND user_id=$3 AND emoji=$4 RETURNING emoji`,[moment.owner_id,moment.id,req.user.id,emoji]); if(!removed.rowCount)await client.query(`INSERT INTO ${qschema}.moment_reactions(moment_owner_id,moment_id,user_id,emoji) VALUES($1,$2,$3,$4)`,[moment.owner_id,moment.id,req.user.id,emoji]); const reactions=(await reactionSummaries(req.user.id,[moment],client)).get(`${moment.owner_id}:${moment.id}`)||[]; await client.query('COMMIT'); res.json({reactions,selectedEmojis:reactions.filter(reaction=>reaction.selected).map(reaction=>reaction.emoji)}); } catch(e){await client.query('ROLLBACK').catch(()=>{});throw e;} finally {client.release();}
 } catch(e){next(e);} });
 app.post('/api/moments', auth, async (req,res,next) => { try {
   const d=validateDocument(req.body,'moment');if(!d)return fail(res,400,'Invalid moment');if(d.images.length)return fail(res,400,'Images must be uploaded using POST /api/images');const access=await trackAccess(req.user.id,d.eventId);if(!access)return fail(res,400,'Track not found');if(!isEditor(access))return fail(res,403,'Editor access required');d.id=typeof d.id==='string'&&d.id.length<128?d.id:id();d.images=[];await pool.query(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document) VALUES($1,$2,$3,$4)`,[access.owner_id,d.id,d.eventId,d]);await persistTags(access.owner_id,d.tags);res.status(201).json({moment:d});
