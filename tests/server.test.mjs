@@ -36,7 +36,7 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
   }
   const username = `test_${crypto.randomUUID().replaceAll('-','').slice(0,20)}`;
   const secondUsername = `test_${crypto.randomUUID().replaceAll('-','').slice(0,20)}`;
-  let token, token2, userId, userId2, trackId, momentId, imageId, inviteHash1, inviteHash2;
+  let token, token2, userId, userId2, trackId, momentId, imageId, inviteHash1, inviteHash2, lookupUsers=[];
   try {
     const badOrigin = await fetch(base+'/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password:'valid-long-password',inviteCode:'invalid'})});
     assert.equal(badOrigin.status,403);
@@ -66,6 +66,21 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     assert.equal((await request('/api/tracks',{token:token2})).data.tracks.length,0);
     assert.equal((await request('/api/moments',{token:token2})).data.moments.length,0);
     assert.equal((await request('/api/tracks/'+trackId,{method:'PUT',token:token2,body:{title:'intrusion'}})).res.status,404);
+    const lookupPrefix = `lookup${crypto.randomUUID().replaceAll('-', '').slice(0,20)}`;
+    lookupUsers = ['_Alpha', '_bravo', '_Charlie', '_delta', '0decoy'].map(suffix => ({ id: crypto.randomUUID(), username: `${lookupPrefix}${suffix}` }));
+    await Promise.all(lookupUsers.map(user => pool.query('INSERT INTO "memento_dev".users(id,username,password_hash) VALUES($1,$2,$3)', [user.id, user.username, 'unused-test-password-hash'])));
+    const unauthenticatedSearch = await request(`/api/users/search?q=${lookupPrefix}`);
+    assert.equal(unauthenticatedSearch.res.status,401);
+    const autocomplete = await request(`/api/users/search?q=${lookupPrefix.toUpperCase()}_`, { token });
+    assert.equal(autocomplete.res.status,200);
+    assert.deepEqual(autocomplete.data, { usernames: lookupUsers.slice(0, 3).map(user => user.username) });
+    assert.equal(Object.keys(autocomplete.data).length, 1);
+    assert.ok(autocomplete.data.usernames.every(value => typeof value === 'string'));
+    assert.equal((await request('/api/users/search', { token })).res.status,400);
+    assert.equal((await request(`/api/users/search?q=${'a'.repeat(33)}`, { token })).res.status,400);
+    const selfSearch = await request('/api/users/search?q=test', { token });
+    assert.equal(selfSearch.res.status,200);
+    assert.ok(!selfSearch.data.usernames.includes(username));
     // Invitations are private until acceptance; viewers can read only the designated track and cannot mutate it.
     const viewerInvite=await request(`/api/tracks/${trackId}/collaborators`,{method:'POST',token,body:{username:secondUsername,role:'viewer'}});assert.equal(viewerInvite.res.status,201);
     assert.equal((await request('/api/tracks',{token:token2})).data.tracks.length,0);
@@ -110,6 +125,7 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     if (trackId && token) await request(`/api/tracks/${trackId}`,{method:'DELETE',token}).catch(()=>{});
     if(token) await request('/api/auth/logout',{method:'POST',token}).catch(()=>{});
     if(token2) await request('/api/auth/logout',{method:'POST',token:token2}).catch(()=>{});
+    for (const user of lookupUsers) await pool.query('DELETE FROM "memento_dev".users WHERE id=$1',[user.id]).catch(()=>{});
     if(userId) await pool.query('DELETE FROM "memento_dev".users WHERE id=$1',[userId]).catch(()=>{});
     if(userId2) await pool.query('DELETE FROM "memento_dev".users WHERE id=$1',[userId2]).catch(()=>{});
     if(inviteHash1) await pool.query('DELETE FROM "memento_dev".invites WHERE code_hash=$1',[inviteHash1]).catch(()=>{});

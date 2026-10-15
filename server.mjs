@@ -129,6 +129,12 @@ app.post('/api/auth/login', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 app.get('/api/auth/me', auth, (req, res) => res.json({ user: userShape(req.user) }));
+app.get('/api/users/search', auth, async (req, res, next) => { try {
+  const q = req.query.q;
+  if (typeof q !== 'string' || !/^[a-zA-Z0-9_.-]{1,32}$/.test(q)) return fail(res, 400, 'Invalid username query');
+  const { rows } = await pool.query(`SELECT username FROM ${qschema}.users WHERE id <> $1 AND starts_with(lower(username), lower($2)) ORDER BY lower(username), username LIMIT 3`, [req.user.id, q]);
+  res.json({ usernames: rows.map(row => row.username) });
+} catch (e) { next(e); } });
 app.post('/api/auth/logout', auth, async (req, res, next) => {
   try { const token = parseCookie(req.get('cookie'))[COOKIE]; await pool.query(`DELETE FROM ${qschema}.sessions WHERE token_hash=$1`, [hashSession(token)]); clearCookie(res); res.json({ ok: true }); }
   catch (e) { next(e); }
