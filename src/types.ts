@@ -41,6 +41,7 @@ export interface EventTrack {
   updatedAt: string;
   /** Server-generated permission label; omitted only briefly after creating an owned track. */
   accessRole?: 'owner' | 'viewer' | 'editor';
+  sharedByYou?: boolean;
 }
 
 export interface TimelineEvent {

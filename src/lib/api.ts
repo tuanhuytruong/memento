@@ -158,6 +158,7 @@ export const dataApi = {
   revokeCollaborator: (trackId: string, userId: string) => request(`/tracks/${encodeURIComponent(trackId)}/collaborators/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
   collaborationInvitations: async () => unwrapList<CollaborationInvitation>(await request('/collaboration-invitations'), ['invitations']),
   acceptCollaborationInvitation: (id: string) => request(`/collaboration-invitations/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
+  usernameMatches: async (query: string) => unwrapList<string>(await request(`/users/search?q=${encodeURIComponent(query)}`), ['usernames']),
   uploadImage: async (file: File, momentId: string) => {
     const form = new FormData();
     form.append('file', file);

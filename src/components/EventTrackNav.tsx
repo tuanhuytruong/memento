@@ -43,8 +43,19 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
   onShareTrack,
   canEditSelectedTrack,
 }) => {
+  const [trackGroup, setTrackGroup] = React.useState<'only' | 'withYou' | 'byYou'>('only');
   const activeTrack = tracks.find((t) => t.id === selectedTrackId);
   const isMergedView = selectedTrackId === 'all';
+  const groupedTracks = tracks.filter((track) => trackGroup === 'only'
+    ? track.accessRole === 'owner' && !track.sharedByYou
+    : trackGroup === 'byYou'
+      ? track.accessRole === 'owner' && track.sharedByYou
+      : track.accessRole === 'viewer' || track.accessRole === 'editor');
+  const groupCounts = {
+    only: tracks.filter((track) => track.accessRole === 'owner' && !track.sharedByYou).length,
+    withYou: tracks.filter((track) => track.accessRole === 'viewer' || track.accessRole === 'editor').length,
+    byYou: tracks.filter((track) => track.accessRole === 'owner' && track.sharedByYou).length,
+  };
 
   // Compute stats per track
   const trackStatsMap = React.useMemo(() => {
@@ -74,7 +85,11 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
 
   return (
     <div className="space-y-4 mb-6">
-      {/* Horizontal Tabs: All Events (Merged) + Individual Event Tracks + New Track Button */}
+      {/* Ownership grouping makes private and collaborative tracks easier to scan. */}
+      <div className="flex gap-1 overflow-x-auto no-scrollbar" role="tablist" aria-label="Track groups">
+        {([['only', 'Only you'], ['withYou', 'Shared with you'], ['byYou', 'Shared by you']] as const).map(([key, label]) => <button key={key} type="button" onClick={() => setTrackGroup(key)} className={`rounded-full px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${trackGroup === key ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900' : 'bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300'}`}>{label} <span className="opacity-70">{groupCounts[key]}</span></button>)}
+      </div>
+      {/* Horizontal Tabs: All Events (Merged Timeline) + Individual Event Tracks + New Track Button */}
       <div className="flex items-center gap-2 overflow-x-auto pb-2.5 pt-1 no-scrollbar scroll-smooth">
         {/* "All Events (Merged Timeline)" Button */}
         <button
@@ -100,7 +115,7 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
         </button>
 
         {/* Individual Event Track Tabs */}
-        {tracks.map((track) => {
+        {groupedTracks.map((track) => {
           const isSelected = selectedTrackId === track.id;
           const IconComp = getEventIconComponent(track.icon);
           const theme = getEventTheme(track.color);

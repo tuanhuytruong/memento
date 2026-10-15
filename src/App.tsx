@@ -607,6 +607,7 @@ export default function App() {
         onInvite={async (username, role) => { await dataApi.inviteCollaborator(shareTrack!.id, username, role); }}
         onLoadCollaborators={() => dataApi.collaborators(shareTrack!.id)}
         onRevoke={async (userId) => { await dataApi.revokeCollaborator(shareTrack!.id, userId); }}
+        onSearchUsernames={dataApi.usernameMatches}
         invitations={collaborationInvitations}
         onAccept={acceptInvitation}
       />
