@@ -207,12 +207,13 @@ const isEditor = access => access?.role === 'owner' || access?.role === 'editor'
 
 app.get('/api/tracks', auth, async (req,res,next) => { try {
   const {rows}=await pool.query(`
-    SELECT document,'owner'::text AS role FROM ${qschema}.tracks WHERE owner_id=$1
+    SELECT t.document,'owner'::text AS role, EXISTS(SELECT 1 FROM ${qschema}.track_collaborators c WHERE c.owner_id=t.owner_id AND c.track_id=t.id AND c.revoked_at IS NULL) AS shared_by_owner
+    FROM ${qschema}.tracks t WHERE t.owner_id=$1
     UNION ALL
-    SELECT t.document,c.role FROM ${qschema}.track_collaborators c JOIN ${qschema}.tracks t ON t.owner_id=c.owner_id AND t.id=c.track_id
+    SELECT t.document,c.role,false AS shared_by_owner FROM ${qschema}.track_collaborators c JOIN ${qschema}.tracks t ON t.owner_id=c.owner_id AND t.id=c.track_id
     WHERE c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL AND c.expires_at > now()
 `, [req.user.id]);
-  res.json({tracks:rows.map(x=>({ ...x.document, accessRole: x.role }))});
+  res.json({tracks:rows.map(x=>({ ...x.document, accessRole: x.role, sharedByYou: x.shared_by_owner }))});
 } catch(e){next(e);} });
 app.post('/api/tracks', auth, async (req,res,next) => {
   try { const d=validateDocument(req.body,'track'); if(!d) return fail(res,400,'Invalid track'); d.id=typeof d.id==='string'&&d.id.length<128?d.id:id(); await pool.query(`INSERT INTO ${qschema}.tracks(owner_id,id,document) VALUES($1,$2,$3)`,[req.user.id,d.id,d]); await persistTags(req.user.id,d.tags); res.status(201).json({track:{...d,accessRole:'owner'}}); }

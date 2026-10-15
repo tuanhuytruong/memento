@@ -11,12 +11,14 @@ type Props = {
   onInvite: (username: string, role: 'viewer' | 'editor') => Promise<void>;
   onLoadCollaborators: () => Promise<TrackCollaborator[]>;
   onRevoke: (userId: string) => Promise<void>;
+  onSearchUsernames: (query: string) => Promise<string[]>;
 };
 
-export function CollaborationModal({ invitations, onAccept, track, isOpen, onClose, onInvite, onLoadCollaborators, onRevoke }: Props) {
+export function CollaborationModal({ invitations, onAccept, track, isOpen, onClose, onInvite, onLoadCollaborators, onRevoke, onSearchUsernames }: Props) {
   const [username, setUsername] = useState('');
   const [role, setRole] = useState<'viewer' | 'editor'>('viewer');
   const [collaborators, setCollaborators] = useState<TrackCollaborator[]>([]);
+  const [matches, setMatches] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -25,6 +27,15 @@ export function CollaborationModal({ invitations, onAccept, track, isOpen, onClo
     setError(''); setUsername(''); setRole('viewer');
     void onLoadCollaborators().then(setCollaborators).catch((e: unknown) => setError(e instanceof Error ? e.message : 'Could not load collaborators.'));
   }, [isOpen, track, onLoadCollaborators]);
+
+  useEffect(() => {
+    const query = username.trim();
+    if (!isOpen || !query) { setMatches([]); return; }
+    const timer = window.setTimeout(() => {
+      void onSearchUsernames(query).then((result) => setMatches(result.slice(0, 3))).catch(() => setMatches([]));
+    }, 160);
+    return () => window.clearTimeout(timer);
+  }, [username, isOpen, onSearchUsernames]);
 
   if (!isOpen || !track) return null;
   const pending = collaborators.filter((item) => !item.accepted_at && !item.revoked_at && new Date(item.expires_at) > new Date());
@@ -48,7 +59,7 @@ export function CollaborationModal({ invitations, onAccept, track, isOpen, onClo
         {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
         <form onSubmit={invite} className="rounded-xl bg-stone-50 dark:bg-stone-950/40 p-4 space-y-3">
           <label className="block text-sm font-semibold">Invite existing member</label>
-          <input required value={username} onChange={(e) => setUsername(e.target.value)} maxLength={32} pattern="[A-Za-z0-9_.-]{3,32}" placeholder="Username" className="w-full rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-3 py-2 text-sm" />
+          <div className="relative"><input required autoComplete="off" value={username} onChange={(e) => setUsername(e.target.value)} maxLength={32} pattern="[A-Za-z0-9_.-]{3,32}" placeholder="Username" className="w-full rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-3 py-2 text-sm" />{matches.length > 0 && <div className="absolute z-10 mt-1 w-full rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 shadow-lg overflow-hidden">{matches.map((match) => <button key={match} type="button" onClick={() => { setUsername(match); setMatches([]); }} className="block w-full px-3 py-2 text-left text-sm hover:bg-stone-100 dark:hover:bg-stone-800">{match}</button>)}</div>}</div>
           <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setRole('viewer')} className={`rounded-lg border p-2 text-left text-sm ${role === 'viewer' ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/30' : 'border-stone-200 dark:border-stone-700'}`}><b>Viewer</b><span className="block text-xs text-stone-500 mt-0.5">Can view only</span></button><button type="button" onClick={() => setRole('editor')} className={`rounded-lg border p-2 text-left text-sm ${role === 'editor' ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/30' : 'border-stone-200 dark:border-stone-700'}`}><b>Editor</b><span className="block text-xs text-stone-500 mt-0.5">Can change moments & tags</span></button></div>
           <p className="text-xs text-stone-500 flex gap-1.5"><Clock3 className="w-3.5 h-3.5 shrink-0" />Invitation expires in 7 days. They must accept before they can view it.</p>
           <button disabled={busy} className="rounded-lg bg-stone-900 dark:bg-stone-100 dark:text-stone-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50">Send invitation</button>
