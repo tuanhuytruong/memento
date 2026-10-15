@@ -350,7 +350,14 @@ export default function App() {
   const handleDeleteEvent = async (id: string) => {
     await dataApi.deleteMoment(id);
     setEvents((prev) => prev.filter((event) => event.id !== id));
-    if (eventToView?.id === id) setEventToView(null);
+    setEventToView((prev) => prev?.id === id ? null : prev);
+  };
+
+  const handleToggleReaction = async (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉') => {
+    const response = await dataApi.toggleReaction(event.id, emoji);
+    const apply = (item: TimelineEvent) => item.id === event.id ? { ...item, reactions: response.reactions } : item;
+    setEvents((prev) => prev.map(apply));
+    setEventToView((prev) => prev?.id === event.id ? apply(prev) : prev);
   };
 
   const handleAddCustomTag = async (name: string) => {
@@ -607,6 +614,7 @@ export default function App() {
         onDelete={handleDeleteEvent}
         onTagClick={handleTagClick}
         onOpenImageLightbox={handleOpenLightbox}
+        onToggleReaction={handleToggleReaction}
       />
 
       <CollaborationModal

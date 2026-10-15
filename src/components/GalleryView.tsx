@@ -4,7 +4,7 @@ import { getEmotionMeta } from '../data/emotions';
 import { formatDateDisplay } from '../lib/storage';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { Calendar, MapPin, Lightbulb, Star, ImageIcon } from 'lucide-react';
-import { imageUrl } from '../lib/imageUrl';
+import { PrivateImage } from './PrivateImage';
 
 interface GalleryViewProps {
   events: TimelineEvent[];
@@ -61,13 +61,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                   onOpenImageLightbox(evt.images, 0);
                 }}
               >
-                <img
-                  src={imageUrl(evt.images[0], 'thumb')}
-                  loading="lazy"
-                  decoding="async"
-                  alt={evt.title}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                />
+                <PrivateImage src={evt.images[0]} variant="thumb" loading="lazy" alt={evt.title} className="h-full group-hover:scale-105 transition-transform duration-500" />
                 {evt.images.length > 1 && (
                   <span className="absolute bottom-2.5 right-2.5 px-2 py-1 rounded-md bg-black/60 backdrop-blur-xs text-white text-[11px] font-medium flex items-center gap-1">
                     <ImageIcon className="w-3 h-3" />

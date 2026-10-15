@@ -44,6 +44,13 @@ export interface EventTrack {
   sharedByYou?: boolean;
 }
 
+export interface MemoryReaction {
+  emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉';
+  count: number;
+  usernames: string[];
+  selected: boolean;
+}
+
 export interface TimelineEvent {
   id: string;
   eventId: string; // ID of the parent EventTrack (e.g. 'ai-era', 'new-company')
@@ -60,6 +67,7 @@ export interface TimelineEvent {
   isMilestone?: boolean;
   createdAt: string;
   updatedAt: string;
+  reactions?: MemoryReaction[];
 }
 
 export type ViewMode = 'timeline' | 'compact' | 'gallery';
