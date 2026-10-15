@@ -15,6 +15,7 @@ import { TimelineEvent, EventTrack } from '../types';
 import { getEmotionMeta } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { formatDateDisplay, getRelativeTime } from '../lib/storage';
+import { imageUrl } from '../lib/imageUrl';
 
 interface EventCardProps {
   event: TimelineEvent;
@@ -191,7 +192,7 @@ export const EventCard: React.FC<EventCardProps> = ({
             {event.images.length === 1 ? (
               <div className="relative group/img max-h-60 overflow-hidden">
                 <img
-                  src={event.images[0]}
+                  src={imageUrl(event.images[0], 'thumb')}
                   loading="lazy"
                   decoding="async"
                   alt={event.title}
@@ -210,7 +211,7 @@ export const EventCard: React.FC<EventCardProps> = ({
                     }}
                   >
                     <img
-                      src={img}
+                      src={imageUrl(img, 'thumb')}
                       loading="lazy"
                       decoding="async"
                       alt="Thumbnail"

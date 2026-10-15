@@ -53,7 +53,7 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     const sessionCookie=loggedIn.res.headers.get('set-cookie');
     assert.match(sessionCookie,/HttpOnly/);assert.match(sessionCookie,/Secure/);assert.match(sessionCookie,/SameSite=Lax/);
     token=sessionCookie.match(/memento_session=([^;]+)/)[1];
-    const sessionRow=await pool.query(`SELECT token_hash,expires_at FROM ${qschema}.sessions WHERE user_id=$1`,[userId]);assert.notEqual(sessionRow.rows[0].token_hash,token);assert.ok(new Date(sessionRow.rows[0].expires_at)>new Date());
+    const sessionRow=await pool.query('SELECT token_hash,expires_at FROM "memento".sessions WHERE user_id=$1',[userId]);assert.notEqual(sessionRow.rows[0].token_hash,token);assert.ok(new Date(sessionRow.rows[0].expires_at)>new Date());
     const track=(await request('/api/tracks',{method:'POST',token,body:{title:'Test track',description:'',color:'indigo',icon:'Cpu',tags:[]}}));
     assert.equal(track.res.status,201); trackId=track.data.track.id;
     assert.equal((await request('/api/tracks',{token})).data.tracks.length,1);
@@ -68,7 +68,7 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     assert.equal((await request('/api/tracks/'+trackId,{method:'PUT',token:token2,body:{title:'intrusion'}})).res.status,404);
     const lookupPrefix = `lookup${crypto.randomUUID().replaceAll('-', '').slice(0,20)}`;
     lookupUsers = ['_Alpha', '_bravo', '_Charlie', '_delta', '0decoy'].map(suffix => ({ id: crypto.randomUUID(), username: `${lookupPrefix}${suffix}` }));
-    await Promise.all(lookupUsers.map(user => pool.query(`INSERT INTO ${qschema}.users(id,username,password_hash) VALUES($1,$2,$3)`, [user.id, user.username, 'unused-test-password-hash'])));
+    await Promise.all(lookupUsers.map(user => pool.query('INSERT INTO "memento".users(id,username,password_hash) VALUES($1,$2,$3)', [user.id, user.username, 'unused-test-password-hash'])));
     const unauthenticatedSearch = await request(`/api/users/search?q=${lookupPrefix}`);
     assert.equal(unauthenticatedSearch.res.status,401);
     const autocomplete = await request(`/api/users/search?q=${lookupPrefix.toUpperCase()}_`, { token });
@@ -101,12 +101,12 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     assert.equal((await request(`/api/moments/${editorMoment.data.moment.id}`,{method:'PUT',token:token2,body:{eventId:'other-track'}})).res.status,403);
     assert.equal((await request(`/api/tracks/${trackId}`,{method:'DELETE',token:token2})).res.status,404);
     assert.equal((await request(`/api/moments/${editorMoment.data.moment.id}`,{method:'DELETE',token:token2})).res.status,200);
-    const form=new FormData();form.set('momentId',momentId);form.set('file',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lqkAAAAASUVORK5CYII=','base64')],{type:'image/png'}),'test.png');
+    const form=new FormData();form.set('momentId',momentId);form.set('file',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVQImWNgZGJmZGJmgFAAAK4AGRLRbNUAAAAASUVORK5CYII=','base64')],{type:'image/png'}),'test.png');
     const uploaded=await request('/api/images',{method:'POST',token,multipart:form});assert.equal(uploaded.res.status,201);imageId=uploaded.data.image.id;assert.match(uploaded.data.image.url,/^\/api\/images\//);
-    const stored=await pool.query(`SELECT object_key FROM ${qschema}.images WHERE id=$1`,[imageId]);assert.ok(stored.rows[0].object_key.startsWith(`${process.env.DB_SCHEMA}/`));
+    const stored=await pool.query(`SELECT object_key,thumb_object_key,display_object_key FROM ${qschema}.images WHERE id=$1`,[imageId]);assert.ok(stored.rows[0].object_key.startsWith(`${process.env.DB_SCHEMA}/`));assert.ok(stored.rows[0].thumb_object_key?.startsWith(`${process.env.DB_SCHEMA}/`));assert.ok(stored.rows[0].display_object_key?.startsWith(`${process.env.DB_SCHEMA}/`));
     const moments=await request('/api/moments',{token});assert.deepEqual(moments.data.moments[0].images,[`/api/images/${imageId}`]);
     const updatedMoment=await request(`/api/moments/${momentId}`,{method:'PUT',token,body:{description:'updated through API'}});assert.equal(updatedMoment.res.status,200);assert.equal(updatedMoment.data.moment.description,'updated through API');assert.deepEqual(updatedMoment.data.moment.images,[`/api/images/${imageId}`]);
-    const fetched=await request(`/api/images/${imageId}`,{token});assert.equal(fetched.res.status,200);assert.equal(fetched.res.headers.get('content-type'),'image/png');assert.equal(fetched.res.headers.get('cache-control'),'private, max-age=300, must-revalidate');assert.ok(fetched.data.byteLength>0);
+    const fetched=await request(`/api/images/${imageId}`,{token});assert.equal(fetched.res.status,200);assert.equal(fetched.res.headers.get('content-type'),'image/png');assert.equal(fetched.res.headers.get('cache-control'),'private, max-age=300, must-revalidate');assert.ok(fetched.data.byteLength>0);const thumb=await request(`/api/images/${imageId}?variant=thumb`,{token});assert.equal(thumb.res.status,200);assert.equal(thumb.res.headers.get('content-type'),'image/webp');assert.ok(thumb.data.byteLength>0);const display=await request(`/api/images/${imageId}?variant=display`,{token});assert.equal(display.res.status,200);assert.equal(display.res.headers.get('content-type'),'image/webp');assert.equal((await request(`/api/images/${imageId}?variant=bad`,{token})).res.status,400);
     assert.equal((await request(`/api/images/${imageId}`,{token:token2})).res.status,200);
     assert.equal((await request(`/api/tracks/${trackId}/collaborators/${userId2}`,{method:'DELETE',token})).res.status,200);
     assert.equal((await request(`/api/images/${imageId}`,{token:token2})).res.status,404);
@@ -125,11 +125,11 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     if (trackId && token) await request(`/api/tracks/${trackId}`,{method:'DELETE',token}).catch(()=>{});
     if(token) await request('/api/auth/logout',{method:'POST',token}).catch(()=>{});
     if(token2) await request('/api/auth/logout',{method:'POST',token:token2}).catch(()=>{});
-    for (const user of lookupUsers) await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`,[user.id]).catch(()=>{});
-    if(userId) await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`,[userId]).catch(()=>{});
-    if(userId2) await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`,[userId2]).catch(()=>{});
-    if(inviteHash1) await pool.query(`DELETE FROM ${qschema}.invites WHERE code_hash=$1`,[inviteHash1]).catch(()=>{});
-    if(inviteHash2) await pool.query(`DELETE FROM ${qschema}.invites WHERE code_hash=$1`,[inviteHash2]).catch(()=>{});
+    for (const user of lookupUsers) await pool.query('DELETE FROM "memento".users WHERE id=$1',[user.id]).catch(()=>{});
+    if(userId) await pool.query('DELETE FROM "memento".users WHERE id=$1',[userId]).catch(()=>{});
+    if(userId2) await pool.query('DELETE FROM "memento".users WHERE id=$1',[userId2]).catch(()=>{});
+    if(inviteHash1) await pool.query('DELETE FROM "memento".invites WHERE code_hash=$1',[inviteHash1]).catch(()=>{});
+    if(inviteHash2) await pool.query('DELETE FROM "memento".invites WHERE code_hash=$1',[inviteHash2]).catch(()=>{});
     await new Promise(resolve=>server.close(resolve));
   }
 });

@@ -18,6 +18,7 @@ import { TimelineEvent, EventTrack } from '../types';
 import { getEmotionMeta } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { formatDateDisplay, getRelativeTime } from '../lib/storage';
+import { imageUrl } from '../lib/imageUrl';
 
 interface EventDetailModalProps {
   event: TimelineEvent | null;
@@ -196,7 +197,7 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
             <div className="space-y-2">
               <div className="relative group rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-800 max-h-[420px] flex items-center justify-center border border-stone-200 dark:border-stone-700">
                 <img
-                  src={event.images[activeImageIndex] || event.images[0]}
+                  src={imageUrl(event.images[activeImageIndex] || event.images[0], 'display')}
                   decoding="async"
                   alt={event.title}
                   className="w-full h-full max-h-[420px] object-cover cursor-pointer hover:opacity-95 transition"
@@ -246,7 +247,7 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
                           : 'border-transparent opacity-60 hover:opacity-100'
                       }`}
                     >
-                      <img src={img} loading="lazy" decoding="async" alt="Thumbnail" className="w-full h-full object-cover" />
+                      <img src={imageUrl(img, 'thumb')} loading="lazy" decoding="async" alt="Thumbnail" className="w-full h-full object-cover" />
                     </button>
                   ))}
                 </div>
