@@ -12,7 +12,8 @@
     "start:api": "node server.mjs",
     "migrate": "node migrate.mjs",
     "invite:create": "node scripts/create-invite.mjs",
-    "test:api": "node --test tests/server.test.mjs"
+    "test:api": "node --test tests/server.test.mjs",
+    "images:backfill": "node scripts/backfill-image-variants.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1139.0",
@@ -28,6 +29,7 @@
     "pg": "^8.23.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
+    "sharp": "^0.35.5",
     "vite": "^6.2.3"
   },
   "devDependencies": {

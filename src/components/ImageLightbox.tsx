@@ -1,5 +1,6 @@
 import React from 'react';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { imageUrl } from '../lib/imageUrl';
 
 interface ImageLightboxProps {
   images: string[];
@@ -76,7 +77,7 @@ export const ImageLightbox: React.FC<ImageLightboxProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         <img
-          src={currentImage}
+          src={imageUrl(currentImage, 'original')}
           decoding="async"
           alt="Timeline attachment enlarged"
           className="max-h-[80vh] max-w-full rounded-xl object-contain shadow-2xl"

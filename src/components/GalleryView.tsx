@@ -4,6 +4,7 @@ import { getEmotionMeta } from '../data/emotions';
 import { formatDateDisplay } from '../lib/storage';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { Calendar, MapPin, Lightbulb, Star, ImageIcon } from 'lucide-react';
+import { imageUrl } from '../lib/imageUrl';
 
 interface GalleryViewProps {
   events: TimelineEvent[];
@@ -61,7 +62,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                 }}
               >
                 <img
-                  src={evt.images[0]}
+                  src={imageUrl(evt.images[0], 'thumb')}
                   loading="lazy"
                   decoding="async"
                   alt={evt.title}
