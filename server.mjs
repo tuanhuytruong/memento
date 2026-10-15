@@ -203,7 +203,7 @@ app.get('/api/tracks', auth, async (req,res,next) => { try {
   const {rows}=await pool.query(`
     SELECT document,'owner'::text AS role FROM ${qschema}.tracks WHERE owner_id=$1
     UNION ALL
-    SELECT t.document FROM ${qschema}.track_collaborators c JOIN ${qschema}.tracks t ON t.owner_id=c.owner_id AND t.id=c.track_id
+    SELECT t.document,c.role FROM ${qschema}.track_collaborators c JOIN ${qschema}.tracks t ON t.owner_id=c.owner_id AND t.id=c.track_id
     WHERE c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL AND c.expires_at > now()
 `, [req.user.id]);
   res.json({tracks:rows.map(x=>({ ...x.document, accessRole: x.role }))});
