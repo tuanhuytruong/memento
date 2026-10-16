@@ -306,8 +306,9 @@ async function logoutAndLogin(page){
    await page.getByRole('button',{name:'Save perspective',exact:true}).click();
    await page.getByText('Nhìn lại sau một năm',{exact:true}).waitFor();
    assert.equal(state.perspectives.length,1);
-   // Wait for the refetched list to render the saved item, then read it.
-   await page.locator('#event-detail-card').getByText(/^Looking back ·/).waitFor();
+   // Wait for the refetched LIST item specifically — the closing composer also
+   // shows a 'Looking back · …' label, which would make a loose wait pass early.
+   await page.locator('#event-detail-card ol li').first().waitFor();
    assert((await page.locator('#event-detail-card').innerText()).includes('Looking back ·'),'saved item labelled Looking back');
    assert.equal(state.perspectives[0].kind,'reflection','reflection saved as kind=reflection');
    assert.equal(state.perspectives[0].body,'Nhìn lại sau một năm');

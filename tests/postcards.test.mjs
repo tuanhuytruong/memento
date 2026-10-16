@@ -97,7 +97,39 @@ test('layout guides instead of clipping oversized note and captions', () => {
   assert.throws(() => layoutPostcard({
     template: 'ordinary', title: 'T', note: '', showDate: false,
     cells: [{ imageId: null, caption: 'chú thích '.repeat(30), date: null }], metrics,
-  }), /too long to fit under its photo/);
+  }), /too long for its photo/);
+});
+
+// Regression: a caption must stay inside its own cell and never reach the
+// note band. Found by visual inspection of a six-photo canary render.
+test('captions stay inside their cell and never collide with the note', () => {
+  for (const template of ['journey', 'ordinary', 'month']) {
+    const max = POSTCARD_TEMPLATES[template].max;
+    for (let count = POSTCARD_TEMPLATES[template].min; count <= max; count += 1) {
+      const spec = validatePostcardRequest({
+        template,
+        moments: Array.from({ length: count }, (_, i) => ({ ownerId: 'A', id: `m${i}` })),
+        images: Array.from({ length: count }, (_, i) => `img${i}`),
+        captions: Array.from({ length: count }, () => 'Chú thích đủ dài để xuống dòng thêm một chút'),
+        title: 'Tiêu đề',
+        note: 'Một dòng ghi chú ở đáy trang.',
+        showDate: true,
+      });
+      const layout = layoutPostcard({
+        ...spec,
+        cells: Array.from({ length: count }, () => ({ imageId: 'img', caption: 'Chú thích đủ dài để xuống dòng thêm một chút', date: '2026-01-01' })),
+        metrics,
+      });
+      for (const box of layout.cells) {
+        assert.ok(box.imageHeight > 0, `${template}/${count}: photo area must not vanish`);
+        assert.ok(box.bandTop + box.bandHeight <= box.y + box.h, `${template}/${count}: caption band must stay inside its cell`);
+      }
+      // The lowest caption glyph must clear the top of the note area.
+      const noteTop = Math.min(...layout.text.filter(item => item.size === 44).map(item => item.y - item.size));
+      const lowestCaption = Math.max(...layout.text.filter(item => item.size === 34).map(item => item.y));
+      assert.ok(lowestCaption < noteTop, `${template}/${count}: caption ${lowestCaption} overlaps note ${noteTop}`);
+    }
+  }
 });
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -133,8 +165,37 @@ test('render produces a real 1600x2000 PNG with no source metadata', { timeout: 
   assert.equal(meta.xmp, undefined);
 });
 
-test('text-only cells are valid and a panorama keeps its aspect', { timeout: 120000 }, async () => {
-  const wide = await sharp({ create: { width: 900, height: 200, channels: 3, background: '#3355ff' } }).png().toBuffer();
+// 'contain' is the product default: a photo must never be cropped or stretched.
+// Detection is by saturation, because every piece of chrome (paper, cell fill,
+// hairline border, captions) is desaturated and cannot be confused with a photo.
+async function placedPhotoBox(png, cell, expectedAspect) {
+  const { width } = await sharp(png).metadata();
+  const raw = await sharp(png).raw().toBuffer({ resolveWithObject: true });
+  const { channels } = raw.info;
+  const saturation = (x, y) => {
+    const offset = (y * width + x) * channels;
+    const r = raw.data[offset], g = raw.data[offset + 1], b = raw.data[offset + 2];
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    return max === 0 ? 0 : (max - min) / max;
+  };
+  let minX = Infinity, maxX = -1, minY = Infinity, maxY = -1;
+  for (let y = cell.y; y < cell.y + cell.h; y += 1) {
+    for (let x = cell.x; x < cell.x + cell.w; x += 1) {
+      if (saturation(x, y) < 0.2) continue;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+  }
+  assert.ok(maxX >= 0, 'photo content must be present');
+  const box = { w: maxX - minX + 1, h: maxY - minY + 1 };
+  assert.ok(Math.abs(box.w / box.h - expectedAspect) < 0.02,
+    `aspect ${box.w / box.h} vs source ${expectedAspect}: a photo must keep its aspect ratio`);
+  return box;
+}
+
+test('text-only cells render and a panorama is contained, never stretched', { timeout: 120000 }, async () => {
+  const panorama = await sharp({ create: { width: 1200, height: 400, channels: 3, background: '#065f46' } })
+    .composite([{ input: { create: { width: 60, height: 400, channels: 3, background: '#ff2d55' } }, top: 0, left: 0 }]).png().toBuffer();
   const spec = validatePostcardRequest({
     template: 'ordinary',
     moments: [{ ownerId: 'A', id: 'm1' }, { ownerId: 'A', id: 'm2' }],
@@ -143,14 +204,16 @@ test('text-only cells are valid and a panorama keeps its aspect', { timeout: 120
     note: '',
     showDate: false,
   });
-  const png = await renderPostcard({ spec, photos: [{ buffer: wide, contentType: 'image/png' }, null] });
+  const png = await renderPostcard({ spec, photos: [{ buffer: panorama, contentType: 'image/png' }, null] });
   const meta = await sharp(png).metadata();
   assert.equal(meta.width, POSTCARD_WIDTH);
-  const raw = await sharp(png).raw().toBuffer({ resolveWithObject: true });
-  const { width, channels } = raw.info;
-  const at = (x, y) => raw.data[(y * width + x) * channels];
-  // Inside the contained photo strip vs the untouched paper background.
-  assert.notEqual(at(800, 740), at(60, 60));
+  // 1200x400 = 3.0 source into the first cell; letterboxed top and bottom.
+  // ordinary with two cells: first cell is x=100,y=520,w=1400,h=440, no caption.
+  const box = await placedPhotoBox(png, { x: 100, y: 520, w: 1400, h: 440 }, 1200 / 400);
+  assert.ok(box.w <= 1400 && box.h <= 440, 'contained photo stays inside its cell');
+  // The second, deliberate text-only cell is framed rather than left as a gap.
+  const meta2 = await sharp(png).metadata();
+  assert.equal(meta2.height, POSTCARD_HEIGHT);
 });
 
 test('animated GIF is rejected explicitly, never silently dropped', { timeout: 120000 }, async () => {

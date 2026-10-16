@@ -28,6 +28,9 @@ const TITLE_SIZE = 84;
 const DATE_SIZE = 42;
 const NOTE_SIZE = 44;
 const CAPTION_SIZE = 34;
+const CAPTION_GAP = 8;
+// Inner padding of a photo cell: keeps captions off the cell edge.
+const CELL_PAD = 16;
 
 // Explicit geometry per template and cell count. Values are absolute pixels on
 // the fixed 1600×2000 canvas; every rectangle is enumerated, never computed
@@ -41,8 +44,8 @@ const GRIDS = {
     ],
     3: [
       { x: CONTENT_X, y: 520, w: CONTENT_W, h: 900 },
-      { x: CONTENT_X, y: 1440, w: (CONTENT_W - GAP) / 2, h: 280 },
-      { x: CONTENT_X + (CONTENT_W - GAP) / 2 + GAP, y: 1440, w: (CONTENT_W - GAP) / 2, h: 280 },
+      { x: CONTENT_X, y: 1440, w: (CONTENT_W - GAP) / 2, h: 240 },
+      { x: CONTENT_X + (CONTENT_W - GAP) / 2 + GAP, y: 1440, w: (CONTENT_W - GAP) / 2, h: 240 },
     ],
     4: [
       { x: CONTENT_X, y: 520, w: CONTENT_W, h: 430 },
@@ -74,8 +77,8 @@ const GRIDS = {
     ],
     3: [
       { x: CONTENT_X, y: 520, w: CONTENT_W, h: 900 },
-      { x: CONTENT_X, y: 1440, w: (CONTENT_W - GAP) / 2, h: 280 },
-      { x: CONTENT_X + (CONTENT_W - GAP) / 2 + GAP, y: 1440, w: (CONTENT_W - GAP) / 2, h: 280 },
+      { x: CONTENT_X, y: 1440, w: (CONTENT_W - GAP) / 2, h: 240 },
+      { x: CONTENT_X + (CONTENT_W - GAP) / 2 + GAP, y: 1440, w: (CONTENT_W - GAP) / 2, h: 240 },
     ],
   },
   month: {
@@ -86,8 +89,8 @@ const GRIDS = {
     ],
     3: [
       { x: CONTENT_X, y: 520, w: CONTENT_W, h: 900 },
-      { x: CONTENT_X, y: 1440, w: (CONTENT_W - GAP) / 2, h: 280 },
-      { x: CONTENT_X + (CONTENT_W - GAP) / 2 + GAP, y: 1440, w: (CONTENT_W - GAP) / 2, h: 280 },
+      { x: CONTENT_X, y: 1440, w: (CONTENT_W - GAP) / 2, h: 240 },
+      { x: CONTENT_X + (CONTENT_W - GAP) / 2 + GAP, y: 1440, w: (CONTENT_W - GAP) / 2, h: 240 },
     ],
     4: [
       { x: CONTENT_X, y: 520, w: (CONTENT_W - GAP) / 2, h: 430 },
@@ -342,17 +345,26 @@ export function layoutPostcard({ template, title, note, showDate, cells, metrics
   for (let index = 0; index < cells.length; index += 1) {
     const box = grid[index];
     const cell = cells[index];
-    const captionTop = box.y + box.h;
+    // The caption lives inside its own cell in a reserved band at the bottom,
+    // so a caption can never spill into another cell or into the note area.
+    let captionLines = [];
     if (cell.caption) {
-      const captionWrap = wrapText(cell.caption, { maxWidth: box.w, size: CAPTION_SIZE, metrics, maxLines: POSTCARD_LIMITS.captionLinesMax });
-      if (captionWrap.overflow) throw invalid(`Caption ${index + 1} is too long to fit under its photo. Shorten it to ${POSTCARD_LIMITS.captionLinesMax} lines.`);
-      let captionY = captionTop + 44;
-      for (const line of captionWrap.lines) {
-        text.push({ x: box.x, y: captionY, size: CAPTION_SIZE, weight: 400, text: line, maxWidth: box.w, color: '#44403c' });
-        captionY += CAPTION_SIZE + 10;
-      }
+      const captionWrap = wrapText(cell.caption, { maxWidth: box.w - CELL_PAD * 2, size: CAPTION_SIZE, metrics, maxLines: POSTCARD_LIMITS.captionLinesMax });
+      if (captionWrap.overflow) throw invalid(`Caption ${index + 1} is too long for its photo. Shorten it to ${POSTCARD_LIMITS.captionLinesMax} lines.`);
+      captionLines = captionWrap.lines;
     }
-    imageCells.push({ ...box, imageId: cell.imageId ?? null, date: cell.date ?? null });
+    const bandHeight = captionLines.length ? CELL_PAD + captionLines.length * (CAPTION_SIZE + CAPTION_GAP) : 0;
+    const imageHeight = Math.max(0, box.h - bandHeight);
+    let captionY = box.y + imageHeight + CELL_PAD + CAPTION_SIZE;
+    for (const line of captionLines) {
+      text.push({ x: box.x + CELL_PAD, y: captionY, size: CAPTION_SIZE, weight: 400, text: line, maxWidth: box.w - CELL_PAD * 2, color: '#44403c' });
+      captionY += CAPTION_SIZE + CAPTION_GAP;
+    }
+    imageCells.push({
+      x: box.x, y: box.y, w: box.w, h: box.h,
+      imageId: cell.imageId ?? null, date: cell.date ?? null,
+      imageHeight, bandTop: box.y + imageHeight, bandHeight,
+    });
   }
 
   const noteLines = [];

@@ -19,6 +19,10 @@ const MAX_QUEUED_RENDERS = 2;
 const MAX_SOURCE_PIXELS = 40_000_000;
 const MAX_SOURCE_BYTES = 24 * 1024 * 1024;
 const RENDER_TIMEOUT_MS = 30_000;
+// Must match the cell frame fill and radius drawn in the SVG background layer,
+// so a letterboxed photo blends into its cell instead of showing white bars.
+const CELL_RADIUS = 18;
+const CELL_FILL = [245, 245, 244];
 
 let active = 0;
 const queue = [];
@@ -103,10 +107,13 @@ async function decodeCell(buffer, width, height) {
     throw Object.assign(new Error('One of the chosen photos has too many pixels. Choose a smaller photo.'), { status: 422, postcard: true });
   }
   // 'contain' keeps the whole photo visible; nothing is cropped by default.
-  return sharp(buffer, options)
-    .resize(width, height, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 1 }, withoutEnlargement: false })
+  const fitted = await sharp(buffer, options)
+    .resize(width, height, { fit: 'contain', background: { r: CELL_FILL[0], g: CELL_FILL[1], b: CELL_FILL[2], alpha: 1 }, withoutEnlargement: false })
     .png({ compressionLevel: 9 })
     .toBuffer();
+  // Round the corners so the photo matches its cell frame instead of covering it.
+  const mask = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="${width}" height="${height}" rx="${CELL_RADIUS}" fill="#fff"/></svg>`);
+  return sharp(fitted).composite([{ input: mask, blend: 'dest-in' }]).png({ compressionLevel: 9 }).toBuffer();
 }
 
 /**
@@ -155,9 +162,17 @@ async function render(spec, photos) {
   }));
   const layout = layoutPostcard({ template: spec.template, title: spec.title, note: spec.note, showDate: spec.showDate, cells, metrics: ensureMetrics() });
 
+  // Each cell draws its own frame plus the caption band; a text-only cell gets
+  // the same frame so it reads as an intentional cell rather than a blank gap.
+  const cellShapes = layout.cells.map(box => [
+    `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="${CELL_RADIUS}" fill="rgb(${CELL_FILL.join(',')})" stroke="#e7e5e4" stroke-width="2"/>`,
+    box.bandHeight ? `<rect x="${box.x}" y="${box.bandTop}" width="${box.w}" height="${box.bandHeight}" rx="0" fill="#ffffff"/>` : '',
+  ].join(''));
+
   const svg = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${layout.width}" height="${layout.height}" viewBox="0 0 ${layout.width} ${layout.height}">`,
     `<rect width="${layout.width}" height="${layout.height}" fill="${layout.background}"/>`,
+    ...cellShapes,
     ...layout.text.map(svgText),
     '</svg>',
   ].join('');
@@ -167,7 +182,7 @@ async function render(spec, photos) {
     const box = layout.cells[index];
     const photo = photos[index];
     if (!photo) continue; // deliberate text-only cell
-    const decoded = await decodeCell(photo.buffer, Math.round(box.w), Math.round(box.h));
+    const decoded = await decodeCell(photo.buffer, Math.round(box.w), Math.round(box.imageHeight));
     overlays.push({ input: decoded, left: Math.round(box.x), top: Math.round(box.y) });
   }
 
