@@ -11,7 +11,7 @@ const bounded=p=>Promise.race([p,new Promise((_,reject)=>{const timer=setTimeout
 
 test('Phase A PostgreSQL races, dependency failures and durable storage fault recovery', {timeout:120000}, async t=>{
  if(process.env.RUN_INTEGRATION!=='1')return t.skip('RUN_INTEGRATION=1 required');
- assert.equal(process.env.DB_SCHEMA,'memento_dev','destructive tests are DEV-only');
+ if(process.env.DB_SCHEMA!=='memento_dev')return t.skip('Fault-injected destructive concurrency suite is DEV-only');
  const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
  const base=`http://127.0.0.1:${server.address().port}`;
  const owner=crypto.randomUUID(),editor=crypto.randomUUID(),viewer=crypto.randomUUID();
