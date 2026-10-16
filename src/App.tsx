@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
 import { exportTimelineData } from './lib/storage';
 import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation } from './lib/api';
@@ -6,16 +6,17 @@ import { CollaborationModal, SharedInvitations } from './components/Collaboratio
 import { AuthScreen } from './components/AuthScreen';
 import { TimelineHeader } from './components/TimelineHeader';
 import { EventTrackNav } from './components/EventTrackNav';
-import { EventTrackModal } from './components/EventTrackModal';
+const EventTrackModal = lazy(() => import('./components/EventTrackModal').then(module => ({ default: module.EventTrackModal })));
 import { FilterBar } from './components/FilterBar';
 import { TimelineView } from './components/TimelineView';
 import { CompactListView } from './components/CompactListView';
 import { GalleryView } from './components/GalleryView';
-import { EventModal } from './components/EventModal';
-import { EventDetailModal } from './components/EventDetailModal';
-import { ImageLightbox } from './components/ImageLightbox';
-import { BlindboxMemory } from './components/BlindboxMemory';
+const EventModal = lazy(() => import('./components/EventModal').then(module => ({ default: module.EventModal })));
+const EventDetailModal = lazy(() => import('./components/EventDetailModal').then(module => ({ default: module.EventDetailModal })));
+const ImageLightbox = lazy(() => import('./components/ImageLightbox').then(module => ({ default: module.ImageLightbox })));
+const BlindboxMemory = lazy(() => import('./components/BlindboxMemory').then(module => ({ default: module.BlindboxMemory })));
 import { Dices } from 'lucide-react';
+import { DeferredUiBoundary } from './components/DeferredUiBoundary';
 
 export default function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -626,6 +627,7 @@ export default function App() {
         </main>
       </div>
 
+      <DeferredUiBoundary key={`${user.id}:${authGenerationRef.current}`}><Suspense fallback={<div role="status" className="fixed bottom-4 left-4 z-[100] rounded-lg bg-white p-3 text-sm shadow-lg dark:bg-stone-900">Opening…</div>}>
       {/* Create / Edit Event Track Modal */}
       {isEventTrackModalOpen && <EventTrackModal key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isEventTrackModalOpen}
@@ -687,15 +689,16 @@ export default function App() {
         onAccept={acceptInvitation}
       />}
       <button type="button" onClick={() => setIsBlindboxOpen(true)} title="Open a random memory" aria-label="Open a random memory" className="fixed bottom-[max(1.5rem,env(safe-area-inset-bottom))] right-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full bg-amber-600 text-white shadow-lg transition hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-300 sm:right-6"><Dices className="h-5 w-5" /></button>
-      <BlindboxMemory open={isBlindboxOpen} events={events} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />
+      {isBlindboxOpen && <BlindboxMemory open={isBlindboxOpen} events={events} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}
       {/* Image Lightbox viewer */}
-      <ImageLightbox
+      {lightboxState.isOpen && <ImageLightbox
         images={lightboxState.images}
         currentIndex={lightboxState.index}
         isOpen={lightboxState.isOpen}
         onClose={() => setLightboxState((prev) => ({ ...prev, isOpen: false }))}
         onNavigate={(newIndex) => setLightboxState((prev) => ({ ...prev, index: newIndex }))}
-      />
+      />}
+      </Suspense></DeferredUiBoundary>
     </div>
   );
 }
