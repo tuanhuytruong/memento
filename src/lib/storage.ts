@@ -1,5 +1,5 @@
 import { INITIAL_EVENT_TRACKS, INITIAL_EVENTS } from '../data/initialEvents';
-import { EventTrack, TimelineEvent } from '../types';
+import { EventTrack, TimelineEvent, type MomentPerspective } from '../types';
 
 const TRACKS_STORAGE_KEY = 'timeline_event_tracks_v1';
 const EVENTS_STORAGE_KEY = 'timeline_moments_v1';
@@ -100,19 +100,22 @@ export interface TimelineBackupPayload {
   eventTracks: EventTrack[];
   events: TimelineEvent[];
   customTags?: string[];
+  perspectives?: MomentPerspective[];
 }
 
 export const exportTimelineData = (
   tracks: EventTrack[],
   events: TimelineEvent[],
-  tags: string[]
+  tags: string[],
+  perspectives: MomentPerspective[] = [],
 ) => {
   const payload: TimelineBackupPayload = {
-    version: '2.0',
+    version: '3.0',
     exportedAt: new Date().toISOString(),
     eventTracks: tracks,
     events: events,
     customTags: tags,
+    perspectives,
   };
 
   const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));

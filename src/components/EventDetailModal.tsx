@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
 import {
   X,
   Calendar,
@@ -15,6 +15,7 @@ import {
   Maximize2,
 } from 'lucide-react';
 import { TimelineEvent, EventTrack } from '../types';
+import { MomentPerspectives } from './MomentPerspectives';
 import { getEmotionMeta } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { formatDateDisplay, getRelativeTime } from '../lib/storage';
@@ -25,17 +26,22 @@ import { PrivateImage } from './PrivateImage';
 interface EventDetailModalProps {
   event: TimelineEvent | null;
   tracks: EventTrack[];
-  onSelectTrack?: (trackId: string) => void;
+  onSelectTrack?: (track: EventTrack) => void;
   isOpen: boolean;
   onClose: () => void;
   onEdit: (event: TimelineEvent) => void;
-  onDelete: (id: string) => Promise<void>;
+  onDelete: (event: TimelineEvent) => Promise<void>;
   onTagClick?: (tag: string) => void;
   onOpenImageLightbox: (images: string[], index: number) => void;
   onToggleReaction: (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉') => Promise<void>;
+  onCreatePerspective: (event: TimelineEvent, kind: 'perspective' | 'reflection', body: string, clientRequestId: string) => Promise<void>;
+  onUpdatePerspective: (id: string, body: string, expectedVersion: number) => Promise<void>;
+  onDeletePerspective: (id: string) => Promise<void>;
+  sessionGeneration: number;
+  currentUserId: string;
 }
 
-export const EventDetailModal: React.FC<EventDetailModalProps> = (props) => props.isOpen && props.event ? <DetailBody key={props.event.id} {...props} /> : null;
+export const EventDetailModal: React.FC<EventDetailModalProps> = (props) => props.isOpen && props.event ? <DetailBody key={`${props.event.resourceOwnerId || ''}:${props.event.id}`} {...props} /> : null;
 const DetailBody: React.FC<EventDetailModalProps> = ({
   event,
   tracks,
@@ -47,17 +53,27 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
   onTagClick,
   onOpenImageLightbox,
   onToggleReaction,
+  onCreatePerspective, onUpdatePerspective, onDeletePerspective, sessionGeneration, currentUserId,
 }) => {
   const [imageIndex, setActiveImageIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [showActors, setShowActors] = useState(false);
+  const draftDirty = useRef(false);
+  const perspectivePending = useRef(false);
   const pending = useRef(false);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const activeImageIndex = Math.max(0, Math.min(imageIndex, (event?.images.length || 1) - 1));
   const onDecoded = usePhotoPrefetch(event?.images || [], activeImageIndex, isOpen);
-  const modal = useModalLifecycle(isOpen, onClose);
+  const onDraftStateChange = useCallback((dirty: boolean, pending: boolean) => { draftDirty.current = dirty; perspectivePending.current = pending; }, []);
+  const confirmDraftDiscard = useCallback(() => { if (perspectivePending.current) return false; return !draftDirty.current || window.confirm('Discard your unsaved perspective?'); }, []);
+  const requestClose = useCallback(() => {
+    if (!confirmDraftDiscard()) return false;
+    onClose();
+    return true;
+  }, [confirmDraftDiscard, onClose]);
+  const modal = useModalLifecycle(isOpen, requestClose);
   const mutate = async (operation: () => Promise<void>) => {
     if (pending.current) return;
     pending.current = true; setBusy(true); setError('');
@@ -69,8 +85,8 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
   const emotionMeta = getEmotionMeta(event.emotion);
   const relativeTime = getRelativeTime(event.date);
 
-  const eventTrack = event.eventId ? tracks.find((t) => t.id === event.eventId) : undefined;
-  const canEdit = eventTrack?.accessRole !== 'viewer';
+  const eventTrack = event.eventId ? tracks.find((t) => t.id === event.eventId && t.resourceOwnerId === event.resourceOwnerId) : undefined;
+  const canEdit = eventTrack ? (eventTrack.accessRole === 'owner' || eventTrack.accessRole === 'editor') : event.resourceOwnerId === currentUserId;
   const trackTheme = eventTrack ? getEventTheme(eventTrack.color) : null;
   const TrackIcon = eventTrack ? getEventIconComponent(eventTrack.icon) : null;
 
@@ -89,7 +105,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
       ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Memory details"
       id="event-detail-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm p-3 sm:p-5 overflow-y-auto"
-      onClick={onClose}
+      onClick={requestClose}
     >
       <div
         id="event-detail-card"
@@ -103,8 +119,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  onClose();
-                  if (onSelectTrack) onSelectTrack(eventTrack.id);
+                  if (requestClose() && onSelectTrack) onSelectTrack(eventTrack);
                 }}
                 className={`max-w-full min-w-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border transition ${trackTheme.badgeClass} hover:opacity-80`}
                 title={`Filter to ${eventTrack.title} timeline`}
@@ -128,8 +143,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
             {canEdit && <>
               <button
                 onClick={() => {
-                  onClose();
-                  onEdit(event);
+                  if (requestClose()) onEdit(event);
                 }}
                 className="min-h-11 min-w-11 p-2 text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition"
                 title="Edit event"
@@ -137,8 +151,8 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
                 <Edit className="w-4 h-4" />
               </button>
               <button
-                disabled={busy}
-                onClick={() => { if (window.confirm('Delete this timeline event?')) void mutate(async () => { await onDelete(event.id); if (alive.current) onClose(); }); }}
+                disabled={busy || perspectivePending.current}
+                onClick={() => { if (!perspectivePending.current && window.confirm(draftDirty.current ? 'Delete this timeline event and discard your unsaved perspective?' : 'Delete this timeline event?')) void mutate(async () => { await onDelete(event); if (alive.current) onClose(); }); }}
                 className="min-h-11 min-w-11 p-2 text-stone-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
                 title="Delete event"
               >
@@ -146,7 +160,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
               </button>
             </>}
             <button
-              onClick={onClose}
+              onClick={requestClose}
               aria-label="Close memory details"
               className="min-h-11 min-w-11 p-2 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition ml-1"
             >
@@ -306,6 +320,15 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
             </div>
           )}
 
+          <MomentPerspectives
+            event={event}
+            currentUserId={currentUserId}
+            onCreate={(kind, body, requestId) => onCreatePerspective(event, kind, body, requestId)}
+            onUpdate={onUpdatePerspective}
+            onDelete={onDeletePerspective}
+            onDraftStateChange={onDraftStateChange}
+          />
+
           {/* Tag Categorization Badges */}
           <div className="pt-4 border-t border-stone-100 dark:border-stone-800 flex flex-wrap items-center gap-1.5">
             <span className="text-xs text-stone-400 mr-1 flex items-center gap-1">
@@ -316,8 +339,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
                 key={tag}
                 onClick={() => {
                   if (onTagClick) {
-                    onClose();
-                    onTagClick(tag);
+                    if (requestClose()) onTagClick(tag);
                   }
                 }}
                 className="max-w-full break-all px-3 py-1 rounded-lg text-xs font-medium bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-amber-100 dark:hover:bg-amber-950/60 hover:text-amber-900 transition"

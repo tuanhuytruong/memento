@@ -7,6 +7,7 @@ dotenv.config({ path: process.env.ENV_FILE || '.env.local' });
 
 const { app, validateDocument } = await import('../server.mjs');
 const { pool, createInvite, hashInvite, qschema } = await import('../memento-db.mjs');
+const { transaction } = await import('../mutation-safety.mjs');
 
 test('document validation preserves event fields and rejects invalid dates', () => {
   const track = validateDocument({ title: 'Roadmap', description: '', color: 'indigo', icon: 'Cpu', tags: [] }, 'track');
@@ -18,18 +19,34 @@ test('document validation preserves event fields and rejects invalid dates', () 
   assert.equal(validateDocument({ eventId: 'x', date: '2026-02-30T09:30:00Z', images: [], tags: [] }, 'moment'), null);
 });
 
+test('perspective validation trims text and enforces bounds and kind', async () => {
+  const { validatePerspective } = await import('../server.mjs');
+  assert.deepEqual(validatePerspective({kind:'reflection',body:'  nhớ nhà  '}),{kind:'reflection',body:'nhớ nhà'});
+  assert.equal(validatePerspective({kind:'unknown',body:'text'}),null);
+  assert.equal(validatePerspective({kind:'perspective',body:'  '}),null);
+  assert.equal(validatePerspective({kind:'perspective',body:'x'.repeat(2001)}),null);
+  assert.deepEqual(validatePerspective({body:' words ',expectedVersion:1},false),{kind:undefined,body:'words'});
+});
+
 test('authenticated API integration with owner isolation and R2 prefix', { timeout: 120000 }, async t => {
   if (process.env.RUN_INTEGRATION !== '1') return t.skip('Set RUN_INTEGRATION=1 for DB/R2-backed API integration');
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   const origin = base;
-  async function request(path, { method='GET', token, body, headers={}, multipart }={}) {
+  async function request(path, { method='GET', token, body, headers={}, multipart, ownerId= userId }={}) {
+    if (method === 'GET' && /^\/api\/moments\/[^/]+\/reactions$/.test(path)) path += `?ownerId=${userId}`;
     const h = { ...headers };
     if (['POST','PUT','DELETE'].includes(method)) h.Origin = origin;
     if (token) h.Cookie = `memento_session=${token}`;
     if (multipart) body = multipart;
-    else if (body !== undefined) { h['Content-Type']='application/json'; body=JSON.stringify(body); }
+    else if (body !== undefined || (method === 'DELETE' && /^\/api\/moments\/[^/]+$/.test(path))) {
+      if (/^\/api\/moments\/[^/]+$/.test(path) && ['PUT','DELETE'].includes(method)) body = { ...(body || {}), ownerId };
+      if (path === '/api/moments' && method === 'POST') body = { ...(body || {}), eventOwnerId: body?.eventOwnerId ?? ownerId };
+      if (/^\/api\/moments\/[^/]+$/.test(path) && method === 'PUT') body = { ...(body || {}), eventOwnerId: body?.eventOwnerId ?? ownerId };
+      if (/^\/api\/moments\/[^/]+\/reactions$/.test(path)) body = { ...body, ownerId };
+      h['Content-Type']='application/json'; body=JSON.stringify(body);
+    }
     const res=await fetch(base+path,{method,headers:h,body});
     const type=res.headers.get('content-type')||'';
     const data=type.includes('application/json')?await res.json():await res.arrayBuffer();
@@ -59,8 +76,8 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     assert.equal(track.res.status,201); trackId=track.data.track.id;
     assert.equal((await request('/api/tracks',{token})).data.tracks.length,1);
     const updatedTrack=await request('/api/tracks/'+trackId,{method:'PUT',token,body:{description:'changed'}});assert.equal(updatedTrack.res.status,200);assert.equal(updatedTrack.data.track.description,'changed');
-    const moment=await request('/api/moments',{method:'POST',token,body:{eventId:trackId,title:'API moment',date:'2026-09-24',time:'10:30',description:'',tags:[],images:[]}});
-    assert.equal(moment.res.status,201);momentId=moment.data.moment.id;
+    const moment=await request('/api/moments',{method:'POST',token,body:{eventId:trackId,eventOwnerId:userId,title:'API moment',date:'2026-09-24',time:'10:30',description:'',tags:[],images:[]}});
+    assert.equal(moment.res.status,201);momentId=moment.data.moment.id;assert.equal(moment.data.moment.resourceOwnerId,userId);
     const secondInvite=await createInvite(1); inviteHash2=hashInvite(secondInvite);
     const registered2=await request('/api/auth/register',{method:'POST',body:{username:secondUsername,password:'a-very-long-test-password-2',inviteCode:secondInvite}});assert.equal(registered2.res.status,200);userId2=registered2.data.user.id;
     token2=registered2.res.headers.get('set-cookie').match(/memento_session=([^;]+)/)[1];
@@ -88,7 +105,18 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     const pending=await request('/api/collaboration-invitations',{token:token2});assert.equal(pending.data.invitations.length,1);const collaborationId=pending.data.invitations[0].id;
     assert.equal((await request(`/api/collaboration-invitations/${collaborationId}/accept`,{method:'POST',token:token2})).res.status,200);
     const sharedTracks=(await request('/api/tracks',{token:token2})).data.tracks;assert.equal(sharedTracks.length,1);assert.equal(sharedTracks[0].id,trackId);
-    const viewerMoments=await request('/api/moments',{token:token2});assert.equal(viewerMoments.data.moments.length,1);assert.deepEqual(viewerMoments.data.moments[0].reactions,[]);
+    const viewerMoments=await request('/api/moments',{token:token2});assert.equal(viewerMoments.data.moments.length,1);assert.deepEqual(viewerMoments.data.moments[0].reactions,[]);assert.equal(viewerMoments.data.moments[0].resourceOwnerId,userId);
+     const ownerRequestId=crypto.randomUUID();
+     const ownerPerspective=await request(`/api/moments/${momentId}/perspectives`,{method:'POST',token,body:{ownerId:userId,kind:'perspective',body:'Original owner perspective',clientRequestId:ownerRequestId}});assert.equal(ownerPerspective.res.status,201);const ownerPerspectiveId=ownerPerspective.data.perspective.id;
+     const ownerPerspectiveReplay=await request(`/api/moments/${momentId}/perspectives`,{method:'POST',token,body:{ownerId:userId,kind:'perspective',body:'Original owner perspective',clientRequestId:ownerRequestId}});assert.equal(ownerPerspectiveReplay.res.status,201);assert.equal(ownerPerspectiveReplay.data.perspective.id,ownerPerspectiveId);
+     assert.equal((await request(`/api/moments/${momentId}/perspectives?ownerId=${userId}`,{token})).data.perspectives.length,1);
+      // An unauthorized GET must complete without joining the owner's exclusive mutation lock.
+      let releaseOwnerLock;const ownerLockGate=new Promise(resolve=>{releaseOwnerLock=resolve;});let signalOwnerLock;const ownerLockStarted=new Promise(resolve=>{signalOwnerLock=resolve;});
+      const ownerLock=transaction(pool,async()=>{signalOwnerLock();await ownerLockGate;},userId2,process.env.DB_SCHEMA);await ownerLockStarted;
+      let lockWaitTimeout; try { const lockWait= new Promise((_,reject)=>{lockWaitTimeout=setTimeout(()=>reject(new Error('unauthorized GET waited on owner mutation lock')),1500);}); const denied=await Promise.race([request(`/api/moments/${momentId}/perspectives?ownerId=${userId2}`,{token}),lockWait]);assert.equal(denied.res.status,404); } finally { clearTimeout(lockWaitTimeout); releaseOwnerLock(); await ownerLock; }
+     assert.equal((await request(`/api/moments/${momentId}/perspectives`,{method:'POST',token,body:{ownerId:userId,kind:'perspective',body:'Different payload',clientRequestId:ownerRequestId}})).res.status,409);
+     const viewerPerspectiveList=await request(`/api/moments/${momentId}/perspectives?ownerId=${userId}`,{token:token2});assert.equal(viewerPerspectiveList.res.status,200);assert.equal(viewerPerspectiveList.data.perspectives.length,1);assert.equal(viewerPerspectiveList.data.capabilities.canCreate,false);
+     assert.equal((await request(`/api/moments/${momentId}/perspectives`,{method:'POST',token:token2,body:{ownerId:userId,kind:'perspective',body:'Viewer must not write',clientRequestId:crypto.randomUUID()}})).res.status,403);
     const viewerHeart=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'❤️'}});assert.equal(viewerHeart.res.status,200);assert.deepEqual(viewerHeart.data.selectedEmojis,['❤️']);assert.equal(viewerHeart.data.reactions[0].count,1);assert.deepEqual(viewerHeart.data.reactions[0].usernames,[secondUsername]);
     const viewerParty=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'🎉'}});assert.equal(viewerParty.res.status,200);assert.deepEqual(viewerParty.data.selectedEmojis,['❤️','🎉']);
     const viewerPartyRemoved=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'🎉'}});assert.equal(viewerPartyRemoved.res.status,200);assert.deepEqual(viewerPartyRemoved.data.selectedEmojis,['❤️']);
@@ -96,24 +124,59 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     const ownerAdded=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token,body:{emoji:'✨'}});assert.deepEqual(ownerAdded.data.selectedEmojis,['✨']);assert.equal(ownerAdded.data.reactions.reduce((n,reaction)=>n+reaction.count,0),2);
     const ownerRemoved=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token,body:{emoji:'✨'}});assert.deepEqual(ownerRemoved.data.selectedEmojis,[]);assert.equal(ownerRemoved.data.reactions.reduce((n,reaction)=>n+reaction.count,0),1);
     const ownerMoments=await request('/api/moments',{token});assert.equal(ownerMoments.data.moments[0].reactions.reduce((n,reaction)=>n+reaction.count,0),1);
+     const perspectiveExport=await request('/api/perspectives/export',{token});assert.equal(perspectiveExport.res.status,200);assert.equal(perspectiveExport.data.perspectives.length,1);assert.equal(perspectiveExport.data.perspectives[0].body,'Original owner perspective');assert.equal(perspectiveExport.data.perspectives[0].momentOwnerId,userId);assert.equal(perspectiveExport.data.perspectives[0].momentId,momentId);assert.equal(perspectiveExport.data.perspectives[0].authorId,userId);assert.equal(perspectiveExport.data.perspectives[0].username,username);assert.equal(perspectiveExport.data.perspectives[0].momentOwnerId,userId);assert.equal(perspectiveExport.data.perspectives[0].momentId,momentId);assert.equal(perspectiveExport.data.perspectives[0].authorId,userId);assert.equal(perspectiveExport.data.perspectives[0].username,username);
+     assert.equal((await request('/api/perspectives/export',{token:token2})).data.perspectives.length,0);
     assert.equal((await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'nope'}})).res.status,400);
     assert.equal((await request(`/api/moments/${momentId}`,{method:'PUT',token:token2,body:{title:'nope'}})).res.status,403);
-    assert.equal((await request('/api/moments',{method:'POST',token:token2,body:{eventId:trackId,title:'nope',date:'2026-09-25',tags:[],images:[]}})).res.status,403);
+    assert.equal((await request('/api/moments',{method:'POST',token:token2,body:{eventId:trackId,eventOwnerId:userId,title:'nope',date:'2026-09-25',tags:[],images:[]}})).res.status,403);
     assert.equal((await request(`/api/tracks/${trackId}/collaborators`,{method:'POST',token:token2,body:{username,role:'editor'}})).res.status,404);
     // Owner revokes viewer access, then re-invites as editor. Editors are constrained to this one track.
     assert.equal((await request(`/api/tracks/${trackId}/collaborators/${userId2}`,{method:'DELETE',token})).res.status,200);
     assert.equal((await request(`/api/moments/${momentId}/reactions`,{token:token2})).res.status,404);
+     assert.equal((await request(`/api/moments/${momentId}/perspectives?ownerId=${userId}`,{token:token2})).res.status,404);
+     assert.equal((await request(`/api/perspectives/${ownerPerspectiveId}`,{method:'PUT',token:token2,body:{body:'Stale permission after revoke',expectedVersion:1}})).res.status,404);
     assert.equal((await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'❤️'}})).res.status,404);
     assert.equal((await request('/api/tracks',{token:token2})).data.tracks.length,0);
+    assert.equal((await request(`/api/moments/${momentId}/perspectives?ownerId=${userId}`,{token})).data.perspectives.length,1);
     const editorInvite=await request(`/api/tracks/${trackId}/collaborators`,{method:'POST',token,body:{username:secondUsername,role:'editor'}});assert.equal(editorInvite.res.status,201);
     const editorPending=await request('/api/collaboration-invitations',{token:token2});assert.equal(editorPending.data.invitations.length,1);
     assert.equal((await request(`/api/collaboration-invitations/${editorPending.data.invitations[0].id}/accept`,{method:'POST',token:token2})).res.status,200);
-    const editorMoment=await request('/api/moments',{method:'POST',token:token2,body:{eventId:trackId,title:'editor moment',date:'2026-09-25',tags:['shared-tag'],images:[]}});assert.equal(editorMoment.res.status,201);
+    const editorMoment=await request('/api/moments',{method:'POST',token:token2,body:{eventId:trackId,eventOwnerId:userId,title:'editor moment',date:'2026-09-25',tags:['shared-tag'],images:[]}});assert.equal(editorMoment.res.status,201);
+     const editorRequestId=crypto.randomUUID();const editorPerspective=await request(`/api/moments/${momentId}/perspectives`,{method:'POST',token:token2,body:{ownerId:userId,kind:'perspective',body:'Editor remembers another detail',clientRequestId:editorRequestId}});assert.equal(editorPerspective.res.status,201);const editorPerspectiveId=editorPerspective.data.perspective.id;
+      const editorExport=await request('/api/perspectives/export',{token:token2});assert.equal(editorExport.res.status,200);assert.deepEqual(editorExport.data.perspectives,[]);
+     const ownerExportAfterEditor=await request('/api/perspectives/export',{token});assert.deepEqual(ownerExportAfterEditor.data.perspectives.map(item=>item.body).sort(),['Editor remembers another detail','Original owner perspective'].sort());const exportedEditor=ownerExportAfterEditor.data.perspectives.find(item=>item.body==='Editor remembers another detail');assert.equal(exportedEditor.momentOwnerId,userId);assert.equal(exportedEditor.momentId,momentId);assert.equal(exportedEditor.authorId,userId2);assert.equal(exportedEditor.username,secondUsername);
+      const editorPerspectiveList=await request(`/api/moments/${momentId}/perspectives?ownerId=${userId}`,{token:token2});assert.equal(editorPerspectiveList.res.status,200);assert.deepEqual(editorPerspectiveList.data.perspectives.map(item=>item.body),['Original owner perspective','Editor remembers another detail']);
+     assert.equal((await request(`/api/perspectives/${ownerPerspectiveId}`,{method:'PUT',token:token2,body:{body:'Change the owner text',expectedVersion:1}})).res.status,403);
+     assert.equal((await request(`/api/perspectives/${ownerPerspectiveId}`,{method:'DELETE',token:token2})).res.status,403);
+     const editorEdit=await request(`/api/perspectives/${editorPerspectiveId}`,{method:'PUT',token:token2,body:{body:'Edited by its author',expectedVersion:1}});assert.equal(editorEdit.res.status,200);assert.equal(editorEdit.data.perspective.version,2);
+     assert.equal((await request(`/api/perspectives/${editorPerspectiveId}`,{method:'PUT',token:token2,body:{body:'Stale overwrite',expectedVersion:1}})).res.status,409);
+     // Cursor pages are stable and complete at the 20-item boundary.
+     for(let i=0;i<21;i++){
+       const pageItem=await request(`/api/moments/${momentId}/perspectives`,{method:'POST',token:token2,body:{ownerId:userId,kind:'perspective',body:`Page item ${String(i).padStart(2,'0')}`,clientRequestId:crypto.randomUUID()}});
+       assert.equal(pageItem.res.status,201);
+     }
+     const pageOne=await request(`/api/moments/${momentId}/perspectives?ownerId=${userId}`,{token:token2});assert.equal(pageOne.res.status,200);assert.equal(pageOne.data.perspectives.length,20);assert.ok(pageOne.data.nextCursor);
+     const pageTwo=await request(`/api/moments/${momentId}/perspectives?ownerId=${userId}&cursor=${encodeURIComponent(pageOne.data.nextCursor)}`,{token:token2});assert.equal(pageTwo.res.status,200);assert.equal(pageTwo.data.perspectives.length,3);assert.equal(pageTwo.data.nextCursor,null);
+     assert.equal(new Set([...pageOne.data.perspectives,...pageTwo.data.perspectives].map(item=>item.id)).size,23);
+     assert.equal((await request(`/api/moments/${momentId}/perspectives?ownerId=${userId}&cursor=bad`,{token:token2})).res.status,400);
+     assert.equal((await request(`/api/perspectives/${editorPerspectiveId}`,{method:'DELETE',token})).res.status,200);
     assert.equal((await request(`/api/moments/${editorMoment.data.moment.id}`,{method:'PUT',token:token2,body:{eventId:'other-track'}})).res.status,403);
     assert.equal((await request(`/api/tracks/${trackId}`,{method:'DELETE',token:token2})).res.status,404);
-    assert.equal((await request(`/api/moments/${editorMoment.data.moment.id}`,{method:'DELETE',token:token2})).res.status,200);
+    assert.equal((await request(`/api/moments/${editorMoment.data.moment.id}`,{method:'DELETE',token:token2,ownerId:userId})).res.status,200);
     const editorReaction=await request(`/api/moments/${momentId}/reactions`,{method:'POST',token:token2,body:{emoji:'😂'}});assert.equal(editorReaction.res.status,200);assert.deepEqual(editorReaction.data.selectedEmojis,['❤️','😂']);
-    const form=new FormData();form.set('momentId',momentId);form.set('file',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVQImWNgZGJmZGJmgFAAAK4AGRLRbNUAAAAASUVORK5CYII=','base64')],{type:'image/png'}),'test.png');
+     const collisionTrack=await request('/api/tracks',{method:'POST',token:token2,body:{id:trackId,title:'Collision track',description:'',color:'indigo',icon:'Cpu',tags:[]}});assert.equal(collisionTrack.res.status,201);const collisionTrackId=collisionTrack.data.track.id;
+     const collisionMoment=await request('/api/moments',{method:'POST',token:token2,body:{id:momentId,eventId:collisionTrackId,eventOwnerId:userId2,title:'Private duplicate id',date:'2026-09-24',tags:[],images:[]}});assert.equal(collisionMoment.res.status,201);assert.equal(collisionMoment.data.moment.id,momentId);
+     const collidingUploadForm=new FormData();collidingUploadForm.set('momentId',momentId);collidingUploadForm.set('ownerId',userId);collidingUploadForm.set('file',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVQImWNgZGJmZGJmgFAAAK4AGRLRbNUAAAAASUVORK5CYII=','base64')],{type:'image/png'}),'collision.png');
+     const collidingUpload=await request('/api/images',{method:'POST',token:token2,multipart:collidingUploadForm});assert.equal(collidingUpload.res.status,201);
+     const collidingImageOwner=await pool.query(`SELECT owner_id,moment_id FROM ${qschema}.images WHERE id=$1`,[collidingUpload.data.image.id]);assert.equal(collidingImageOwner.rows[0].owner_id,userId);assert.equal(collidingImageOwner.rows[0].moment_id,momentId);assert.equal((await request(`/api/images/${collidingUpload.data.image.id}`,{method:'DELETE',token:token2})).res.status,200);
+     const ownCollisionPerspective=await request(`/api/moments/${momentId}/perspectives`,{method:'POST',token:token2,body:{ownerId:userId2,kind:'perspective',body:'Belongs to second owner',clientRequestId:crypto.randomUUID()}});assert.equal(ownCollisionPerspective.res.status,201);
+     const exactCollision=await request(`/api/moments/${momentId}/perspectives?ownerId=${userId2}`,{token:token2});assert.equal(exactCollision.res.status,200);assert.deepEqual(exactCollision.data.perspectives.map(item=>item.body),['Belongs to second owner']);
+     assert.equal((await request(`/api/moments/${momentId}/perspectives?ownerId=${userId2}`,{token})).res.status,404);
+     const collisionExport=await request('/api/perspectives/export',{token:token2});assert.deepEqual(collisionExport.data.perspectives.map(item=>item.body),['Belongs to second owner']);assert.equal(collisionExport.data.perspectives[0].momentOwnerId,userId2);assert.equal(collisionExport.data.perspectives[0].momentId,momentId);assert.equal(collisionExport.data.perspectives[0].authorId,userId2);assert.equal(collisionExport.data.perspectives[0].username,secondUsername);
+      assert.equal((await request('/api/perspectives/export?limit=501',{token:token2})).res.status,400);
+      assert.equal((await request('/api/perspectives/export?cursor=bad',{token:token2})).res.status,400);
+
+    const form=new FormData();form.set('momentId',momentId);form.set('ownerId',userId);form.set('file',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVQImWNgZGJmZGJmgFAAAK4AGRLRbNUAAAAASUVORK5CYII=','base64')],{type:'image/png'}),'test.png');
     const uploaded=await request('/api/images',{method:'POST',token,multipart:form});assert.equal(uploaded.res.status,201);imageId=uploaded.data.image.id;assert.match(uploaded.data.image.url,/^\/api\/images\//);
     const stored=await pool.query(`SELECT object_key,thumb_object_key,display_object_key FROM ${qschema}.images WHERE id=$1`,[imageId]);assert.ok(stored.rows[0].object_key.startsWith(`${process.env.DB_SCHEMA}/`));assert.ok(stored.rows[0].thumb_object_key?.startsWith(`${process.env.DB_SCHEMA}/`));assert.ok(stored.rows[0].display_object_key?.startsWith(`${process.env.DB_SCHEMA}/`));
     const moments=await request('/api/moments',{token});assert.deepEqual(moments.data.moments[0].images,[`/api/images/${imageId}`]);

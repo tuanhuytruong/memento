@@ -4,6 +4,7 @@ import { Dices, ExternalLink, Sparkles, X } from 'lucide-react';
 import { getEmotionMeta } from '../data/emotions';
 import { type EventTrack, type TimelineEvent } from '../types';
 import { type BlindboxIntent, revealMemory, reflectionPrompt } from '../lib/blindboxMemory';
+import { momentIdentity } from '../lib/resourceIdentity';
 import { PrivateImage } from './PrivateImage';
 import { useModalLifecycle } from '../lib/useModalLifecycle';
 
@@ -18,7 +19,7 @@ function BlindboxBody({ open, events, tracks, onClose, onOpen }: Props) {
   const [query, setQuery] = useState('');
   const [snapshot, setResult] = useState<Reveal>(null);
   const latest = useRef(events); latest.current = events;
-  const resultEvent = snapshot && events.find((event) => event.id === snapshot.event.id);
+  const resultEvent = snapshot && events.find((event) => momentIdentity(event) === momentIdentity(snapshot.event));
   const result = snapshot && resultEvent ? { ...snapshot, event: resultEvent } : null;
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const modal = useModalLifecycle(open, onClose);
@@ -34,10 +35,10 @@ function BlindboxBody({ open, events, tracks, onClose, onOpen }: Props) {
     const selected = revealMemory(events, tracks, intent, query);
     if (!selected) return;
     setIsRevealing(true);
-    timer.current = setTimeout(() => { const event = latest.current.find((item) => item.id === selected.event.id); if (event) setResult({ ...selected, event }); setRevealKey((key) => key + 1); setIsRevealing(false); timer.current = null; }, reducedMotion ? 0 : 620);
+    timer.current = setTimeout(() => { const event = latest.current.find((item) => momentIdentity(item) === momentIdentity(selected.event)); if (event) setResult({ ...selected, event }); setRevealKey((key) => key + 1); setIsRevealing(false); timer.current = null; }, reducedMotion ? 0 : 620);
   };
 
-  const track = result && tracks.find((item) => item.id === result.event.eventId);
+  const track = result && tracks.find((item) => item.id === result.event.eventId && item.resourceOwnerId === result.event.resourceOwnerId);
   const emotion = result && getEmotionMeta(result.event.emotion);
   const panelInitial = reducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 14 };
   const panelAnimate = reducedMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 };

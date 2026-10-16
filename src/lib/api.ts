@@ -1,14 +1,16 @@
-import type { EventTrack, MemoryReaction, TimelineEvent } from '../types';
+import type { EventTrack, MemoryReaction, PerspectivesPage, TimelineEvent } from '../types';
 
 const API = '/api';
 
 export class ApiError extends Error {
   status: number;
+  details?: Record<string, unknown>;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, details?: Record<string, unknown>) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.details = details;
   }
 }
 
@@ -40,7 +42,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
         : typeof payload === 'string' && payload.trim()
           ? payload
           : `Request failed (${response.status})`;
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, record);
   }
   return payload as T;
 }
@@ -130,12 +132,36 @@ export const dataApi = {
     requireResource<EventTrack>(await request(`/tracks/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(track) }), ['track'], 'track'),
   deleteTrack: (id: string) => request(`/tracks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   moments: async () => unwrapList<TimelineEvent>(await request('/moments'), ['moments']),
-  setReaction: async (momentId: string, emoji: MemoryReaction['emoji'], active: boolean) => request<{ reactions: MemoryReaction[]; selectedEmojis: string[] }>(`/moments/${encodeURIComponent(momentId)}/reactions`, { method: 'PUT', body: JSON.stringify({ emoji, active }) }),
-  createMoment: async (moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>) =>
-    requireResource<TimelineEvent>(await request('/moments', { method: 'POST', body: JSON.stringify(moment) }), ['moment'], 'moment'),
-  updateMoment: async (id: string, moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, expectedVersion: number) =>
-    requireResource<TimelineEvent>(await request(`/moments/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ ...moment, expectedVersion }) }), ['moment'], 'moment'),
-  deleteMoment: (id: string) => request(`/moments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  perspectives: (momentId: string, ownerId: string, cursor?: string) => {
+    const params = new URLSearchParams({ ownerId, limit: '20' });
+    if (cursor) params.set('cursor', cursor);
+    return request<PerspectivesPage>(`/moments/${encodeURIComponent(momentId)}/perspectives?${params}`);
+  },
+  createPerspective: (momentId: string, ownerId: string, kind: 'perspective' | 'reflection', body: string, clientRequestId: string) =>
+    request<{ perspective: import('../types').MomentPerspective }>(`/moments/${encodeURIComponent(momentId)}/perspectives`, { method: 'POST', body: JSON.stringify({ ownerId, kind, body, clientRequestId }) }),
+  updatePerspective: (id: string, body: string, expectedVersion: number) =>
+    request<{ perspective: import('../types').MomentPerspective }>(`/perspectives/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ body, expectedVersion }) }),
+  deletePerspective: (id: string) => request(`/perspectives/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  exportPerspectives: async () => {
+    const all: import('../types').MomentPerspective[] = [];
+    let cursor: string | null = null;
+    do {
+      const params = new URLSearchParams({ limit: '500' });
+      if (cursor) params.set('cursor', cursor);
+      const page = await request<{ perspectives: import('../types').MomentPerspective[]; nextCursor: string | null }>(`/perspectives/export?${params}`);
+      if (!Array.isArray(page.perspectives) || (page.nextCursor !== null && typeof page.nextCursor !== 'string')) throw new Error('The server returned an invalid perspective backup page.');
+      all.push(...page.perspectives);
+      if (page.nextCursor === cursor && cursor !== null) throw new Error('Perspective backup pagination did not advance.');
+      cursor = page.nextCursor;
+    } while (cursor);
+    return all;
+  },
+  setReaction: async (momentId: string, ownerId: string, emoji: MemoryReaction['emoji'], active: boolean) => request<{ reactions: MemoryReaction[]; selectedEmojis: string[] }>(`/moments/${encodeURIComponent(momentId)}/reactions`, { method: 'PUT', body: JSON.stringify({ ownerId, emoji, active }) }),
+  createMoment: async (moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, eventOwnerId: string) =>
+    requireResource<TimelineEvent>(await request('/moments', { method: 'POST', body: JSON.stringify({ ...moment, eventOwnerId }) }), ['moment'], 'moment'),
+  updateMoment: async (id: string, ownerId: string, moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, expectedVersion: number, eventOwnerId: string) =>
+    requireResource<TimelineEvent>(await request(`/moments/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ ...moment, ownerId, expectedVersion, eventOwnerId }) }), ['moment'], 'moment'),
+  deleteMoment: (id: string, ownerId: string) => request(`/moments/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ ownerId }) }),
   tags: async () => {
     const result = unwrapList<unknown>(await request('/tags'), ['tags']);
     return result.map((item) => {
@@ -160,10 +186,11 @@ export const dataApi = {
   collaborationInvitations: async () => unwrapList<CollaborationInvitation>(await request('/collaboration-invitations'), ['invitations']),
   acceptCollaborationInvitation: (id: string) => request(`/collaboration-invitations/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
   usernameMatches: async (query: string) => unwrapList<string>(await request(`/users/search?q=${encodeURIComponent(query)}`), ['usernames']),
-  uploadImage: async (file: File, momentId: string, uploadId: string) => {
+  uploadImage: async (file: File, momentId: string, ownerId: string, uploadId: string) => {
     const form = new FormData();
     form.append('file', file);
     form.append('momentId', momentId);
+    form.append('ownerId', ownerId);
     try {
       return await request('/images', { method: 'POST', headers: { 'Idempotency-Key': uploadId }, body: form });
     } catch (error) {

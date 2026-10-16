@@ -16,15 +16,16 @@ import { getEmotionMeta } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { formatDateDisplay, getRelativeTime } from '../lib/storage';
 import { PrivateImage } from './PrivateImage';
+import { momentIdentity } from '../lib/resourceIdentity';
 
 interface EventCardProps {
   event: TimelineEvent;
   track?: EventTrack;
-  onSelectTrack?: (trackId: string) => void;
+  onSelectTrack?: (track: EventTrack) => void;
   isAlternate?: boolean;
   onViewDetails: (event: TimelineEvent) => void;
   onEdit: (event: TimelineEvent) => void;
-  onDelete: (id: string) => Promise<void>;
+  onDelete: (event: TimelineEvent) => Promise<void>;
   onTagClick: (tag: string) => void;
   onOpenImageLightbox: (images: string[], index: number) => void;
 }
@@ -80,7 +81,7 @@ export const EventCard: React.FC<EventCardProps> = ({
 
       {/* Main Event Card */}
       <div
-        id={`event-card-${event.id}`}
+        id={`event-card-${momentIdentity(event)}`}
         onClick={() => onViewDetails(event)}
         className={`min-w-0 flex-1 break-words rounded-2xl p-4 sm:p-5 transition-all duration-200 cursor-pointer bg-white dark:bg-stone-900 border ${
           event.isMilestone
@@ -111,7 +112,7 @@ export const EventCard: React.FC<EventCardProps> = ({
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (onSelectTrack) onSelectTrack(track.id);
+                  if (onSelectTrack) onSelectTrack(track);
                 }}
                 className={`max-w-full min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border transition ${trackTheme.badgeClass} hover:scale-102`}
                 title={`View ${track.title} timeline`}
@@ -123,7 +124,7 @@ export const EventCard: React.FC<EventCardProps> = ({
           </div>
 
           {/* Quick Actions: viewers have read-only access. */}
-          {track?.accessRole !== 'viewer' && <div
+          {(track?.accessRole === 'owner' || track?.accessRole === 'editor') && <div
             className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity"
             onClick={(e) => e.stopPropagation()}
           >
@@ -137,7 +138,7 @@ export const EventCard: React.FC<EventCardProps> = ({
             <button
               onClick={() => {
                 if (window.confirm('Delete this event?')) {
-                  onDelete(event.id);
+                  onDelete(event);
                 }
               }}
               className="min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"

@@ -3,15 +3,16 @@ import { TimelineEvent, EventTrack } from '../types';
 import { EventCard } from './EventCard';
 import { Calendar, Plus, Sparkles } from 'lucide-react';
 import { getEventTheme } from '../data/eventThemes';
+import { trackIdentity, momentIdentity } from '../lib/resourceIdentity';
 
 interface TimelineViewProps {
   events: TimelineEvent[];
   tracks: EventTrack[];
-  currentTrackId?: string;
-  onSelectTrack?: (trackId: string) => void;
+  currentTrackKey?: string;
+  onSelectTrack?: (track: EventTrack) => void;
   onViewDetails: (event: TimelineEvent) => void;
   onEdit: (event: TimelineEvent) => void;
-  onDelete: (id: string) => Promise<void>;
+  onDelete: (event: TimelineEvent) => Promise<void>;
   onTagClick: (tag: string) => void;
   onOpenImageLightbox: (images: string[], index: number) => void;
   onAddNewEvent: () => void;
@@ -22,7 +23,7 @@ interface TimelineViewProps {
 export const TimelineView: React.FC<TimelineViewProps> = ({
   events,
   tracks,
-  currentTrackId = 'all',
+  currentTrackKey = 'all',
   onSelectTrack,
   onViewDetails,
   onEdit,
@@ -33,8 +34,8 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   onResetFilters,
   isFiltered,
 }) => {
-  const trackMap = new Map(tracks.map((track) => [track.id, track]));
-  const currentTrack = tracks.find((t) => t.id === currentTrackId);
+  const trackMap = new Map(tracks.map((track) => [trackIdentity(track), track]));
+  const currentTrack = tracks.find((t) => trackIdentity(t) === currentTrackKey);
   const trackTheme = currentTrack ? getEventTheme(currentTrack.color) : null;
 
   if (events.length === 0) {
@@ -140,10 +141,10 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
               {/* Event Cards inside this month group */}
               <div className="space-y-6">
                 {groupItems.map((evt) => {
-                  const eventTrack = evt.eventId ? trackMap.get(evt.eventId) : undefined;
+                  const eventTrack = evt.eventId ? trackMap.get(`${evt.resourceOwnerId ?? 'legacy'}:${evt.eventId}`) : undefined;
                   return (
                     <EventCard
-                      key={evt.id}
+                      key={momentIdentity(evt)}
                       event={evt}
                       track={eventTrack}
                       onSelectTrack={onSelectTrack}

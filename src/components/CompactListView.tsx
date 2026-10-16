@@ -3,6 +3,7 @@ import { TimelineEvent, EventTrack } from '../types';
 import { getEmotionMeta } from '../data/emotions';
 import { formatDateDisplay } from '../lib/storage';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
+import { trackIdentity, momentIdentity } from '../lib/resourceIdentity';
 import {
   Calendar,
   MapPin,
@@ -16,10 +17,10 @@ import {
 interface CompactListViewProps {
   events: TimelineEvent[];
   tracks: EventTrack[];
-  onSelectTrack?: (trackId: string) => void;
+  onSelectTrack?: (track: EventTrack) => void;
   onViewDetails: (event: TimelineEvent) => void;
   onEdit: (event: TimelineEvent) => void;
-  onDelete: (id: string) => Promise<void>;
+  onDelete: (event: TimelineEvent) => Promise<void>;
   onTagClick: (tag: string) => void;
 }
 
@@ -41,7 +42,7 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
   }
 
   const trackMap = new Map<string, EventTrack>();
-  tracks.forEach((t) => trackMap.set(t.id, t));
+  tracks.forEach((t) => trackMap.set(trackIdentity(t), t));
 
   return (
     <div
@@ -64,13 +65,13 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
           <tbody className="divide-y divide-stone-100 dark:divide-stone-800/80">
             {events.map((evt) => {
               const emotionMeta = getEmotionMeta(evt.emotion);
-              const track = evt.eventId ? trackMap.get(evt.eventId) : undefined;
+              const track = evt.eventId ? trackMap.get(`${evt.resourceOwnerId ?? 'legacy'}:${evt.eventId}`) : undefined;
               const theme = track ? getEventTheme(track.color) : null;
               const TrackIcon = track ? getEventIconComponent(track.icon) : null;
 
               return (
                 <tr
-                  key={evt.id}
+                  key={momentIdentity(evt)}
                   onClick={() => onViewDetails(evt)}
                   className="hover:bg-amber-50/40 dark:hover:bg-amber-950/20 cursor-pointer transition-colors"
                 >
@@ -81,7 +82,7 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (onSelectTrack) onSelectTrack(track.id);
+                          if (onSelectTrack) onSelectTrack(track);
                         }}
                         className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition ${theme.badgeClass} hover:opacity-80`}
                         title={`Filter to ${track.title} timeline`}
@@ -177,12 +178,12 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
 
                   {/* Viewers have no edit/delete controls. */}
                   <td className="py-3 px-4 text-right align-top whitespace-nowrap">
-                    {trackMap.get(evt.eventId)?.accessRole !== 'viewer' && <div
+                    {['owner', 'editor'].includes(track?.accessRole || '') && <div
                       className="inline-flex items-center gap-1"
                       onClick={(e) => e.stopPropagation()}
                     >
                       <button onClick={() => onEdit(evt)} className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition" title="Edit event"><Edit2 className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => { if (window.confirm('Delete this event?')) onDelete(evt.id); }} className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition" title="Delete event"><Trash2 className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => { if (window.confirm('Delete this event?')) onDelete(evt); }} className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition" title="Delete event"><Trash2 className="w-3.5 h-3.5" /></button>
                     </div>}
                   </td>
                 </tr>

@@ -19,12 +19,13 @@ import {
   getEventIconComponent,
 } from '../data/eventThemes';
 import { formatDateDisplay } from '../lib/storage';
+import { trackIdentity } from '../lib/resourceIdentity';
 
 interface EventTrackNavProps {
   tracks: EventTrack[];
   events: TimelineEvent[];
-  selectedTrackId: string; // 'all' or specific track ID
-  onSelectTrack: (trackId: string) => void;
+  selectedTrackKey: string; // 'all' or composite owner+track identity
+  onSelectTrack: (track: EventTrack | null) => void;
   onAddNewTrack: () => void;
   onEditTrack: (track: EventTrack) => void;
   onAddNewMoment: () => void;
@@ -35,7 +36,7 @@ interface EventTrackNavProps {
 export const EventTrackNav: React.FC<EventTrackNavProps> = ({
   tracks,
   events,
-  selectedTrackId,
+  selectedTrackKey,
   onSelectTrack,
   onAddNewTrack,
   onEditTrack,
@@ -44,8 +45,8 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
   canEditSelectedTrack,
 }) => {
   const [trackGroup, setTrackGroup] = React.useState<'only' | 'withYou' | 'byYou'>('only');
-  const activeTrack = tracks.find((t) => t.id === selectedTrackId);
-  const isMergedView = selectedTrackId === 'all';
+  const activeTrack = tracks.find((t) => trackIdentity(t) === selectedTrackKey);
+  const isMergedView = selectedTrackKey === 'all';
   const groupedTracks = tracks.filter((track) => trackGroup === 'only'
     ? track.accessRole === 'owner' && !track.sharedByYou
     : trackGroup === 'byYou'
@@ -61,27 +62,25 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
   const trackStatsMap = React.useMemo(() => {
     const map: Record<string, { count: number; milestones: number; photos: number; minDate?: string; maxDate?: string }> = {};
     tracks.forEach((t) => {
-      map[t.id] = { count: 0, milestones: 0, photos: 0 };
+      map[trackIdentity(t)] = { count: 0, milestones: 0, photos: 0 };
     });
 
     events.forEach((e) => {
-      if (e.eventId && map[e.eventId]) {
-        map[e.eventId].count += 1;
-        if (e.isMilestone) map[e.eventId].milestones += 1;
-        map[e.eventId].photos += (e.images?.length || 0);
+      const track = tracks.find((item) => item.id === e.eventId && item.resourceOwnerId === e.resourceOwnerId);
+      const key = track && trackIdentity(track);
+      if (key && map[key]) {
+        map[key].count += 1;
+        if (e.isMilestone) map[key].milestones += 1;
+        map[key].photos += (e.images?.length || 0);
 
-        if (!map[e.eventId].minDate || e.date < map[e.eventId].minDate!) {
-          map[e.eventId].minDate = e.date;
-        }
-        if (!map[e.eventId].maxDate || e.date > map[e.eventId].maxDate!) {
-          map[e.eventId].maxDate = e.date;
-        }
+        if (!map[key].minDate || e.date < map[key].minDate!) map[key].minDate = e.date;
+        if (!map[key].maxDate || e.date > map[key].maxDate!) map[key].maxDate = e.date;
       }
     });
     return map;
   }, [tracks, events]);
 
-  const activeTrackStats = activeTrack ? trackStatsMap[activeTrack.id] : null;
+  const activeTrackStats = activeTrack ? trackStatsMap[trackIdentity(activeTrack)] : null;
 
   return (
     <div className="min-w-0 space-y-4 mb-6">
@@ -94,7 +93,7 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
         {/* "All Events (Merged Timeline)" Button */}
         <button
           id="tab-all-events-merged"
-          onClick={() => onSelectTrack('all')}
+          onClick={() => onSelectTrack(null)}
           className={`group flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all shrink-0 border whitespace-nowrap ${
             isMergedView
               ? 'bg-stone-900 text-white border-stone-900 dark:bg-stone-100 dark:text-stone-900 dark:border-stone-100 shadow-sm'
@@ -116,16 +115,16 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
 
         {/* Individual Event Track Tabs */}
         {groupedTracks.map((track) => {
-          const isSelected = selectedTrackId === track.id;
+          const isSelected = selectedTrackKey === trackIdentity(track);
           const IconComp = getEventIconComponent(track.icon);
           const theme = getEventTheme(track.color);
-          const stats = trackStatsMap[track.id] || { count: 0, milestones: 0, photos: 0 };
+          const stats = trackStatsMap[trackIdentity(track)] || { count: 0, milestones: 0, photos: 0 };
 
           return (
             <button
-              key={track.id}
-              id={`tab-event-track-${track.id}`}
-              onClick={() => onSelectTrack(track.id)}
+              key={trackIdentity(track)}
+              id={`tab-event-track-${track.resourceOwnerId}-${track.id}`}
+              onClick={() => onSelectTrack(track)}
               className={`group flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all shrink-0 border whitespace-nowrap ${
                 isSelected
                   ? `${theme.bgLight} ${theme.bgDark} ${theme.textLight} ${theme.textDark} ${theme.borderLight} ${theme.borderDark} ring-2 ring-amber-500/20 shadow-xs`

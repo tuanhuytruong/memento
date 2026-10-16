@@ -151,7 +151,7 @@ app.post('/api/auth/logout', auth, async (req, res, next) => {
 export function validateDocument(input, kind) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const d = { ...input };
-  delete d.ownerId; delete d.owner_id; delete d.objectKey; delete d.object_key;
+  delete d.ownerId; delete d.owner_id; delete d.resourceOwnerId; delete d.eventOwnerId; delete d.objectKey; delete d.object_key;
   if (kind === 'track') {
     if (typeof d.title !== 'string' || !d.title.trim() || d.title.length > 200 || typeof (d.description ?? '') !== 'string' || !Array.isArray(d.tags ?? []) || (d.tags ?? []).length > 100 || !(d.tags ?? []).every(t => typeof t === 'string' && t.trim().length > 0 && t.length <= 64)) return null;
     d.description ??= ''; d.tags ??= []; d.createdAt ??= new Date().toISOString(); d.updatedAt = new Date().toISOString();
@@ -170,8 +170,8 @@ export function validateDocument(input, kind) {
   }
   return d;
 }
-function safeMoment(doc, imageRows, reactions = [], version) {
-  return { ...doc, version, images: imageRows.map(x => `/api/images/${x.id}`), reactions };
+function safeMoment(doc, imageRows, reactions = [], version, resourceOwnerId) {
+  return { ...doc, resourceOwnerId, version, images: imageRows.map(x => `/api/images/${x.id}`), reactions };
 }
 const REACTION_EMOJIS = new Set(['❤️', '🥹', '😂', '✨', '🙌', '🎉']);
 async function reactionSummaries(userId, moments, client = pool) {
@@ -201,6 +201,19 @@ async function trackAccess(userId, trackId, client = pool) {
       AND c.revoked_at IS NULL`, [userId, trackId]);
   return rows[0] || null;
 }
+async function exactTrackAccess(userId, identity, client = pool) {
+  if (!identity || typeof identity.ownerId !== 'string' || typeof identity.id !== 'string') return null;
+  const { rows } = await client.query(`
+    SELECT t.owner_id,t.id,t.document,'owner'::text AS role
+    FROM ${qschema}.tracks t WHERE t.owner_id=$1 AND t.owner_id=$3 AND t.id=$2
+    UNION ALL
+    SELECT t.owner_id,t.id,t.document,c.role
+    FROM ${qschema}.tracks t
+    JOIN ${qschema}.track_collaborators c ON c.owner_id=t.owner_id AND c.track_id=t.id
+    WHERE t.owner_id=$3 AND t.id=$2 AND c.recipient_id=$1 AND c.accepted_at IS NOT NULL
+      AND c.revoked_at IS NULL`, [userId, identity.id, identity.ownerId]);
+  return rows[0] || null;
+}
 async function momentAccess(userId, momentId, client = pool) {
   const { rows } = await client.query(`
     SELECT m.owner_id,m.id,m.event_id,m.document,m.version,'owner'::text AS role
@@ -211,6 +224,42 @@ async function momentAccess(userId, momentId, client = pool) {
     JOIN ${qschema}.track_collaborators c ON c.owner_id=m.owner_id AND c.track_id=m.event_id
     WHERE m.id=$2 AND c.recipient_id=$1 AND c.accepted_at IS NOT NULL
       AND c.revoked_at IS NULL`, [userId, momentId]);
+  return rows[0] || null;
+}
+// New collaboration features use the composite owner+resource identity, never an ambiguous bare ID.
+async function exactMomentAccess(userId, identity, client = pool) {
+  if (!identity || typeof identity.ownerId !== 'string' || typeof identity.id !== 'string') return null;
+  const { rows } = await client.query(`
+    SELECT m.owner_id,m.id,m.event_id,m.document,m.version,'owner'::text AS role
+    FROM ${qschema}.moments m WHERE m.owner_id=$1 AND m.owner_id=$3 AND m.id=$2
+    UNION ALL
+    SELECT m.owner_id,m.id,m.event_id,m.document,m.version,c.role
+    FROM ${qschema}.moments m
+    JOIN ${qschema}.track_collaborators c ON c.owner_id=m.owner_id AND c.track_id=m.event_id
+    WHERE m.owner_id=$3 AND m.id=$2 AND c.recipient_id=$1 AND c.accepted_at IS NOT NULL
+      AND c.revoked_at IS NULL`, [userId, identity.id, identity.ownerId]);
+  return rows[0] || null;
+}
+function validUuid(value) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value); }
+export function validatePerspective(body, allowKind = true) {
+  const kind = body?.kind;
+  const text = body?.body;
+  if ((allowKind && !['perspective','reflection'].includes(kind)) || (!allowKind && kind != null) || typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  if (trimmed.length < 1 || trimmed.length > 2000) return null;
+  return { kind: allowKind ? kind : undefined, body: trimmed };
+}
+async function perspectiveAccess(userId, perspectiveId, client = pool) {
+  if (!validUuid(perspectiveId)) return null;
+  const { rows } = await client.query(`
+    SELECT p.id,p.moment_owner_id AS owner_id,p.moment_id,p.author_id,p.kind,p.body,p.version,
+      p.client_request_id,p.created_at,p.updated_at,m.event_id,
+      CASE WHEN m.owner_id=$1 THEN 'owner' ELSE c.role END AS role
+    FROM ${qschema}.moment_perspectives p
+    JOIN ${qschema}.moments m ON m.owner_id=p.moment_owner_id AND m.id=p.moment_id
+    LEFT JOIN ${qschema}.track_collaborators c ON c.owner_id=m.owner_id AND c.track_id=m.event_id
+      AND c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL
+    WHERE p.id=$2 AND (m.owner_id=$1 OR c.recipient_id=$1)`, [userId, perspectiveId]);
   return rows[0] || null;
 }
 async function imageAccess(userId, imageId, client = pool) {
@@ -230,19 +279,19 @@ const isEditor = access => access?.role === 'owner' || access?.role === 'editor'
 
 app.get('/api/tracks', auth, async (req,res,next) => { try {
   const {rows}=await pool.query(`
-    SELECT t.document,'owner'::text AS role, EXISTS(SELECT 1 FROM ${qschema}.track_collaborators c WHERE c.owner_id=t.owner_id AND c.track_id=t.id AND c.revoked_at IS NULL) AS shared_by_owner
+    SELECT t.owner_id,t.document,'owner'::text AS role, EXISTS(SELECT 1 FROM ${qschema}.track_collaborators c WHERE c.owner_id=t.owner_id AND c.track_id=t.id AND c.revoked_at IS NULL) AS shared_by_owner
     FROM ${qschema}.tracks t WHERE t.owner_id=$1
     UNION ALL
-    SELECT t.document,c.role,false AS shared_by_owner FROM ${qschema}.track_collaborators c JOIN ${qschema}.tracks t ON t.owner_id=c.owner_id AND t.id=c.track_id
+    SELECT t.owner_id,t.document,c.role,false AS shared_by_owner FROM ${qschema}.track_collaborators c JOIN ${qschema}.tracks t ON t.owner_id=c.owner_id AND t.id=c.track_id
     WHERE c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL
 `, [req.user.id]);
-  res.json({tracks:rows.map(x=>({ ...x.document, accessRole: x.role, sharedByYou: x.shared_by_owner }))});
+  res.json({tracks:rows.map(x=>({ ...x.document, resourceOwnerId:x.owner_id, accessRole: x.role, sharedByYou: x.shared_by_owner }))});
 } catch(e){next(e);} });
 app.post('/api/tracks', auth, async (req,res) => {
   const d=validateDocument(req.body,'track'); if(!d) throw new ApiError(400,'Invalid track');
   d.id=typeof d.id==='string'&&d.id.length<128?d.id:id();
   await ownerWrite(req,async c=>{ await c.query(`INSERT INTO ${qschema}.tracks(owner_id,id,document) VALUES($1,$2,$3)`,[req.user.id,d.id,d]); await persistTags(req.user.id,d.tags,c); });
-  res.status(201).json({track:{...d,accessRole:'owner'}});
+  res.status(201).json({track:{...d,resourceOwnerId:req.user.id,accessRole:'owner'}});
 });
 app.put('/api/tracks/:id', auth, async (req,res) => {
   const track=await ownerWrite(req,async c=>{
@@ -250,7 +299,7 @@ app.put('/api/tracks/:id', auth, async (req,res) => {
     if(!old.rowCount) throw new ApiError(404,'Track not found');
     const d=validateDocument({...old.rows[0].document,...req.body,id:req.params.id},'track'); if(!d) throw new ApiError(400,'Invalid track');
     await c.query(`UPDATE ${qschema}.tracks SET document=$3,updated_at=now() WHERE owner_id=$1 AND id=$2`,[req.user.id,req.params.id,d]);
-    await persistTags(req.user.id,d.tags,c); return d;
+    await persistTags(req.user.id,d.tags,c); return {...d,resourceOwnerId:req.user.id};
   }); res.json({track});
 });
 app.delete('/api/tracks/:id', auth, async (req,res) => {
@@ -300,15 +349,108 @@ app.get('/api/moments', auth, async (req,res,next) => { try {
   const owners=rows.map(row=>row.owner_id), ids=rows.map(row=>row.id);
   const [images,reactions]=await Promise.all([rows.length ? pool.query(`SELECT owner_id,moment_id,id FROM ${qschema}.images WHERE (owner_id,moment_id) IN (SELECT * FROM unnest($1::uuid[],$2::text[])) ORDER BY created_at`,[owners,ids]) : {rows:[]},reactionSummaries(req.user.id,rows)]);
   const imagesByMoment=new Map(); for(const image of images.rows){const key=`${image.owner_id}:${image.moment_id}`;const list=imagesByMoment.get(key)||[];list.push(image);imagesByMoment.set(key,list);}
-  res.json({moments:rows.map(row=>safeMoment(row.document,imagesByMoment.get(`${row.owner_id}:${row.id}`)||[],reactions.get(`${row.owner_id}:${row.id}`)||[],row.version))});
+  res.json({moments:rows.map(row=>safeMoment(row.document,imagesByMoment.get(`${row.owner_id}:${row.id}`)||[],reactions.get(`${row.owner_id}:${row.id}`)||[],row.version,row.owner_id))});
+} catch(e){next(e);} });
+app.get('/api/moments/:id/perspectives', auth, async (req,res,next) => { try {
+  const ownerId=req.query.ownerId, limitRaw=req.query.limit ?? '20';
+  const limit=Number(limitRaw);
+  if(!validUuid(ownerId)||!Number.isInteger(limit)||limit<1||limit>50) throw new ApiError(400,'Invalid perspective query');
+  let cursor;
+  if(req.query.cursor!=null){
+    try { cursor=JSON.parse(Buffer.from(String(req.query.cursor),'base64url').toString('utf8')); } catch { throw new ApiError(400,'Invalid cursor'); }
+    if(!cursor||typeof cursor.createdAt!=='string'||Number.isNaN(Date.parse(cursor.createdAt))||!validUuid(cursor.id)) throw new ApiError(400,'Invalid cursor');
+  }
+  // One MVCC read statement authorizes the exact resource and selects its page.
+  // It deliberately does not take the exclusive owner-write advisory lock: otherwise
+  // an unauthorized former collaborator could queue on an owner's mutation lock.
+  const args=[req.user.id,ownerId,req.params.id];
+  let pageWhere='';
+  if(cursor){args.push(cursor.createdAt,cursor.id);pageWhere='AND (p.created_at,p.id)>($4::timestamptz,$5::uuid)';}
+  args.push(limit+1);
+  const {rows}=await pool.query(`WITH accessible AS (
+      SELECT m.owner_id,m.id,m.event_id,m.document,m.version,'owner'::text AS role
+      FROM ${qschema}.moments m WHERE m.owner_id=$1 AND m.owner_id=$2 AND m.id=$3
+      UNION ALL
+      SELECT m.owner_id,m.id,m.event_id,m.document,m.version,c.role
+      FROM ${qschema}.moments m
+      JOIN ${qschema}.track_collaborators c ON c.owner_id=m.owner_id AND c.track_id=m.event_id
+      WHERE m.owner_id=$2 AND m.id=$3 AND c.recipient_id=$1 AND c.accepted_at IS NOT NULL AND c.revoked_at IS NULL
+    ), page AS (
+      SELECT p.id,p.moment_owner_id AS "momentOwnerId",p.moment_id AS "momentId",p.author_id AS "authorId",u.username,p.kind,p.body,p.version,p.created_at::text AS "createdAt",p.updated_at AS "updatedAt"
+      FROM ${qschema}.moment_perspectives p JOIN accessible a ON a.owner_id=p.moment_owner_id AND a.id=p.moment_id
+      JOIN ${qschema}.users u ON u.id=p.author_id
+      WHERE TRUE ${pageWhere}
+      ORDER BY p.created_at,p.id LIMIT $${args.length}
+    )
+    SELECT a.owner_id,a.id,a.role,
+      COALESCE((SELECT json_agg(page ORDER BY page."createdAt",page.id) FROM page),'[]'::json) AS items
+    FROM accessible a`,args);
+  if(!rows.length) throw new ApiError(404,'Moment not found');
+  const access=rows[0], allItems=access.items, hasMore=allItems.length>limit;
+  const items=allItems.slice(0,limit), last=items.at(-1);
+  const nextCursor=hasMore&&last?Buffer.from(JSON.stringify({createdAt:last.createdAt,id:last.id})).toString('base64url'):null;
+  res.json({perspectives:items,nextCursor,capabilities:{canRead:true,canCreate:isEditor({role:access.role}),canModerate:access.role==='owner',role:access.role}});
+} catch(e){next(e);} });
+app.post('/api/moments/:id/perspectives', auth, async (req,res,next) => { try {
+  const {ownerId,clientRequestId}=req.body||{}, value=validatePerspective(req.body);
+  if(!validUuid(ownerId)||!validUuid(clientRequestId)||!value) throw new ApiError(400,'Invalid perspective');
+  const saved=await mutate(req,exactMomentAccess,{ownerId,id:req.params.id},async(c,m)=>{
+    requireEditor(m);
+    const inserted=await c.query(`INSERT INTO ${qschema}.moment_perspectives(id,moment_owner_id,moment_id,author_id,kind,body,client_request_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(moment_owner_id,moment_id,author_id,client_request_id) DO NOTHING RETURNING id,moment_owner_id AS "momentOwnerId",moment_id AS "momentId",author_id AS "authorId",kind,body,version,created_at AS "createdAt",updated_at AS "updatedAt"`,[id(),m.owner_id,m.id,req.user.id,value.kind,value.body,clientRequestId]);
+    let row=inserted.rows[0];
+    if(!row){const existing=await c.query(`SELECT id,moment_owner_id AS "momentOwnerId",moment_id AS "momentId",author_id AS "authorId",kind,body,version,created_at AS "createdAt",updated_at AS "updatedAt" FROM ${qschema}.moment_perspectives WHERE moment_owner_id=$1 AND moment_id=$2 AND author_id=$3 AND client_request_id=$4`,[m.owner_id,m.id,req.user.id,clientRequestId]);row=existing.rows[0];if(!row||row.kind!==value.kind||row.body!==value.body)throw new ApiError(409,'Request key was already used with different content');}
+    return {...row,username:req.user.username};
+  });
+  res.status(201).json({perspective:saved});
+} catch(e){next(e);} });
+app.put('/api/perspectives/:id', auth, async (req,res,next) => { try {
+  const value=validatePerspective(req.body,false), expected=req.body?.expectedVersion;
+  if(!value||!Number.isSafeInteger(expected)||expected<1) throw new ApiError(400,'Invalid perspective edit');
+  const saved=await authorizedMutation({pool,schema:DB_SCHEMA,userId:req.user.id,resourceId:req.params.id,access:perspectiveAccess,work:async(c,current)=>{
+    requireEditor(current);if(current.author_id!==req.user.id)throw new ApiError(403,'Only the author can edit this perspective');
+    if(current.version!==expected)throw new ApiError(409,'Perspective changed; retain your draft and reload',{code:'VERSION_CONFLICT',currentVersion:current.version});
+    const {rows}=await c.query(`UPDATE ${qschema}.moment_perspectives SET body=$3,version=version+1,updated_at=now() WHERE id=$1 AND moment_owner_id=$2 AND version=$4 RETURNING id,moment_owner_id AS "momentOwnerId",moment_id AS "momentId",author_id AS "authorId",kind,body,version,created_at AS "createdAt",updated_at AS "updatedAt"`,[current.id,current.owner_id,value.body,expected]);
+    if(!rows[0])throw new ApiError(409,'Perspective changed; retain your draft and reload',{code:'VERSION_CONFLICT'});
+    return {...rows[0],username:req.user.username};
+  }});
+  res.json({perspective:saved});
+} catch(e){next(e);} });
+app.delete('/api/perspectives/:id', auth, async (req,res,next) => { try {
+  await authorizedMutation({pool,schema:DB_SCHEMA,userId:req.user.id,resourceId:req.params.id,access:perspectiveAccess,work:async(c,current)=>{
+    requireEditor(current);if(current.author_id!==req.user.id&&current.role!=='owner')throw new ApiError(403,'Only the author or moment owner can remove this perspective');
+    await c.query(`DELETE FROM ${qschema}.moment_perspectives WHERE id=$1 AND moment_owner_id=$2`,[current.id,current.owner_id]);
+  }});
+  res.json({ok:true});
+} catch(e){next(e);} });
+app.get('/api/perspectives/export', auth, async (req,res,next) => { try {
+  const limitRaw=req.query.limit ?? '500', limit=Number(limitRaw);
+  if(!Number.isInteger(limit)||limit<1||limit>500) throw new ApiError(400,'Invalid export limit');
+  let cursor;
+  if(req.query.cursor!=null){
+    try { cursor=JSON.parse(Buffer.from(String(req.query.cursor),'base64url').toString('utf8')); } catch { throw new ApiError(400,'Invalid cursor'); }
+    if(!cursor||typeof cursor.createdAt!=='string'||Number.isNaN(Date.parse(cursor.createdAt))||!validUuid(cursor.id)) throw new ApiError(400,'Invalid cursor');
+  }
+  const args=[req.user.id];
+  let pageWhere='';
+  if(cursor){args.push(cursor.createdAt,cursor.id);pageWhere='AND (p.created_at,p.id)>($2::timestamptz,$3::uuid)';}
+  args.push(limit+1);
+  const {rows}=await pool.query(`SELECT p.id,p.moment_owner_id AS "momentOwnerId",p.moment_id AS "momentId",p.author_id AS "authorId",u.username,p.kind,p.body,p.version,p.created_at::text AS "createdAt",p.updated_at AS "updatedAt"
+    FROM ${qschema}.moment_perspectives p JOIN ${qschema}.moments m ON m.owner_id=p.moment_owner_id AND m.id=p.moment_id
+    JOIN ${qschema}.users u ON u.id=p.author_id
+    WHERE p.moment_owner_id=$1 AND m.owner_id=$1 ${pageWhere}
+    ORDER BY p.created_at,p.id LIMIT $${args.length}`,args);
+  const hasMore=rows.length>limit, perspectives=rows.slice(0,limit), last=perspectives.at(-1);
+  const nextCursor=hasMore&&last?Buffer.from(JSON.stringify({createdAt:last.createdAt,id:last.id})).toString('base64url'):null;
+  res.json({perspectives,nextCursor});
 } catch(e){next(e);} });
 app.get('/api/moments/:id/reactions', auth, async (req,res,next) => { try {
-  const moment=await momentAccess(req.user.id,req.params.id);if(!moment)return fail(res,404,'Moment not found'); const reactions=(await reactionSummaries(req.user.id,[moment])).get(`${moment.owner_id}:${moment.id}`)||[]; res.json({reactions,selectedEmojis:reactions.filter(reaction=>reaction.selected).map(reaction=>reaction.emoji)});
+  const moment=await exactMomentAccess(req.user.id,{ownerId:req.query.ownerId,id:req.params.id});if(!moment)return fail(res,404,'Moment not found'); const reactions=(await reactionSummaries(req.user.id,[moment])).get(`${moment.owner_id}:${moment.id}`)||[]; res.json({reactions,selectedEmojis:reactions.filter(reaction=>reaction.selected).map(reaction=>reaction.emoji)});
 } catch(e){next(e);} });
 async function writeReaction(req,res) {
-  const {emoji,active}=req.body||{};
-  if(!REACTION_EMOJIS.has(emoji)|| (req.method==='PUT'&&typeof active!=='boolean')) throw new ApiError(400,'Invalid reaction');
-  const reactions=await mutate(req,momentAccess,req.params.id,async(c,m)=>{
+  const {ownerId,emoji,active}=req.body||{};
+  if(!validUuid(ownerId)||!REACTION_EMOJIS.has(emoji)|| (req.method==='PUT'&&typeof active!=='boolean')) throw new ApiError(400,'Invalid reaction');
+  const reactions=await mutate(req,(userId,identity,client)=>exactMomentAccess(userId,identity,client),{ownerId,id:req.params.id},async(c,m)=>{
     const args=[m.owner_id,m.id,req.user.id,emoji];
     if(req.method==='PUT') {
       if(active) await c.query(`INSERT INTO ${qschema}.moment_reactions(moment_owner_id,moment_id,user_id,emoji) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,args);
@@ -326,30 +468,38 @@ app.put('/api/moments/:id/reactions',auth,asyncHandler(writeReaction));
 app.post('/api/moments/:id/reactions',auth,asyncHandler(writeReaction));
 app.post('/api/moments', auth, async (req,res) => {
   const d=validateDocument(req.body,'moment'); if(!d) throw new ApiError(400,'Invalid moment');
+  const eventOwnerId=req.body?.eventOwnerId;
+  if(!validUuid(eventOwnerId)) throw new ApiError(400,'Invalid track owner');
   if(d.images.length) throw new ApiError(400,'Images must be uploaded using POST /api/images');
   d.id=typeof d.id==='string'&&d.id.length<128?d.id:id(); d.images=[]; delete d.version; delete d.expectedVersion;
-  await mutate(req,trackAccess,d.eventId,async(c,a)=>{
-    requireEditor(a); await c.query(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document) VALUES($1,$2,$3,$4)`,[a.owner_id,d.id,d.eventId,d]);
+  let resourceOwnerId;
+  await mutate(req,exactTrackAccess,{ownerId:eventOwnerId,id:d.eventId},async(c,a)=>{
+    requireEditor(a); resourceOwnerId=a.owner_id;
+    await c.query(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document) VALUES($1,$2,$3,$4)`,[a.owner_id,d.id,d.eventId,d]);
     await persistTags(a.owner_id,d.tags,c);
-  }); res.status(201).json({moment:{...d,version:1}});
+  }); res.status(201).json({moment:{...d,resourceOwnerId,version:1}});
 });
 app.put('/api/moments/:id', auth, async (req,res) => {
-  const moment=await mutate(req,momentAccess,req.params.id,async(c,old)=>{
+  const ownerId=req.body?.ownerId; if(!validUuid(ownerId)) throw new ApiError(400,'Invalid moment owner');
+  const moment=await mutate(req,(userId,identity,client)=>exactMomentAccess(userId,identity,client),{ownerId,id:req.params.id},async(c,old)=>{
     requireEditor(old);
     if(old.role==='editor'&&req.body?.eventId!=null&&req.body.eventId!==old.event_id) throw new ApiError(403,'Editors cannot move a shared moment');
     const expected=expectedVersion(req);
     if(expected!==old.version) throw new ApiError(409,'Moment changed; retain your draft and reload',{code:'VERSION_CONFLICT',currentVersion:old.version});
     const d=validateDocument({...old.document,...req.body,id:old.id,eventId:req.body?.eventId??old.event_id},'moment');
     if(!d) throw new ApiError(400,'Invalid moment');
-    if(d.eventId!==old.event_id){const target=await trackAccess(req.user.id,d.eventId,c);if(!target||target.role!=='owner'||target.owner_id!==old.owner_id)throw new ApiError(400,'Owned target track required');}
+    const eventOwnerId=req.body?.eventOwnerId??old.owner_id;
+    if(!validUuid(eventOwnerId)||eventOwnerId!==old.owner_id)throw new ApiError(400,'Invalid target track owner');
+    if(d.eventId!==old.event_id){const target=await exactTrackAccess(req.user.id,{ownerId:eventOwnerId,id:d.eventId},c);if(!target||target.role!=='owner'||target.owner_id!==old.owner_id)throw new ApiError(400,'Owned target track required');}
     const imgs=await c.query(`SELECT id FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2 ORDER BY created_at`,[old.owner_id,old.id]);
     d.images=imgs.rows.map(x=>`/api/images/${x.id}`); delete d.version; delete d.expectedVersion;
     await c.query(`UPDATE ${qschema}.moments SET event_id=$3,document=$4,version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2`,[old.owner_id,old.id,d.eventId,d]);
-    await persistTags(old.owner_id,d.tags,c); return {...d,version:old.version+1};
+    await persistTags(old.owner_id,d.tags,c); return {...d,resourceOwnerId:old.owner_id,version:old.version+1};
   });res.json({moment});
 });
 app.delete('/api/moments/:id',auth,async(req,res)=>{
-  await mutate(req,momentAccess,req.params.id,async(c,m)=>{
+  const ownerId=req.body?.ownerId; if(!validUuid(ownerId)) throw new ApiError(400,'Invalid moment owner');
+  await mutate(req,(userId,identity,client)=>exactMomentAccess(userId,identity,client),{ownerId,id:req.params.id},async(c,m)=>{
     requireEditor(m);const imgs=await c.query(`SELECT * FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2`,[m.owner_id,m.id]);
     await cleanup.enqueue(c,imageKeys(imgs.rows));await c.query(`DELETE FROM ${qschema}.moments WHERE owner_id=$1 AND id=$2`,[m.owner_id,m.id]);
   });res.json({ok:true});
@@ -360,12 +510,13 @@ function imageType(buffer){if(buffer.length>=3&&buffer[0]===0xff&&buffer[1]===0x
 app.post('/api/images',auth,upload.single('file'),async(req,res,next)=>{
   let jobId;
   try {
-    if(!req.file||typeof req.body.momentId!=='string')throw new ApiError(400,'file and momentId are required');
+    if(!req.file||typeof req.body.momentId!=='string'||!validUuid(req.body.ownerId))throw new ApiError(400,'file, momentId and ownerId are required');
+    const momentIdentity={ownerId:req.body.ownerId,id:req.body.momentId};
     const type=imageType(req.file.buffer);if(!type||req.file.mimetype!==type)throw new ApiError(415,'Unsupported or invalid image');
-    const moment=await momentAccess(req.user.id,req.body.momentId);if(!moment)throw new ApiError(404,'Moment not found');requireEditor(moment);
+    const moment=await exactMomentAccess(req.user.id,momentIdentity);if(!moment)throw new ApiError(404,'Moment not found');requireEditor(moment);
     const uploadKey=req.get('idempotency-key')||null;
     if(uploadKey&&!/^[a-zA-Z0-9_.:-]{8,128}$/.test(uploadKey))throw new ApiError(400,'Invalid Idempotency-Key');
-    const uploadHash=crypto.createHash('sha256').update(req.body.momentId).update('\0').update(type).update('\0').update(req.file.buffer).digest('hex');
+    const uploadHash=crypto.createHash('sha256').update(req.body.ownerId).update('\0').update(req.body.momentId).update('\0').update(type).update('\0').update(req.file.buffer).digest('hex');
     const replay=async(c,current)=>{
       if(!uploadKey)return null;
       const found=await c.query(`SELECT id,owner_id,moment_id,content_type,size,upload_hash FROM ${qschema}.images WHERE uploader_id=$1 AND upload_key=$2`,[req.user.id,uploadKey]);
@@ -373,7 +524,7 @@ app.post('/api/images',auth,upload.single('file'),async(req,res,next)=>{
       return found.rows[0]||null;
     };
     // Replays still require fresh authorization. Keys are scoped to authenticated uploader.
-    const previous=await mutate(req,momentAccess,req.body.momentId,async(c,current)=>{requireEditor(current);return replay(c,current);});
+    const previous=await mutate(req,(userId,identity,client)=>exactMomentAccess(userId,identity,client),momentIdentity,async(c,current)=>{requireEditor(current);return replay(c,current);});
     const response=image=>({id:image.id,url:`/api/images/${image.id}`,momentId:image.moment_id,contentType:image.content_type,size:image.size});
     if(previous)return res.status(200).json({image:response(previous),replayed:true});
     const imageId=id(),base=`${R2_PREFIX}${crypto.randomUUID()}/${imageId}`,objectKey=`${base}/original`;
@@ -385,7 +536,7 @@ app.post('/api/images',auth,upload.single('file'),async(req,res,next)=>{
     // Persist all possible objects before the first PUT: crash/fault recovery needs no request continuation.
     jobId=await cleanup.enqueue(pool,uploads.map(x=>x.key),{staged:true});
     for(const item of uploads)await s3.send(new PutObjectCommand({Bucket:process.env.R2_BUCKET,Key:item.key,Body:item.body,ContentType:item.contentType,CacheControl:'private, no-store'}),{abortSignal:AbortSignal.timeout(60_000)});
-    const result=await mutate(req,momentAccess,req.body.momentId,async(c,current)=>{
+    const result=await mutate(req,(userId,identity,client)=>exactMomentAccess(userId,identity,client),momentIdentity,async(c,current)=>{
       requireEditor(current);
       // A move to another shared track must not let this staged upload silently follow it.
       if(current.owner_id!==moment.owner_id||current.event_id!==moment.event_id)throw new ApiError(409,'Moment moved during upload');
