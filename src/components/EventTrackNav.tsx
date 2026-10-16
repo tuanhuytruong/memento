@@ -84,9 +84,9 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
   const activeTrackStats = activeTrack ? trackStatsMap[activeTrack.id] : null;
 
   return (
-    <div className="space-y-4 mb-6">
+    <div className="min-w-0 space-y-4 mb-6">
       {/* Ownership grouping makes private and collaborative tracks easier to scan. */}
-      <div className="flex gap-1 overflow-x-auto no-scrollbar" role="tablist" aria-label="Track groups">
+      <div className="flex flex-wrap gap-1" role="tablist" aria-label="Track groups">
         {([['only', 'Only you'], ['withYou', 'Shared with you'], ['byYou', 'Shared by you']] as const).map(([key, label]) => <button key={key} type="button" onClick={() => setTrackGroup(key)} className={`rounded-full px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${trackGroup === key ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900' : 'bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300'}`}>{label} <span className="opacity-70">{groupCounts[key]}</span></button>)}
       </div>
       {/* Horizontal Tabs: All Events (Merged Timeline) + Individual Event Tracks + New Track Button */}
@@ -139,7 +139,7 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
               >
                 <IconComp className="w-3 h-3" />
               </div>
-              <span>{track.title}</span>
+              <span className="max-w-48 truncate" title={track.title}>{track.title}</span>
               <span
                 className={`text-[11px] px-1.5 py-0.5 rounded-full font-bold ${
                   isSelected
@@ -172,7 +172,7 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
             <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-400/30 flex items-center justify-center text-amber-300 shrink-0">
               <Layers className="w-6 h-6" />
             </div>
-            <div>
+            <div className="min-w-0 break-words">
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-lg sm:text-xl font-bold font-display">
                   Merged Timeline · All Events
@@ -209,7 +209,7 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
                   >
                     <IconComp className="w-6 h-6" />
                   </div>
-                  <div>
+                  <div className="min-w-0 break-words">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h2 className="text-lg sm:text-xl font-bold font-display text-stone-900 dark:text-stone-100">
                         {activeTrack.title}

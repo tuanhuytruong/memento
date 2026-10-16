@@ -24,7 +24,8 @@ export default function App() {
   const [dataReady, setDataReady] = useState(false);
   const [dataLoading, setDataLoading] = useState(false);
   const [dataError, setDataError] = useState('');
-  const [pendingImageRetry, setPendingImageRetry] = useState<{ momentId: string; files: File[] } | null>(null);
+  const [uploadRunning, setUploadRunning] = useState(false);
+  const [pendingImageRetry, setPendingImageRetry] = useState<{ momentId: string; files: { file: File; uploadId: string }[] } | null>(null);
   const [eventTracks, setEventTracks] = useState<EventTrack[]>([]);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [apiTags, setApiTags] = useState<ApiTag[]>([]);
@@ -32,6 +33,9 @@ export default function App() {
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const authGenerationRef = useRef(0);
+  const uploadBusy = useRef(false);
+  const reactionPending = useRef(new Set<string>());
+  const assertSession = (generation: number) => { if (generation !== authGenerationRef.current) throw new Error('Session changed. Request result discarded.'); };
 
   const loadData = useCallback(async () => {
     const generation = authGenerationRef.current;
@@ -48,6 +52,8 @@ export default function App() {
     } catch (error) {
       if (generation !== authGenerationRef.current) throw error;
       if (error instanceof ApiError && error.status === 401) {
+        authGenerationRef.current += 1;
+        resetSnapshots();
         setUser(null);
         setAuthStatus('anonymous');
         setEventTracks([]);
@@ -55,6 +61,7 @@ export default function App() {
         setApiTags([]);
         setCollaborationInvitations([]);
         setDataReady(false);
+        throw error;
       }
       setDataError(error instanceof Error ? error.message : 'Could not load your account data.');
       throw error;
@@ -65,20 +72,21 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    const generation = authGenerationRef.current;
     authApi.me().then(async (currentUser) => {
-      if (!active) return;
+      if (!active || generation !== authGenerationRef.current) return;
       setUser(currentUser);
       setAuthStatus('authenticated');
       try {
         await loadData();
       } catch (error) {
-        if (active) {
+        if (active && generation === authGenerationRef.current) {
           setDataError(error instanceof Error ? error.message : 'Could not load your account data.');
           if (error instanceof ApiError && error.status === 401) setAuthStatus('anonymous');
         }
       }
       }).catch((error: unknown) => {
-      if (!active) return;
+      if (!active || generation !== authGenerationRef.current) return;
       if (error instanceof ApiError && error.status === 401) {
         setAuthStatus('anonymous');
         setSessionError('');
@@ -91,10 +99,13 @@ export default function App() {
   }, [loadData]);
 
   const handleAuthSubmit = async (mode: 'login' | 'register', values: { username: string; password: string; inviteCode: string }) => {
+    const generation = ++authGenerationRef.current;
+    resetSnapshots();
     if (mode === 'register') await authApi.register(values.username, values.password, values.inviteCode);
     else await authApi.login(values.username, values.password);
+    assertSession(generation);
     const currentUser = await authApi.me();
-    authGenerationRef.current += 1;
+    assertSession(generation);
     setUser(currentUser);
     setAuthStatus('authenticated');
     setDataReady(false);
@@ -105,7 +116,8 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    authGenerationRef.current += 1;
+    const generation = ++authGenerationRef.current;
+    resetSnapshots();
     setDataReady(false);
     setEventTracks([]);
     setEvents([]);
@@ -116,19 +128,23 @@ export default function App() {
     try {
       await authApi.logout();
     } catch (error) {
-      setSessionError(error instanceof Error ? error.message : 'Signed out locally, but the server could not confirm logout.');
+      if (generation === authGenerationRef.current) setSessionError(error instanceof Error ? error.message : 'Signed out locally, but the server could not confirm logout.');
     }
   };
 
   const retrySession = async () => {
+    const generation = ++authGenerationRef.current;
+    resetSnapshots();
     setSessionError('');
     setAuthStatus('checking');
     try {
       const currentUser = await authApi.me();
+      assertSession(generation);
       setUser(currentUser);
       setAuthStatus('authenticated');
       await loadData();
     } catch (error) {
+      if (generation !== authGenerationRef.current) return;
       if (error instanceof ApiError && error.status === 401) {
         setAuthStatus('anonymous');
         return;
@@ -174,6 +190,17 @@ export default function App() {
     isOpen: false,
   });
 
+  function resetSnapshots() {
+    setShareTrack(null); setCollaborationInvitations([]); setIsBlindboxOpen(false);
+    setIsEventModalOpen(false); setEventToEdit(null); setEventToView(null);
+    setIsEventTrackModalOpen(false); setTrackToEdit(null);
+    setLightboxState({ images: [], index: 0, isOpen: false });
+    setPendingImageRetry(null); setDataError(''); setSessionError('');
+    setDataLoading(false); setUploadRunning(false); uploadBusy.current = false; reactionPending.current.clear();
+    setSelectedTrackId('all');
+    setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', milestonesOnly: false, hasImagesOnly: false }));
+  }
+
   // Handle Event Track selection
   const handleSelectTrack = (trackId: string) => {
     setSelectedTrackId(trackId);
@@ -181,7 +208,9 @@ export default function App() {
   };
 
   const acceptInvitation = async (id: string) => {
+    const generation = authGenerationRef.current;
     await dataApi.acceptCollaborationInvitation(id);
+    assertSession(generation);
     await loadData();
   };
 
@@ -199,9 +228,11 @@ export default function App() {
     trackData: Omit<EventTrack, 'id' | 'createdAt' | 'updatedAt'>,
     editId?: string
   ) => {
+    const generation = authGenerationRef.current;
     const saved = editId
       ? await dataApi.updateTrack(editId, trackData)
       : await dataApi.createTrack(trackData);
+    assertSession(generation);
     setEventTracks((prev) => editId
       ? prev.map((track) => track.id === editId ? saved : track)
       : [...prev, saved]);
@@ -214,8 +245,12 @@ export default function App() {
 
   // Delete only after the server confirms; failed requests preserve the local row.
   const handleDeleteTrack = async (id: string) => {
+    const generation = authGenerationRef.current;
     await dataApi.deleteTrack(id);
+    assertSession(generation);
     setEventTracks((prev) => prev.filter((track) => track.id !== id));
+    setEvents((prev) => prev.filter((event) => event.eventId !== id));
+    setEventToView((prev) => prev?.eventId === id ? null : prev);
     if (selectedTrackId === id) {
       setSelectedTrackId('all');
       setFilters((prev) => ({ ...prev, selectedEventId: 'all' }));
@@ -325,51 +360,59 @@ export default function App() {
     editId?: string,
     imageFiles: File[] = []
   ) => {
+    const generation = authGenerationRef.current;
+    if (uploadBusy.current || (imageFiles.length && pendingImageRetry)) throw new Error('Finish or retry the previous photo upload before attaching more files. Your draft is preserved.');
+    // The loaded edit snapshot, NOT the freshest timeline, defines what this form was based on.
+    if (editId && (!eventToEdit || eventToEdit.id !== editId || !Number.isInteger(eventToEdit.version))) throw new Error('This edit has no version. Close and reopen the form before saving. Your draft is unchanged.');
     const saved = editId
-      ? await dataApi.updateMoment(editId, data)
+      ? await dataApi.updateMoment(editId, data, eventToEdit!.version!)
       : await dataApi.createMoment(data);
-    setEvents((prev) => editId
-      ? prev.map((event) => event.id === editId ? saved : event)
-      : [saved, ...prev]);
-    setEventToEdit(null);
+    assertSession(generation);
+    setEvents((prev) => editId ? prev.map((event) => event.id === editId ? saved : event) : [saved, ...prev]);
     if (imageFiles.length) {
-      let uploaded = 0;
-      try {
-        for (; uploaded < imageFiles.length; uploaded += 1) await dataApi.uploadImage(imageFiles[uploaded], saved.id);
-        const refreshedMoments = await dataApi.moments();
-        setEvents(refreshedMoments);
-      } catch (error) {
-        const remaining = imageFiles.slice(uploaded);
-        if (remaining.length) setPendingImageRetry({ momentId: saved.id, files: remaining });
-        setDataError(`Moment saved; ${uploaded} image(s) uploaded. ${remaining.length} remain and can be retried: ${error instanceof Error ? error.message : 'upload failed'}`);
-      }
+      const queue = { momentId: saved.id, files: imageFiles.map((file) => ({ file, uploadId: crypto.randomUUID() })) };
+      setPendingImageRetry(queue);
+      await processImageQueue(queue, generation);
     }
   };
 
   // Delete only after the server confirms; failures do not remove data from the view.
   const handleDeleteEvent = async (id: string) => {
+    const generation = authGenerationRef.current;
     await dataApi.deleteMoment(id);
+    assertSession(generation);
     setEvents((prev) => prev.filter((event) => event.id !== id));
     setEventToView((prev) => prev?.id === id ? null : prev);
   };
 
   const handleToggleReaction = async (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉') => {
-    const response = await dataApi.toggleReaction(event.id, emoji);
-    const apply = (item: TimelineEvent) => item.id === event.id ? { ...item, reactions: response.reactions } : item;
-    setEvents((prev) => prev.map(apply));
-    setEventToView((prev) => prev?.id === event.id ? apply(prev) : prev);
+    const generation = authGenerationRef.current;
+    if (reactionPending.current.has(event.id)) return;
+    reactionPending.current.add(event.id);
+    try {
+      const active = !event.reactions?.find((item) => item.emoji === emoji)?.selected;
+      const response = await dataApi.setReaction(event.id, emoji, active);
+      assertSession(generation);
+      const apply = (item: TimelineEvent) => item.id === event.id ? { ...item, reactions: response.reactions } : item;
+      setEvents((prev) => prev.map(apply));
+      setEventToView((prev) => prev?.id === event.id ? apply(prev) : prev);
+    } finally { if (generation === authGenerationRef.current) reactionPending.current.delete(event.id); }
   };
 
   const handleAddCustomTag = async (name: string) => {
     if (apiTags.some((tag) => tag.name.toLowerCase() === name.toLowerCase())) return;
+    const generation = authGenerationRef.current;
     const created = await dataApi.createTag(name);
+    assertSession(generation);
     setApiTags((prev) => prev.some((tag) => tag.id === created.id) ? prev : [...prev, created]);
   };
 
   const handleDeleteUnusedTag = async (id: string) => {
     const tag = apiTags.find((item) => item.id === id);
     if (!tag || events.some((event) => event.tags?.includes(tag.name))) return;
+    const generation = authGenerationRef.current;
     await dataApi.deleteTag(id);
+    assertSession(generation);
     setApiTags((prev) => prev.filter((item) => item.id !== id));
   };
 
@@ -389,25 +432,40 @@ export default function App() {
   };
 
   const runMutation = async (operation: () => Promise<void>) => {
+    const generation = authGenerationRef.current;
     try {
       await operation();
+      assertSession(generation);
       setDataError('');
     } catch (error) {
-      setDataError(error instanceof Error ? error.message : 'The request failed. Your data was not changed.');
+      if (generation === authGenerationRef.current) setDataError(error instanceof Error ? error.message : 'The request failed. Your data was not changed.');
     }
   };
 
-  const retryImageUploads = async () => {
-    if (!pendingImageRetry) return;
+  async function processImageQueue(queue: NonNullable<typeof pendingImageRetry>, generation: number) {
+    if (uploadBusy.current) return;
+    uploadBusy.current = true; setUploadRunning(true);
+    let remaining = queue.files;
     try {
-      for (const file of pendingImageRetry.files) await dataApi.uploadImage(file, pendingImageRetry.momentId);
+      while (remaining.length) {
+        assertSession(generation);
+        const { file, uploadId } = remaining[0];
+        await dataApi.uploadImage(file, queue.momentId, uploadId);
+        assertSession(generation);
+        remaining = remaining.slice(1);
+        setPendingImageRetry({ ...queue, files: remaining });
+      }
       const moments = await dataApi.moments();
-      setEvents(moments);
-      setPendingImageRetry(null);
-      setDataError('');
+      assertSession(generation);
+      setEvents(moments); setPendingImageRetry(null); setDataError('');
     } catch (error) {
-      setDataError(`Image upload did not finish: ${error instanceof Error ? error.message : 'unknown error'}. Retry without losing the saved moment.`);
-    }
+      if (generation !== authGenerationRef.current) return;
+      setPendingImageRetry({ ...queue, files: remaining });
+      setDataError(remaining.length ? `Moment saved; ${remaining.length} image(s) remain. Retry resumes after acknowledged files: ${error instanceof Error ? error.message : 'upload failed'}` : 'Photos uploaded. Timeline refresh failed; retry refresh without re-uploading.');
+    } finally { if (generation === authGenerationRef.current) { uploadBusy.current = false; setUploadRunning(false); } }
+  }
+  const retryImageUploads = async () => {
+    if (pendingImageRetry) await processImageQueue(pendingImageRetry, authGenerationRef.current);
   };
 
   if (authStatus === 'checking') {
@@ -426,8 +484,8 @@ export default function App() {
   return (
     <div className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
-        {dataError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200"><span>{dataError}</span><span className="flex gap-3">{pendingImageRetry && <button className="font-semibold underline" onClick={() => void retryImageUploads()}>Retry image upload</button>}<button className="font-semibold underline" onClick={() => setDataError('')}>Dismiss</button></span></div>}
-        <SharedInvitations invitations={collaborationInvitations} onAccept={(id) => void acceptInvitation(id).catch((error) => setDataError(error instanceof Error ? error.message : 'Could not accept invitation.'))} />
+        {dataError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200"><span>{dataError}</span><span className="flex gap-3">{pendingImageRetry && <button disabled={uploadRunning} className="font-semibold underline disabled:opacity-50" onClick={() => void retryImageUploads()}>{uploadRunning ? 'Uploading…' : pendingImageRetry.files.length ? 'Retry image upload' : 'Retry timeline refresh'}</button>}<button className="font-semibold underline" onClick={() => setDataError('')}>Dismiss</button></span></div>}
+        <SharedInvitations invitations={collaborationInvitations} onAccept={(id) => runMutation(() => acceptInvitation(id))} />
         {/* Header Ribbon & Global Stats */}
         <TimelineHeader
           events={events}
@@ -569,7 +627,7 @@ export default function App() {
       </div>
 
       {/* Create / Edit Event Track Modal */}
-      <EventTrackModal
+      {isEventTrackModalOpen && <EventTrackModal key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isEventTrackModalOpen}
         trackToEdit={trackToEdit}
         onClose={() => {
@@ -577,11 +635,11 @@ export default function App() {
           setTrackToEdit(null);
         }}
         onSave={(track, editId) => handleSaveTrack(track, editId)}
-        onDelete={(id) => runMutation(() => handleDeleteTrack(id))}
-      />
+        onDelete={handleDeleteTrack}
+      />}
 
       {/* Create / Edit Timeline Moment Modal */}
-      <EventModal
+      {isEventModalOpen && <EventModal key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isEventModalOpen}
         eventToEdit={eventToEdit}
         tracks={eventTracks}
@@ -598,10 +656,10 @@ export default function App() {
           setIsEventTrackModalOpen(true);
         }}
         onAddCustomTag={handleAddCustomTag}
-      />
+      />}
 
       {/* Event Details View Modal */}
-      <EventDetailModal
+      {!!eventToView && <EventDetailModal key={`${user.id}:${authGenerationRef.current}`}
         event={eventToView}
         tracks={eventTracks}
         onSelectTrack={handleSelectTrack}
@@ -615,9 +673,9 @@ export default function App() {
         onTagClick={handleTagClick}
         onOpenImageLightbox={handleOpenLightbox}
         onToggleReaction={handleToggleReaction}
-      />
+      />}
 
-      <CollaborationModal
+      {!!shareTrack && <CollaborationModal key={`${user.id}:${authGenerationRef.current}`}
         track={shareTrack}
         isOpen={!!shareTrack}
         onClose={() => setShareTrack(null)}
@@ -627,7 +685,7 @@ export default function App() {
         onSearchUsernames={dataApi.usernameMatches}
         invitations={collaborationInvitations}
         onAccept={acceptInvitation}
-      />
+      />}
       <button type="button" onClick={() => setIsBlindboxOpen(true)} title="Open a random memory" aria-label="Open a random memory" className="fixed bottom-[max(1.5rem,env(safe-area-inset-bottom))] right-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full bg-amber-600 text-white shadow-lg transition hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-300 sm:right-6"><Dices className="h-5 w-5" /></button>
       <BlindboxMemory open={isBlindboxOpen} events={events} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />
       {/* Image Lightbox viewer */}

@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { PrivateImage } from './PrivateImage';
+import { ApiError } from '../lib/api';
+import { useModalLifecycle } from '../lib/useModalLifecycle';
 import {
   X,
   Calendar,
@@ -43,6 +46,11 @@ export const EventModal: React.FC<EventModalProps> = ({
   onAddCustomTag,
   onCreateNewTrack,
 }) => {
+  const alive = useRef(true);
+  const initialized = useRef(false);
+  const blobs = useRef<string[]>([]);
+  const modal = useModalLifecycle(isOpen, onClose);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; blobs.current.forEach((url) => URL.revokeObjectURL(url)); }; }, []);
   const todayStr = new Date().toISOString().split('T')[0];
   const currentTimeStr = new Date().toTimeString().slice(0, 5);
 
@@ -81,7 +89,8 @@ export const EventModal: React.FC<EventModalProps> = ({
 
   // Prefill on edit or reset on create
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || initialized.current) return;
+    initialized.current = true;
     setSaveError('');
     if (eventToEdit) {
       setEventId(eventToEdit.eventId || tracks[0]?.id || '');
@@ -134,11 +143,12 @@ export const EventModal: React.FC<EventModalProps> = ({
     if (!trimmed) return;
     try {
       if (onAddCustomTag) await onAddCustomTag(trimmed);
+      if (!alive.current) return;
       if (!selectedTags.includes(trimmed)) setSelectedTags((prev) => [...prev, trimmed]);
       setNewTagInput('');
       setShowNewTagInput(false);
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : 'Could not save this tag. Please retry.');
+      if (alive.current) setSaveError(error instanceof Error ? error.message : 'Could not save this tag. Please retry.');
     }
   };
 
@@ -154,16 +164,21 @@ export const EventModal: React.FC<EventModalProps> = ({
       const ready: File[] = [];
       for (const file of picked) {
         try {
-          ready.push(await compressImage(file));
+          const prepared = await compressImage(file);
+          if (!alive.current) return;
+          ready.push(prepared);
         } catch (error) {
+          if (!alive.current) return;
           setSaveError(error instanceof Error ? error.message : `Could not prepare "${file.name}".`);
         }
       }
       if (ready.length) {
         setImageFiles((prev) => [...prev, ...ready]);
-        setImages((prev) => [...prev, ...ready.map((file) => URL.createObjectURL(file))]);
+        const urls = ready.map((file) => URL.createObjectURL(file));
+        blobs.current.push(...urls);
+        setImages((prev) => [...prev, ...urls]);
       }
-    })().finally(() => setIsCompressing(false));
+    })().finally(() => { if (alive.current) setIsCompressing(false); });
   };
 
   const handleAddImageUrl = () => {
@@ -193,6 +208,7 @@ export const EventModal: React.FC<EventModalProps> = ({
     setIsLocating(true);
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
+        if (!alive.current) return;
         const { latitude, longitude } = pos.coords;
         try {
           // Attempt reverse geocode using public nominatim
@@ -201,6 +217,7 @@ export const EventModal: React.FC<EventModalProps> = ({
           );
           if (res.ok) {
             const data = await res.json();
+            if (!alive.current) return;
             const address = data.address || {};
             const city = address.city || address.town || address.village || address.county || '';
             const country = address.country || '';
@@ -210,15 +227,18 @@ export const EventModal: React.FC<EventModalProps> = ({
             setLocationCity(city);
             setLocationCountry(country);
           } else {
+            if (!alive.current) return;
             setLocationName(`Lat: ${latitude.toFixed(3)}, Lng: ${longitude.toFixed(3)}`);
           }
         } catch {
+          if (!alive.current) return;
           setLocationName(`Lat: ${latitude.toFixed(3)}, Lng: ${longitude.toFixed(3)}`);
         } finally {
-          setIsLocating(false);
+          if (alive.current) setIsLocating(false);
         }
       },
       (err) => {
+        if (!alive.current) return;
         console.warn('Geolocation failed:', err.message);
         setIsLocating(false);
         alert('Could not retrieve coordinates. Please enter location manually.');
@@ -229,7 +249,7 @@ export const EventModal: React.FC<EventModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !date) return;
+    if (isSaving || isCompressing || !title.trim() || !date) return;
 
     let locationMeta: LocationMetadata | undefined = undefined;
     if (locationName.trim() || locationCity.trim() || locationCountry.trim()) {
@@ -258,11 +278,13 @@ export const EventModal: React.FC<EventModalProps> = ({
     setSaveError('');
     setIsSaving(true);
     onSave(payload, eventToEdit?.id, imageFiles).then(() => {
+      if (!alive.current) return;
       images.filter((image) => image.startsWith('blob:')).forEach((image) => URL.revokeObjectURL(image));
       onClose();
     }).catch((error: unknown) => {
-      setSaveError(error instanceof Error ? error.message : 'Could not save this moment. Your edits are still here; retry when ready.');
-    }).finally(() => setIsSaving(false));
+      if (!alive.current) return;
+      setSaveError(error instanceof ApiError && error.status === 409 ? 'This memory changed since you opened it. Your draft is preserved here. Copy your edits before closing and reopening to compare the latest version.' : error instanceof Error ? error.message : 'Could not save this moment. Your edits are still here; retry when ready.');
+    }).finally(() => { if (alive.current) setIsSaving(false); });
   };
 
   // Combine default tags with existing tags
@@ -272,6 +294,7 @@ export const EventModal: React.FC<EventModalProps> = ({
 
   return (
     <div
+      ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Edit memory"
       id="event-modal-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm p-3 sm:p-5 overflow-y-auto"
       onClick={onClose}
@@ -703,11 +726,7 @@ export const EventModal: React.FC<EventModalProps> = ({
                     key={idx}
                     className="relative group w-20 h-20 rounded-lg overflow-hidden border border-stone-200 dark:border-stone-700 bg-stone-100"
                   >
-                    <img
-                      src={img}
-                      alt="Attachment"
-                      className="w-full h-full object-cover"
-                    />
+                    <PrivateImage src={img} variant="thumb" loading="lazy" alt="Attachment" className="w-full h-full" />
                     <button
                       type="button"
                       onClick={() => removeImage(idx)}

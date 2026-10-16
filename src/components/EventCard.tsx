@@ -82,7 +82,7 @@ export const EventCard: React.FC<EventCardProps> = ({
       <div
         id={`event-card-${event.id}`}
         onClick={() => onViewDetails(event)}
-        className={`flex-1 rounded-2xl p-4 sm:p-5 transition-all duration-200 cursor-pointer bg-white dark:bg-stone-900 border ${
+        className={`min-w-0 flex-1 break-words rounded-2xl p-4 sm:p-5 transition-all duration-200 cursor-pointer bg-white dark:bg-stone-900 border ${
           event.isMilestone
             ? 'border-amber-300 dark:border-amber-800/80 shadow-md ring-1 ring-amber-400/20'
             : 'border-stone-200/80 dark:border-stone-800 shadow-xs hover:shadow-md hover:border-stone-300 dark:hover:border-stone-700'
@@ -90,7 +90,7 @@ export const EventCard: React.FC<EventCardProps> = ({
       >
         {/* Top bar: Date, Emotion pill, and Actions */}
         <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="min-w-0 max-w-full flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 flex items-center gap-1.5">
               <Calendar className="w-3.5 h-3.5 text-stone-500" />
               {formatDateDisplay(event.date, event.time)}
@@ -113,11 +113,11 @@ export const EventCard: React.FC<EventCardProps> = ({
                   e.stopPropagation();
                   if (onSelectTrack) onSelectTrack(track.id);
                 }}
-                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border transition ${trackTheme.badgeClass} hover:scale-102`}
+                className={`max-w-full min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border transition ${trackTheme.badgeClass} hover:scale-102`}
                 title={`View ${track.title} timeline`}
               >
                 <TrackIcon className="w-3 h-3" />
-                <span>{track.title}</span>
+                <span className="min-w-0 truncate">{track.title}</span>
               </button>
             )}
           </div>
@@ -129,7 +129,7 @@ export const EventCard: React.FC<EventCardProps> = ({
           >
             <button
               onClick={() => onEdit(event)}
-              className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
+              className="min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
               title="Edit event"
             >
               <Edit2 className="w-3.5 h-3.5" />
@@ -140,7 +140,7 @@ export const EventCard: React.FC<EventCardProps> = ({
                   onDelete(event.id);
                 }
               }}
-              className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
+              className="min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
               title="Delete event"
             >
               <Trash2 className="w-3.5 h-3.5" />
@@ -149,14 +149,14 @@ export const EventCard: React.FC<EventCardProps> = ({
         </div>
 
         {/* Title & Emotion */}
-        <div className="flex items-start justify-between gap-3 mb-2">
-          <h3 className="text-base sm:text-lg font-bold font-display text-stone-900 dark:text-stone-100 leading-snug group-hover:text-amber-700 dark:group-hover:text-amber-400 transition-colors">
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-2">
+          <h3 className="min-w-0 break-all line-clamp-3 text-base sm:text-lg font-bold font-display text-stone-900 dark:text-stone-100 leading-snug group-hover:text-amber-700 dark:group-hover:text-amber-400 transition-colors">
             {event.title}
           </h3>
 
           {emotionMeta && (
             <span
-              className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${emotionMeta.badgeBg} ${emotionMeta.badgeText} ${emotionMeta.borderColor} border`}
+              className={`shrink-0 max-w-full min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${emotionMeta.badgeBg} ${emotionMeta.badgeText} ${emotionMeta.borderColor} border`}
             >
               <span>{emotionMeta.emoji}</span>
               <span>{emotionMeta.label}</span>
@@ -237,6 +237,7 @@ export const EventCard: React.FC<EventCardProps> = ({
           </p>
         )}
 
+        {!!event.reactions?.some((item) => item.count > 0) && <p aria-label="Reaction summary" className="mb-2 text-xs text-stone-500">{event.reactions.filter((item) => item.count > 0).map((item) => `${item.emoji} ${item.count}`).join(' · ')}</p>}
         {/* Bottom Tag Categorization Chips */}
         {event.tags && event.tags.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-stone-100 dark:border-stone-800/80">
@@ -248,7 +249,7 @@ export const EventCard: React.FC<EventCardProps> = ({
                   e.stopPropagation();
                   onTagClick(tag);
                 }}
-                className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-amber-100 hover:text-amber-900 dark:hover:bg-amber-950/60 dark:hover:text-amber-300 transition"
+                className="max-w-full min-w-0 truncate inline-block items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-amber-100 hover:text-amber-900 dark:hover:bg-amber-950/60 dark:hover:text-amber-300 transition"
               >
                 #{tag}
               </button>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Check, Trash2, Plus } from 'lucide-react';
 import { EventTrack } from '../types';
+import { useModalLifecycle } from '../lib/useModalLifecycle';
 import {
   EVENT_COLORS,
   AVAILABLE_ICONS,
@@ -12,7 +13,7 @@ interface EventTrackModalProps {
   trackToEdit?: EventTrack | null;
   onClose: () => void;
   onSave: (trackData: Omit<EventTrack, 'id' | 'createdAt' | 'updatedAt'>, editId?: string) => Promise<void>;
-  onDelete?: (id: string) => void;
+  onDelete?: (id: string) => Promise<void>;
 }
 
 export const EventTrackModal: React.FC<EventTrackModalProps> = ({
@@ -22,6 +23,7 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
   onSave,
   onDelete,
 }) => {
+  const modal = useModalLifecycle(isOpen, onClose);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [color, setColor] = useState('indigo');
@@ -74,7 +76,7 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (isSaving || !title.trim()) return;
 
     setSaveError('');
     setIsSaving(true);
@@ -88,9 +90,10 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
         tags,
       },
       trackToEdit?.id
-    ).then(onClose).catch((error: unknown) => {
+    ).then(() => { if (mountedRef.current) onClose(); }).catch((error: unknown) => {
+      if (!mountedRef.current) return;
       setSaveError(error instanceof Error ? error.message : 'Could not save this track. Your edits are still here; please retry.');
-    }).finally(() => setIsSaving(false));
+    }).finally(() => { if (mountedRef.current) setIsSaving(false); });
   };
 
   const SelectedIconComponent = getEventIconComponent(icon);
@@ -99,6 +102,7 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
 
   return (
     <div
+      ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Edit track"
       id="event-track-modal-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm p-3 sm:p-5 overflow-y-auto"
       onClick={onClose}
@@ -299,12 +303,14 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
                 onClick={() => {
                   if (
                     window.confirm(
-                      `Delete event "${trackToEdit.title}"? Any associated moments will remain in the merged timeline.`
+                      `Delete event "${trackToEdit.title}"? Associated moments and photos will also be deleted.`
                     )
                   ) {
-                    Promise.resolve(onDelete(trackToEdit.id)).then(onClose).catch((error: unknown) => {
-                      setSaveError(error instanceof Error ? error.message : 'Could not delete this track. It has not been removed from your view.');
-                    });
+                    if (isSaving) return;
+                    setIsSaving(true);
+                    onDelete(trackToEdit.id).then(() => { if (mountedRef.current) onClose(); }).catch((error: unknown) => {
+                      if (mountedRef.current) setSaveError(error instanceof Error ? error.message : 'Could not delete this track. It has not been removed from your view.');
+                    }).finally(() => { if (mountedRef.current) setIsSaving(false); });
                   }
                 }}
                 className="px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 rounded-xl transition flex items-center gap-1"

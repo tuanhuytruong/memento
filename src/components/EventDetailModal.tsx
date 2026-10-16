@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Calendar,
@@ -18,7 +18,8 @@ import { TimelineEvent, EventTrack } from '../types';
 import { getEmotionMeta } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { formatDateDisplay, getRelativeTime } from '../lib/storage';
-import { imageUrl } from '../lib/imageUrl';
+import { usePhotoPrefetch } from '../lib/usePhotoPrefetch';
+import { useModalLifecycle } from '../lib/useModalLifecycle';
 import { PrivateImage } from './PrivateImage';
 
 interface EventDetailModalProps {
@@ -34,7 +35,8 @@ interface EventDetailModalProps {
   onToggleReaction: (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉') => Promise<void>;
 }
 
-export const EventDetailModal: React.FC<EventDetailModalProps> = ({
+export const EventDetailModal: React.FC<EventDetailModalProps> = (props) => props.isOpen && props.event ? <DetailBody key={props.event.id} {...props} /> : null;
+const DetailBody: React.FC<EventDetailModalProps> = ({
   event,
   tracks,
   onSelectTrack,
@@ -46,9 +48,24 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
   onOpenImageLightbox,
   onToggleReaction,
 }) => {
+  const [imageIndex, setActiveImageIndex] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [showActors, setShowActors] = useState(false);
+  const pending = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const activeImageIndex = Math.max(0, Math.min(imageIndex, (event?.images.length || 1) - 1));
+  const onDecoded = usePhotoPrefetch(event?.images || [], activeImageIndex, isOpen);
+  const modal = useModalLifecycle(isOpen, onClose);
+  const mutate = async (operation: () => Promise<void>) => {
+    if (pending.current) return;
+    pending.current = true; setBusy(true); setError('');
+    try { await operation(); }
+    catch (failure) { if (alive.current) setError(failure instanceof Error ? failure.message : 'Request failed. Please retry.'); }
+    finally { if (alive.current) { pending.current = false; setBusy(false); } }
+  };
   if (!isOpen || !event) return null;
-
-  const [activeImageIndex, setActiveImageIndex] = useState(0);
   const emotionMeta = getEmotionMeta(event.emotion);
   const relativeTime = getRelativeTime(event.date);
 
@@ -69,6 +86,7 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
 
   return (
     <div
+      ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Memory details"
       id="event-detail-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm p-3 sm:p-5 overflow-y-auto"
       onClick={onClose}
@@ -79,8 +97,8 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
         className="relative w-full max-w-3xl bg-white dark:bg-stone-900 rounded-2xl shadow-2xl border border-stone-200 dark:border-stone-800 overflow-hidden my-6 flex flex-col max-h-[92vh]"
       >
         {/* Header bar */}
-        <div className="px-6 py-4 border-b border-stone-100 dark:border-stone-800 flex items-center justify-between bg-stone-50/60 dark:bg-stone-900/60">
-          <div className="flex items-center gap-2 flex-wrap">
+        <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-stone-100 dark:border-stone-800 flex flex-col-reverse sm:flex-row items-stretch sm:items-center gap-2 justify-between bg-stone-50/60 dark:bg-stone-900/60">
+          <div className="min-w-0 max-w-full flex items-center gap-2 flex-wrap">
             {eventTrack && trackTheme && TrackIcon && (
               <button
                 type="button"
@@ -88,11 +106,11 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
                   onClose();
                   if (onSelectTrack) onSelectTrack(eventTrack.id);
                 }}
-                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border transition ${trackTheme.badgeClass} hover:opacity-80`}
+                className={`max-w-full min-w-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border transition ${trackTheme.badgeClass} hover:opacity-80`}
                 title={`Filter to ${eventTrack.title} timeline`}
               >
                 <TrackIcon className="w-3.5 h-3.5" />
-                <span>{eventTrack.title}</span>
+                <span className="min-w-0 truncate">{eventTrack.title}</span>
               </button>
             )}
             {event.isMilestone && (
@@ -106,26 +124,22 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center justify-end gap-2">
             {canEdit && <>
               <button
                 onClick={() => {
                   onClose();
                   onEdit(event);
                 }}
-                className="p-2 text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition"
+                className="min-h-11 min-w-11 p-2 text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition"
                 title="Edit event"
               >
                 <Edit className="w-4 h-4" />
               </button>
               <button
-                onClick={() => {
-                  if (window.confirm('Delete this timeline event?')) {
-                    onDelete(event.id);
-                    onClose();
-                  }
-                }}
-                className="p-2 text-stone-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
+                disabled={busy}
+                onClick={() => { if (window.confirm('Delete this timeline event?')) void mutate(async () => { await onDelete(event.id); if (alive.current) onClose(); }); }}
+                className="min-h-11 min-w-11 p-2 text-stone-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
                 title="Delete event"
               >
                 <Trash2 className="w-4 h-4" />
@@ -133,7 +147,8 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
             </>}
             <button
               onClick={onClose}
-              className="p-2 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition ml-1"
+              aria-label="Close memory details"
+              className="min-h-11 min-w-11 p-2 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition ml-1"
             >
               <X className="w-5 h-5" />
             </button>
@@ -141,7 +156,8 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
         </div>
 
         {/* Scrollable details */}
-        <div className="p-6 sm:p-8 overflow-y-auto space-y-6">
+        <div className="min-h-0 break-words p-4 sm:p-8 overflow-y-auto space-y-6">
+          {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
           {/* Main Title & Date */}
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold font-display text-stone-900 dark:text-stone-100 leading-tight">
@@ -199,10 +215,10 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
           {event.images && event.images.length > 0 && (
             <div className="space-y-2">
               <div className="relative group rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-800 max-h-[420px] flex items-center justify-center border border-stone-200 dark:border-stone-700">
-                <PrivateImage src={event.images[activeImageIndex] || event.images[0]} variant="display" fit="contain" alt={event.title} className="h-[min(56vh,420px)] w-full cursor-pointer hover:opacity-95 transition" onClick={() => onOpenImageLightbox(event.images, activeImageIndex)} />
+                <PrivateImage src={event.images[activeImageIndex] || event.images[0]} variant="display" onDecoded={onDecoded} fit="contain" alt={event.title} className="h-[min(56vh,420px)] w-full cursor-pointer hover:opacity-95 transition" onClick={() => onOpenImageLightbox(event.images, activeImageIndex)} />
                 <button
                   onClick={() => onOpenImageLightbox(event.images, activeImageIndex)}
-                  className="absolute bottom-3 right-3 p-2 rounded-lg bg-black/60 text-white hover:bg-black/80 transition"
+                  className="absolute min-h-11 min-w-11 bottom-3 right-3 p-2 rounded-lg bg-black/60 text-white hover:bg-black/80 transition"
                   title="Enlarge photo"
                 >
                   <Maximize2 className="w-4 h-4" />
@@ -215,7 +231,8 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
                         e.stopPropagation();
                         setActiveImageIndex((prev) => (prev > 0 ? prev - 1 : event.images.length - 1));
                       }}
-                      className="absolute left-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/50 text-white hover:bg-black/70 transition"
+                      aria-label="Previous detail photo"
+                      className="absolute min-h-11 min-w-11 left-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/50 text-white hover:bg-black/70 transition"
                     >
                       <ChevronLeft className="w-4 h-4" />
                     </button>
@@ -224,7 +241,8 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
                         e.stopPropagation();
                         setActiveImageIndex((prev) => (prev < event.images.length - 1 ? prev + 1 : 0));
                       }}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/50 text-white hover:bg-black/70 transition"
+                      aria-label="Next detail photo"
+                      className="absolute min-h-11 min-w-11 right-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/50 text-white hover:bg-black/70 transition"
                     >
                       <ChevronRight className="w-4 h-4" />
                     </button>
@@ -236,7 +254,8 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
                 <div className="flex gap-2 overflow-x-auto pb-1">
                   {event.images.map((img, idx) => (
                     <button
-                      key={idx}
+                      key={img}
+                      aria-label={`Select detail photo ${idx + 1}`}
                       onClick={() => setActiveImageIndex(idx)}
                       className={`w-16 h-16 rounded-lg overflow-hidden border-2 shrink-0 transition ${
                         activeImageIndex === idx
@@ -256,8 +275,10 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
             <span className="mr-1 text-xs font-semibold text-stone-500">React</span>
             {(['❤️', '🥹', '😂', '✨', '🙌', '🎉'] as const).map((emoji) => {
               const reaction = event.reactions?.find((item) => item.emoji === emoji);
-              return <button key={emoji} type="button" title={reaction?.usernames?.length ? reaction.usernames.join(', ') : `React ${emoji}`} onClick={() => void onToggleReaction(event, emoji)} className={`min-h-9 rounded-full border px-2 text-sm transition ${reaction?.selected ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/30' : 'border-stone-200 hover:bg-stone-100 dark:border-stone-700 dark:hover:bg-stone-800'}`}>{emoji}{reaction?.count ? <span className="ml-1 text-xs font-semibold">{reaction.count}</span> : null}</button>;
+              return <button key={emoji} type="button" title={reaction?.usernames?.length ? reaction.usernames.join(', ') : `React ${emoji}`} disabled={busy} aria-pressed={!!reaction?.selected} aria-label={`React ${emoji}${reaction?.count ? `, ${reaction.count} reactions` : ''}`} onClick={() => void mutate(() => onToggleReaction(event, emoji))} className={`min-h-11 min-w-11 disabled:opacity-50 rounded-full border px-2 text-sm transition ${reaction?.selected ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/30' : 'border-stone-200 hover:bg-stone-100 dark:border-stone-700 dark:hover:bg-stone-800'}`}>{emoji}{reaction?.count ? <span className="ml-1 text-xs font-semibold">{reaction.count}</span> : null}</button>;
             })}
+            <button type="button" className="min-h-11 px-2 text-xs underline" onClick={() => setShowActors(!showActors)} aria-expanded={showActors}>Who reacted?</button>
+            {showActors && <ul className="w-full text-xs text-stone-500">{event.reactions?.filter((item) => item.count).map((item) => <li key={item.emoji}>{item.emoji} {item.usernames.join(', ')}</li>)}</ul>}
           </section>
 
           {/* Dedicated Idea / Key Takeaway Card */}
@@ -299,7 +320,7 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({
                     onTagClick(tag);
                   }
                 }}
-                className="px-3 py-1 rounded-lg text-xs font-medium bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-amber-100 dark:hover:bg-amber-950/60 hover:text-amber-900 transition"
+                className="max-w-full break-all px-3 py-1 rounded-lg text-xs font-medium bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-amber-100 dark:hover:bg-amber-950/60 hover:text-amber-900 transition"
               >
                 #{tag}
               </button>

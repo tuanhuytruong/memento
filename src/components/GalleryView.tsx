@@ -50,7 +50,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
           <div
             key={evt.id}
             onClick={() => onViewDetails(evt)}
-            className="group rounded-2xl overflow-hidden bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs hover:shadow-lg transition-all duration-300 flex flex-col cursor-pointer"
+            className="group min-w-0 break-words rounded-2xl overflow-hidden bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs hover:shadow-lg transition-all duration-300 flex flex-col cursor-pointer"
           >
             {/* Top image or visual header */}
             {hasImages ? (
@@ -80,10 +80,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                       e.stopPropagation();
                       if (onSelectTrack) onSelectTrack(track.id);
                     }}
-                    className={`absolute top-2.5 right-2.5 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border backdrop-blur-md shadow-xs transition ${theme.badgeClass}`}
+                    className={`absolute max-w-[65%] top-2.5 right-2.5 max-w-full min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border backdrop-blur-md shadow-xs transition ${theme.badgeClass}`}
                   >
                     <TrackIcon className="w-3 h-3" />
-                    <span>{track.title}</span>
+                    <span className="min-w-0 truncate">{track.title}</span>
                   </button>
                 )}
               </div>
@@ -101,10 +101,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                         e.stopPropagation();
                         if (onSelectTrack) onSelectTrack(track.id);
                       }}
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border transition ${theme.badgeClass}`}
+                      className={`max-w-full min-w-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border transition ${theme.badgeClass}`}
                     >
                       <TrackIcon className="w-3 h-3" />
-                      <span>{track.title}</span>
+                      <span className="min-w-0 truncate">{track.title}</span>
                     </button>
                   )}
                   {evt.isMilestone && (
@@ -124,7 +124,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                   <span>{formatDateDisplay(evt.date)}</span>
                   {emotionMeta && (
                     <span
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${emotionMeta.badgeBg} ${emotionMeta.badgeText} ${emotionMeta.borderColor}`}
+                      className={`max-w-full min-w-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${emotionMeta.badgeBg} ${emotionMeta.badgeText} ${emotionMeta.borderColor}`}
                     >
                       <span>{emotionMeta.emoji}</span>
                       <span>{emotionMeta.label}</span>
@@ -165,6 +165,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                 )}
               </div>
 
+              {!!evt.reactions?.some((item) => item.count > 0) && <p aria-label="Reaction summary" className="text-xs text-stone-500">{evt.reactions.filter((item) => item.count > 0).map((item) => `${item.emoji} ${item.count}`).join(' · ')}</p>}
               {/* Tags */}
               <div className="flex flex-wrap gap-1 pt-2 border-t border-stone-100 dark:border-stone-800">
                 {evt.tags.map((tag) => (
@@ -174,7 +175,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                       e.stopPropagation();
                       onTagClick(tag);
                     }}
-                    className="px-2 py-0.5 rounded text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-amber-100 transition"
+                    className="max-w-full break-all px-2 py-0.5 rounded text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-amber-100 transition"
                   >
                     #{tag}
                   </button>

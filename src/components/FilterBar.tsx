@@ -183,7 +183,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
       </div>
 
       {/* Quick year pills */}
-      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs no-scrollbar">
+      <div className="flex flex-wrap items-center gap-1.5 pb-1 text-xs">
         <span className="text-stone-400 font-medium mr-1 shrink-0 flex items-center gap-1">
           <Calendar className="w-3 h-3" /> Year:
         </span>
@@ -272,7 +272,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                   <button
                     key={tagObj.name}
                     onClick={() => toggleTag(tagObj.name)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${
+                    className={`max-w-full break-all px-2.5 py-1 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${
                       isSelected
                         ? 'bg-amber-600 text-white shadow-xs'
                         : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-700'
@@ -317,7 +317,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                   <button
                     key={emo.key}
                     onClick={() => toggleEmotion(emo.key)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition flex items-center gap-1.5 border ${
+                    className={`max-w-full break-all px-2.5 py-1 rounded-lg text-xs font-medium transition flex items-center gap-1.5 border ${
                       isSelected
                         ? `${emo.badgeBg} ${emo.badgeText} ${emo.borderColor} shadow-xs font-semibold`
                         : 'bg-stone-50 dark:bg-stone-800/60 border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:border-stone-300'
