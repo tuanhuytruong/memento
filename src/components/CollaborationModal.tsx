@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Check, Clock3, Share2, UserMinus, Users } from 'lucide-react';
+import { useModalLifecycle } from '../lib/useModalLifecycle';
 import { type CollaborationInvitation, type TrackCollaborator } from '../lib/api';
 
 type Props = {
@@ -14,7 +15,11 @@ type Props = {
   onSearchUsernames: (query: string) => Promise<string[]>;
 };
 
-export function CollaborationModal({ invitations, onAccept, track, isOpen, onClose, onInvite, onLoadCollaborators, onRevoke, onSearchUsernames }: Props) {
+export const CollaborationModal: React.FC<Props> = ({ invitations, onAccept, track, isOpen, onClose, onInvite, onLoadCollaborators, onRevoke, onSearchUsernames }) => {
+  const alive = useRef(true);
+  const pendingRequest = useRef(false);
+  const modal = useModalLifecycle(isOpen, onClose);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const [username, setUsername] = useState('');
   const [role, setRole] = useState<'viewer' | 'editor'>('viewer');
   const [collaborators, setCollaborators] = useState<TrackCollaborator[]>([]);
@@ -22,37 +27,43 @@ export function CollaborationModal({ invitations, onAccept, track, isOpen, onClo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
+  const load = useRef(onLoadCollaborators); load.current = onLoadCollaborators;
+  const search = useRef(onSearchUsernames); search.current = onSearchUsernames;
+  const trackId = track?.id;
   useEffect(() => {
-    if (!isOpen || !track) return;
+    if (!isOpen || !trackId) return;
     setError(''); setUsername(''); setRole('viewer');
-    void onLoadCollaborators().then(setCollaborators).catch((e: unknown) => setError(e instanceof Error ? e.message : 'Could not load collaborators.'));
-  }, [isOpen, track, onLoadCollaborators]);
+    let active = true;
+    void load.current().then((items) => { if (active && alive.current) setCollaborators(items); }).catch((e: unknown) => { if (active && alive.current) setError(e instanceof Error ? e.message : 'Could not load collaborators.'); });
+    return () => { active = false; };
+  }, [isOpen, trackId]);
 
   useEffect(() => {
     const query = username.trim();
     if (!isOpen || !query) { setMatches([]); return; }
+    let active = true;
     const timer = window.setTimeout(() => {
-      void onSearchUsernames(query).then((result) => setMatches(result.slice(0, 3))).catch(() => setMatches([]));
+      void search.current(query).then((result) => { if (active && alive.current) setMatches(result.slice(0, 3)); }).catch(() => { if (active && alive.current) setMatches([]); });
     }, 160);
-    return () => window.clearTimeout(timer);
-  }, [username, isOpen, onSearchUsernames]);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [username, isOpen]);
 
   if (!isOpen || !track) return null;
   const pending = collaborators.filter((item) => !item.accepted_at && !item.revoked_at && new Date(item.expires_at) > new Date());
   const active = collaborators.filter((item) => item.accepted_at && !item.revoked_at && new Date(item.expires_at) > new Date());
   const invite = async (event: React.FormEvent) => {
-    event.preventDefault(); setBusy(true); setError('');
-    try { await onInvite(username.trim(), role); setUsername(''); setCollaborators(await onLoadCollaborators()); }
-    catch (e) { setError(e instanceof Error ? e.message : 'Could not create invitation.'); }
-    finally { setBusy(false); }
+    event.preventDefault(); if (pendingRequest.current) return; pendingRequest.current = true; setBusy(true); setError('');
+    try { await onInvite(username.trim(), role); if (!alive.current) return; const items = await load.current(); if (!alive.current) return; setUsername(''); setCollaborators(items); }
+    catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Could not create invitation.'); }
+    finally { if (alive.current) { pendingRequest.current = false; setBusy(false); } }
   };
   const revoke = async (userId: string) => {
-    setBusy(true); setError('');
-    try { await onRevoke(userId); setCollaborators(await onLoadCollaborators()); }
-    catch (e) { setError(e instanceof Error ? e.message : 'Could not revoke access.'); }
-    finally { setBusy(false); }
+    if (pendingRequest.current) return; pendingRequest.current = true; setBusy(true); setError('');
+    try { await onRevoke(userId); if (!alive.current) return; const items = await load.current(); if (alive.current) setCollaborators(items); }
+    catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Could not revoke access.'); }
+    finally { if (alive.current) { pendingRequest.current = false; setBusy(false); } }
   };
-  return <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/45" role="dialog" aria-modal="true" aria-label={`Share ${track.title}`}>
+  return <div ref={modal} tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/45" role="dialog" aria-modal="true" aria-label={`Share ${track.title}`}>
     <section className="w-full max-w-lg rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-xl">
       <header className="flex items-center justify-between p-5 border-b border-stone-100 dark:border-stone-800"><div><h2 className="font-display text-lg font-bold flex items-center gap-2"><Share2 className="w-5 h-5 text-amber-600" />Share track</h2><p className="text-sm text-stone-500 mt-1">{track.title}</p></div><button onClick={onClose} className="text-sm text-stone-500 hover:text-stone-900">Close</button></header>
       <div className="p-5 space-y-5">

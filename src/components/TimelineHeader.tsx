@@ -55,7 +55,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
   return (
     <header className="mb-6 sm:mb-8">
       {/* Top Banner — single lean row */}
-      <div className="flex flex-row items-center justify-between gap-3 pb-5 border-b border-stone-200 dark:border-stone-800">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-5 border-b border-stone-200 dark:border-stone-800">
         <div className="min-w-0">
           <div className="flex items-center gap-2.5 mb-1">
             <div className="w-8 h-8 rounded-xl bg-amber-600 text-white flex items-center justify-center shadow-xs shrink-0">
@@ -75,7 +75,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
           {canCreateEntry && <button
             id="open-create-event-modal"
             onClick={onAddNewEvent}
-            className="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition flex items-center gap-2 active:scale-98 whitespace-nowrap"
+            className="min-h-11 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition flex items-center gap-2 active:scale-98 whitespace-nowrap"
           >
             <Plus className="w-4 h-4" />
             <span>New entry</span>
@@ -88,7 +88,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
               aria-expanded={menuOpen}
               onClick={() => setMenuOpen((v) => !v)}
               title="More actions"
-              className="px-3 py-2 rounded-xl text-xs font-semibold border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700"
+              className="min-h-11 min-w-11 px-3 py-2 rounded-xl text-xs font-semibold border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700"
             >
               <MoreHorizontal className="w-4 h-4" />
             </button>
@@ -120,7 +120,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
                 aria-haspopup="menu"
                 aria-expanded={accountOpen}
                 title={username}
-                className="w-9 h-9 rounded-full bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-xs font-bold flex items-center justify-center shrink-0"
+                className="w-11 h-11 rounded-full bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-xs font-bold flex items-center justify-center shrink-0"
               >
                 {username.slice(0, 1).toUpperCase()}
               </button>

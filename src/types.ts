@@ -68,6 +68,8 @@ export interface TimelineEvent {
   createdAt: string;
   updatedAt: string;
   reactions?: MemoryReaction[];
+  /** Authoritative optimistic concurrency token from the server. */
+  version?: number;
 }
 
 export type ViewMode = 'timeline' | 'compact' | 'gallery';

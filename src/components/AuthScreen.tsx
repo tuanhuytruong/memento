@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Calendar, KeyRound, LoaderCircle, LockKeyhole, UserRound } from 'lucide-react';
 
 interface AuthScreenProps {
@@ -7,6 +7,8 @@ interface AuthScreenProps {
 }
 
 export const AuthScreen: React.FC<AuthScreenProps> = ({ initialError, onSubmit }) => {
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -27,9 +29,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ initialError, onSubmit }
     try {
       await onSubmit(mode, { username: username.trim(), password, inviteCode: inviteCode.trim() });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to authenticate. Please try again.');
+      if (alive.current) setError(err instanceof Error ? err.message : 'Unable to authenticate. Please try again.');
     } finally {
-      setPending(false);
+      if (alive.current) setPending(false);
     }
   };
 

@@ -33,6 +33,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   onResetFilters,
   isFiltered,
 }) => {
+  const trackMap = new Map(tracks.map((track) => [track.id, track]));
   const currentTrack = tracks.find((t) => t.id === currentTrackId);
   const trackTheme = currentTrack ? getEventTheme(currentTrack.color) : null;
 
@@ -99,12 +100,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
     groupedEvents[groupKey].push(evt);
   });
 
-  // Track map for O(1) lookup
-  const trackMap = React.useMemo(() => {
-    const map = new Map<string, EventTrack>();
-    tracks.forEach((t) => map.set(t.id, t));
-    return map;
-  }, [tracks]);
+
 
   return (
     <div id="timeline-container" className="relative pl-2 sm:pl-4">

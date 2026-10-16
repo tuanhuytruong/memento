@@ -130,11 +130,11 @@ export const dataApi = {
     requireResource<EventTrack>(await request(`/tracks/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(track) }), ['track'], 'track'),
   deleteTrack: (id: string) => request(`/tracks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   moments: async () => unwrapList<TimelineEvent>(await request('/moments'), ['moments']),
-  toggleReaction: async (momentId: string, emoji: MemoryReaction['emoji']) => request<{ reactions: MemoryReaction[]; selectedEmojis: string[] }>(`/moments/${encodeURIComponent(momentId)}/reactions`, { method: 'POST', body: JSON.stringify({ emoji }) }),
+  setReaction: async (momentId: string, emoji: MemoryReaction['emoji'], active: boolean) => request<{ reactions: MemoryReaction[]; selectedEmojis: string[] }>(`/moments/${encodeURIComponent(momentId)}/reactions`, { method: 'PUT', body: JSON.stringify({ emoji, active }) }),
   createMoment: async (moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>) =>
     requireResource<TimelineEvent>(await request('/moments', { method: 'POST', body: JSON.stringify(moment) }), ['moment'], 'moment'),
-  updateMoment: async (id: string, moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>) =>
-    requireResource<TimelineEvent>(await request(`/moments/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(moment) }), ['moment'], 'moment'),
+  updateMoment: async (id: string, moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, expectedVersion: number) =>
+    requireResource<TimelineEvent>(await request(`/moments/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ ...moment, expectedVersion }) }), ['moment'], 'moment'),
   deleteMoment: (id: string) => request(`/moments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   tags: async () => {
     const result = unwrapList<unknown>(await request('/tags'), ['tags']);
@@ -160,12 +160,12 @@ export const dataApi = {
   collaborationInvitations: async () => unwrapList<CollaborationInvitation>(await request('/collaboration-invitations'), ['invitations']),
   acceptCollaborationInvitation: (id: string) => request(`/collaboration-invitations/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
   usernameMatches: async (query: string) => unwrapList<string>(await request(`/users/search?q=${encodeURIComponent(query)}`), ['usernames']),
-  uploadImage: async (file: File, momentId: string) => {
+  uploadImage: async (file: File, momentId: string, uploadId: string) => {
     const form = new FormData();
     form.append('file', file);
     form.append('momentId', momentId);
     try {
-      return await request('/images', { method: 'POST', body: form });
+      return await request('/images', { method: 'POST', headers: { 'Idempotency-Key': uploadId }, body: form });
     } catch (error) {
       if (error instanceof ApiError && error.status === 413) {
         throw new ApiError(`"${file.name}" is too large for upload. Try a smaller photo.`, 413);
