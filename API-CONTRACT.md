@@ -18,6 +18,11 @@ Base URL: same origin, `/api`. All endpoints except register/login require a val
 
 Track records preserve client track fields, including `title`, `description`, `color`, `icon`, `tags`, and optional `status`, `createdAt`, and `updatedAt`; `id` is always present.
 
+## Track visits (private rediscovery state)
+
+- `PUT /api/tracks/:id/visit` JSON `{ "ownerId": uuid }` → `{ "visit": { "trackOwnerId": uuid, "trackId": string, "lastOpenedAt": ISO-8601 } }`. Records the server time of a deliberate track navigation/detail open after an exact `(ownerId, id)` current-access check under the shared schema/owner mutation lock. Owner, editor and viewer may each record their own state; a revoked or unrelated account receives `404`. Missing/malformed identity is `400`.
+- `GET /api/track-visits` → `{ "visits": [ { "trackOwnerId": uuid, "trackId": string, "lastOpenedAt": ISO-8601 } ] }` containing only the caller's own timestamps for tracks they can currently access, returned in a single query. One latest timestamp per (user, track) — never an event log, never another account's rows, never exposed to the track owner or collaborators, and never part of the content backup. Visits are not stored for moments, search phrases or reflection drafts; account deletion and track deletion cascade the rows away.
+
 ## Moments
 
 - `POST /api/moments` and `PUT /api/moments/:id` require `eventOwnerId` alongside `eventId`; the parent track is identified as `(eventOwnerId, eventId)`. Missing or mismatched identity is rejected, never resolved by row order.

@@ -14,6 +14,7 @@ import { createImageDelivery } from './image-delivery.mjs';
 import { invalidateImageObject } from './image-cache.mjs';
 import { createRequestBudgets } from './request-budgets.mjs';
 import { makeImageVariants, resolveVariant, VARIANT_CACHE_CONTROL } from './image-variants.mjs';
+import { listVisitState, recordVisit } from './track-visits.mjs';
 
 const app = express();
 // Express 4 does not catch rejected async handlers (including pool acquisition).
@@ -287,6 +288,18 @@ app.get('/api/tracks', auth, async (req,res,next) => { try {
 `, [req.user.id]);
   res.json({tracks:rows.map(x=>({ ...x.document, resourceOwnerId:x.owner_id, accessRole: x.role, sharedByYou: x.shared_by_owner }))});
 } catch(e){next(e);} });
+// Visit state is visitor-private and read-only for everyone else; reads take no owner lock.
+app.get('/api/track-visits', auth, async (req,res,next) => { try {
+  res.json({visits: await listVisitState(pool, req.user.id, DB_SCHEMA)});
+} catch(e){next(e);} });
+app.put('/api/tracks/:id/visit', auth, async (req,res,next) => { try {
+  const ownerId = req.body?.ownerId;
+  if (!validUuid(ownerId) || typeof req.params.id !== 'string' || !req.params.id) throw new ApiError(400,'Exact track identity (ownerId and id) is required');
+  const visit = await mutate(req, exactTrackAccess, {ownerId, id:req.params.id},
+    async (client) => recordVisit(client, req.user.id, {ownerId, id:req.params.id}, DB_SCHEMA));
+  res.json({visit});
+} catch(e){next(e);} });
+
 app.post('/api/tracks', auth, async (req,res) => {
   const d=validateDocument(req.body,'track'); if(!d) throw new ApiError(400,'Invalid track');
   d.id=typeof d.id==='string'&&d.id.length<128?d.id:id();
