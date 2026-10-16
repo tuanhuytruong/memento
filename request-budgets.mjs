@@ -1,0 +1,34 @@
+// Separate bounded budgets: image navigation cannot consume saved-content writes.
+// req.user must already be set before account() runs. IP is abuse protection only.
+export function createRequestBudgets({ now = Date.now, maxKeys = 10000, windowMs = 60000, limits = {} } = {}) {
+  const caps = { auth: 20, abuse: 1800, image: 480, read: 240, write: 120, ...limits };
+  const buckets = new Map();
+  const reject = (res, until) => {
+    res.setHeader('Retry-After', String(Math.max(1, Math.ceil((until - now()) / 1000))));
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(429).json({ error: 'Too many requests. Please try again shortly.' });
+  };
+  let count = 0;
+  function consume(kind, identity, res, next) {
+    const time = now();
+    if (++count % 128 === 0 || buckets.size >= maxKeys) for (const [key, value] of buckets) if (value.until <= time) buckets.delete(key);
+    const key = `${kind}:${identity}`;
+    let bucket = buckets.get(key);
+    if (!bucket || bucket.until <= time) {
+      if (buckets.size >= maxKeys && !bucket) return reject(res, time + windowMs);
+      bucket = { count: 0, until: time + windowMs }; buckets.set(key, bucket);
+    }
+    if (++bucket.count > caps[kind]) return reject(res, bucket.until);
+    return next();
+  }
+  return {
+    abuse(req, res, next) { return consume('abuse', req.ip || 'unknown', res, next); },
+    auth(req, res, next) { return consume('auth', req.ip || 'unknown', res, next); },
+    account(req, res, next) {
+      if (!req.user?.id) return next(new Error('Account budget requires authentication'));
+      const image = ['GET', 'HEAD'].includes(req.method) && /^\/api\/images\/[^/]+$/.test(req.path);
+      return consume(image ? 'image' : ['GET', 'HEAD'].includes(req.method) ? 'read' : 'write', req.user.id, res, next);
+    },
+    stats() { return { keys: buckets.size, maxKeys }; },
+  };
+}
