@@ -1,7 +1,7 @@
 // Separate bounded budgets: image navigation cannot consume saved-content writes.
 // req.user must already be set before account() runs. IP is abuse protection only.
 export function createRequestBudgets({ now = Date.now, maxKeys = 10000, windowMs = 60000, limits = {} } = {}) {
-  const caps = { auth: 20, abuse: 1800, image: 480, read: 240, write: 120, ...limits };
+  const caps = { auth: 20, abuse: 1800, image: 480, read: 240, write: 120, render: 12, ...limits };
   const buckets = new Map();
   const reject = (res, until) => {
     res.setHeader('Retry-After', String(Math.max(1, Math.ceil((until - now()) / 1000))));
@@ -27,6 +27,9 @@ export function createRequestBudgets({ now = Date.now, maxKeys = 10000, windowMs
     account(req, res, next) {
       if (!req.user?.id) return next(new Error('Account budget requires authentication'));
       const image = ['GET', 'HEAD'].includes(req.method) && /^\/api\/images\/[^/]+$/.test(req.path);
+      // Rendering decodes multiple photos per request, so it gets its own small
+      // budget instead of sharing the saved-content write allowance.
+      if (req.method === 'POST' && req.path === '/api/postcards/render') return consume('render', req.user.id, res, next);
       return consume(image ? 'image' : ['GET', 'HEAD'].includes(req.method) ? 'read' : 'write', req.user.id, res, next);
     },
     stats() { return { keys: buckets.size, maxKeys }; },

@@ -15,6 +15,9 @@ import { invalidateImageObject } from './image-cache.mjs';
 import { createRequestBudgets } from './request-budgets.mjs';
 import { makeImageVariants, resolveVariant, VARIANT_CACHE_CONTROL } from './image-variants.mjs';
 import { listVisitState, recordVisit } from './track-visits.mjs';
+import { validatePostcardRequest } from './postcard-layout.mjs';
+import { renderPostcard } from './postcard-renderer.mjs';
+import { resolvePostcardPhotos } from './postcard-sources.mjs';
 
 const app = express();
 // Express 4 does not catch rejected async handlers (including pool acquisition).
@@ -573,6 +576,34 @@ app.get('/api/images/:id',auth,async(req,res,next)=>{try{
   if(!variant.key.startsWith(R2_PREFIX))throw new Error('Invalid image namespace');
   await imageDelivery.deliver({req,res,metadata:variant});
 }catch(e){next(e);}});
+// Postcard export: owner-only, no persistence, no public URL. The rendered PNG
+// is returned once and never stored or shared.
+app.post('/api/postcards/render',auth,async(req,res,next)=>{try{
+  let spec;
+  try { spec = validatePostcardRequest(req.body); }
+  catch (error) { return fail(res, error.status || 400, error.message); }
+  const controller = new AbortController();
+  const onClose = () => { if (!res.writableFinished) controller.abort(); };
+  res.once('close', onClose);
+  try {
+    const photos = await resolvePostcardPhotos(spec, {
+      userId: req.user.id, pool, qschema, s3, bucket: process.env.R2_BUCKET, prefix: R2_PREFIX,
+      resolveVariant, exactMomentAccess, imageAccess,
+    }, controller.signal);
+    const png = await renderPostcard({ spec, photos, signal: controller.signal });
+    if (controller.signal.aborted || res.destroyed) return;
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Content-Length', String(png.length));
+    res.setHeader('Cache-Control', 'no-store');
+    // Fixed, content-free filename: no user text and no timestamp in the name.
+    res.setHeader('Content-Disposition', 'attachment; filename="memento-postcard.png"');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.end(png);
+  } finally {
+    res.off('close', onClose);
+  }
+}catch(e){next(e);}});
+
 app.delete('/api/images/:id',auth,async(req,res)=>{
   await mutate(req,imageAccess,req.params.id,async(c,image)=>{
     requireEditor(image); await cleanup.enqueue(c,imageKeys([image]));
@@ -605,5 +636,7 @@ app.delete('/api/tags/:tag',auth,async(req,res)=>{
 
 // Named dependencies support deterministic fault injection without test-only HTTP routes.
 export { app, s3 };
-app.use((err,req,res,next)=>{if(res.headersSent)return next(err);if(['IMAGE_BUSY','IMAGE_TIMEOUT'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');res.set('Retry-After','2');return fail(res,503,'Image delivery temporarily unavailable');}if(['IMAGE_LENGTH_MISMATCH','IMAGE_METADATA_INVALID'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');return fail(res,502,'Image storage temporarily unavailable');}if(['IMAGE_INVALID','IMAGE_TOO_LARGE','IMAGE_TRANSFORM_BUSY','TRANSFORM_BUSY'].includes(err?.code)){const status=err.code==='IMAGE_INVALID'?400:err.code==='IMAGE_TOO_LARGE'?413:503;if(status===503)res.set('Retry-After','2');return fail(res,status,status===400?'Invalid or unsupported image':status===413?'Image is too large':'Image processing temporarily unavailable');}if(err instanceof ApiError)return res.status(err.status).json({error:err.message,...err.details});if(['ECONNREFUSED','ECONNRESET','ETIMEDOUT','EHOSTUNREACH','53300','57P01','57P03','08006'].includes(err?.code)||/connection.*(timeout|terminated|closed)|timeout.*connect/i.test(err?.message||''))return fail(res,503,'Dependency temporarily unavailable');if(err instanceof multer.MulterError)return res.status(err.code==='LIMIT_FILE_SIZE'?413:400).json({error:'Invalid upload'});if(err?.code==='23505')return fail(res,409,'Resource already exists');if(err?.name==='NoSuchKey')return fail(res,404,'Image not found');res.status(500).json({error:'Internal server error'});});
+// Postcard failures are always actionable messages with an explicit status;
+// they must never leak a stack, a storage key or a silent success.
+app.use((err,req,res,next)=>{if(res.headersSent)return next(err);if(err?.postcard===true&&Number.isInteger(err.status)){res.set('Cache-Control','no-store');if(err.retryAfter)res.set('Retry-After',String(err.retryAfter));return res.status(err.status===499?499:err.status).json({error:err.message});}if(['IMAGE_BUSY','IMAGE_TIMEOUT'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');res.set('Retry-After','2');return fail(res,503,'Image delivery temporarily unavailable');}if(['IMAGE_LENGTH_MISMATCH','IMAGE_METADATA_INVALID'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');return fail(res,502,'Image storage temporarily unavailable');}if(['IMAGE_INVALID','IMAGE_TOO_LARGE','IMAGE_TRANSFORM_BUSY','TRANSFORM_BUSY'].includes(err?.code)){const status=err.code==='IMAGE_INVALID'?400:err.code==='IMAGE_TOO_LARGE'?413:503;if(status===503)res.set('Retry-After','2');return fail(res,status,status===400?'Invalid or unsupported image':status===413?'Image is too large':'Image processing temporarily unavailable');}if(err instanceof ApiError)return res.status(err.status).json({error:err.message,...err.details});if(['ECONNREFUSED','ECONNRESET','ETIMEDOUT','EHOSTUNREACH','53300','57P01','57P03','08006'].includes(err?.code)||/connection.*(timeout|terminated|closed)|timeout.*connect/i.test(err?.message||''))return fail(res,503,'Dependency temporarily unavailable');if(err instanceof multer.MulterError)return res.status(err.code==='LIMIT_FILE_SIZE'?413:400).json({error:'Invalid upload'});if(err?.code==='23505')return fail(res,409,'Resource already exists');if(err?.name==='NoSuchKey')return fail(res,404,'Image not found');res.status(500).json({error:'Internal server error'});});
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){const stopCleanup=startCleanup(cleanup,()=>process.stderr.write('Cleanup drain unavailable\n'));const server=app.listen(PORT,'127.0.0.1',()=>console.log(`Memento API listening on 127.0.0.1:${PORT}`));const stop=()=>{stopCleanup();server.close(async()=>{await pool.end();process.exit(0);});};process.on('SIGTERM',stop);process.on('SIGINT',stop);}

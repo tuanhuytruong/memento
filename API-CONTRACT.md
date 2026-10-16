@@ -60,3 +60,28 @@ All records and image operations are scoped to the authenticated user. Sessions 
 - `DELETE /api/perspectives/:id` lets the author with current owner/editor access remove their own entry; the moment owner may moderate/delete any entry. Neither can impersonate another author.
 - `GET /api/perspectives/export?limit=500&cursor=<base64url>` returns all perspectives attached to moments the signed-in user currently owns, including collaborator-authored perspectives, but never contributions on another person's moments. Pages are limited to 1–500 rows and ordered by `created_at,id`; cursors preserve PostgreSQL timestamp precision. The client follows every page before downloading a complete backup; any page failure prevents the download. This endpoint is called only for explicit JSON backup; ordinary account load does not retrieve perspectives.
 - Contributions are separate from the moment document, ordered oldest-first by `created_at,id`, and cascade on parent moment or author deletion. Revoking track sharing removes access but does not delete already-created entries. Text is never logged; no public image or content URLs are introduced.
+
+## Postcards (private keepsake export)
+
+- `POST /api/postcards/render` JSON `{ template: "journey"|"ordinary"|"month", moments: [{ ownerId, id }], images: [<imageId> | null], captions: [<string>], title, note?, showDate? }` returns the rendered `image/png` bytes with `Cache-Control: no-store` and `Content-Disposition: attachment; filename="memento-postcard.png"`. The filename is fixed and content-free.
+- Selection bounds are enforced before any database or storage read: `journey` and `month` take 1–6 moments, `ordinary` takes 1–3. At most one photo per selected moment, in the same order; `null` is a deliberate text-only cell. Duplicated moments, duplicated photos and a photo count that does not match the moment count are rejected with 400.
+- Text limits are guided, not clipped: title ≤ 80 characters, personal note ≤ 500, caption ≤ 80 per moment. Text that cannot fit its allotted area returns 400 with an actionable message rather than a silently truncated image.
+- Export is **owner-only**. Every selected moment is re-checked with a fresh exact-owner read immediately before its photo bytes are requested; a viewer, editor or revoked collaborator receives 403, an unrelated account receives 404, and anonymous callers receive 401. A photo that does not belong to the moment it was selected under is rejected with 422.
+- No database transaction is held across storage reads or rendering. Each photo read is bounded by a 20s timeout and a 24MB cap, and cancels on client disconnect. Rendering runs at most one per process with a two-deep queue (503 with `Retry-After` when full) and a 30s wall-clock bound. Animated GIF and multi-page images are rejected explicitly (422) instead of being rendered as stills.
+- Nothing is persisted: no postcard table, no object storage write, no public URL. Output carries no EXIF, IPTC or XMP from the source photos. Text reaches the renderer only as escaped literal strings — never markup, never a URL, never a client-supplied path or storage key.
+- Render requests are metered separately from saved-content writes: 12 per user per minute (`render` budget), returning 429 with `Retry-After` beyond that.
+- The UI downloads the exact bytes the server returned for the preview; it does not re-request or re-render at download time.
+
+### Supported UI harness invocation
+
+The browser harness is `tests/ui-remediation.cjs` and needs a real Playwright install plus a Chromium binary; it is **not** run by `npm test`. On DEV it is invoked explicitly:
+
+```bash
+cd /opt/memento-dev
+export NODE_PATH=/home/ubuntu/.cache/memento-ui-playwright/node_modules
+export CHROMIUM_PATH=/home/ubuntu/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux-arm64/chrome-headless-shell
+export MEMENTO_UI_ARTIFACTS=/opt/memento-dev/.hermes/evidence/<phase>
+node tests/ui-remediation.cjs          # exits 0 on success; prints JSON with one line per journey
+```
+
+`MEMENTO_UI_URL` overrides the target (default `https://memento-dev.srv.io.vn`); `MEMENTO_UI_DRAFT_ONLY=1` runs only the draft-dismissal subset. All routes are synthetic controlled fixtures, **not** authenticated live-account E2E; that distinction is printed in the result JSON. Without `NODE_PATH` pointing at a Playwright install the harness prints `SKIP` and exits 0 rather than reporting a pass.
