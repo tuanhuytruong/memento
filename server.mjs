@@ -366,14 +366,14 @@ app.post('/api/images',auth,upload.single('file'),async(req,res,next)=>{
     const uploadKey=req.get('idempotency-key')||null;
     if(uploadKey&&!/^[a-zA-Z0-9_.:-]{8,128}$/.test(uploadKey))throw new ApiError(400,'Invalid Idempotency-Key');
     const uploadHash=crypto.createHash('sha256').update(req.body.momentId).update('\0').update(type).update('\0').update(req.file.buffer).digest('hex');
-    const replay=async(c)=>{
+    const replay=async(c,current)=>{
       if(!uploadKey)return null;
-      const found=await c.query(`SELECT id,moment_id,content_type,size,upload_hash FROM ${qschema}.images WHERE uploader_id=$1 AND upload_key=$2`,[req.user.id,uploadKey]);
-      if(found.rowCount&&found.rows[0].upload_hash!==uploadHash)throw new ApiError(409,'Idempotency key reused with different upload');
+      const found=await c.query(`SELECT id,owner_id,moment_id,content_type,size,upload_hash FROM ${qschema}.images WHERE uploader_id=$1 AND upload_key=$2`,[req.user.id,uploadKey]);
+      if(found.rowCount&&(found.rows[0].upload_hash!==uploadHash||found.rows[0].owner_id!==current.owner_id||found.rows[0].moment_id!==current.id))throw new ApiError(409,'Idempotency key reused with different upload');
       return found.rows[0]||null;
     };
     // Replays still require fresh authorization. Keys are scoped to authenticated uploader.
-    const previous=await mutate(req,momentAccess,req.body.momentId,async(c,current)=>{requireEditor(current);return replay(c);});
+    const previous=await mutate(req,momentAccess,req.body.momentId,async(c,current)=>{requireEditor(current);return replay(c,current);});
     const response=image=>({id:image.id,url:`/api/images/${image.id}`,momentId:image.moment_id,contentType:image.content_type,size:image.size});
     if(previous)return res.status(200).json({image:response(previous),replayed:true});
     const imageId=id(),base=`${R2_PREFIX}${crypto.randomUUID()}/${imageId}`,objectKey=`${base}/original`;
@@ -389,7 +389,7 @@ app.post('/api/images',auth,upload.single('file'),async(req,res,next)=>{
       requireEditor(current);
       // A move to another shared track must not let this staged upload silently follow it.
       if(current.owner_id!==moment.owner_id||current.event_id!==moment.event_id)throw new ApiError(409,'Moment moved during upload');
-      const existing=await replay(c);if(existing)return {image:existing,replayed:true};
+      const existing=await replay(c,current);if(existing)return {image:existing,replayed:true};
       await cleanup.attach(c,jobId);
       await c.query(`INSERT INTO ${qschema}.images(id,owner_id,moment_id,object_key,content_type,size,thumb_object_key,display_object_key,thumb_size,display_size,width,height,uploader_id,upload_key,upload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,[imageId,current.owner_id,current.id,objectKey,type,req.file.size,thumbKey,displayKey,variants.thumb?.size||null,variants.display?.size||null,variants.width,variants.height,req.user.id,uploadKey,uploadHash]);
       const updated=await c.query(`UPDATE ${qschema}.moments SET version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2 RETURNING version`,[current.owner_id,current.id]);
