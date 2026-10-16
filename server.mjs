@@ -10,6 +10,9 @@ import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } fro
 import { pool, qschema, hashInvite, hashSession, id } from './memento-db.mjs';
 import { asyncHandler, ApiError, transaction, authorizedMutation, expectedVersion } from './mutation-safety.mjs';
 import { cleanupQueue, imageKeys, startCleanup } from './object-cleanup.mjs';
+import { createImageDelivery } from './image-delivery.mjs';
+import { invalidateImageObject } from './image-cache.mjs';
+import { createRequestBudgets } from './request-budgets.mjs';
 import { makeImageVariants, resolveVariant, VARIANT_CACHE_CONTROL } from './image-variants.mjs';
 
 const app = express();
@@ -34,34 +37,26 @@ for (const key of ['DATABASE_URL', 'SESSION_SECRET', 'INVITE_ADMIN_SECRET', 'R2_
 }
 if (process.env.SESSION_SECRET.length < 32 || process.env.INVITE_ADMIN_SECRET.length < 32) throw new Error('Configured application secrets must be at least 32 characters');
 const s3 = new S3Client({ region: 'auto', endpoint: process.env.R2_ENDPOINT, credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY } });
-export const cleanup = cleanupQueue({ pool, qschema, prefix: R2_PREFIX, remove: key => s3.send(new DeleteObjectCommand({Bucket:process.env.R2_BUCKET,Key:key}),{abortSignal:AbortSignal.timeout(30_000)}) });
+export const cleanup = cleanupQueue({ pool, qschema, prefix: R2_PREFIX, remove: key => { invalidateImageObject(key); return s3.send(new DeleteObjectCommand({Bucket:process.env.R2_BUCKET,Key:key}),{abortSignal:AbortSignal.timeout(30_000)}); } });
 const mutate = (req, access, resourceId, work) => authorizedMutation({pool,schema:DB_SCHEMA,userId:req.user.id,resourceId,access,work});
 const ownerWrite = (req, work) => transaction(pool,work,req.user.id,DB_SCHEMA);
 const requireEditor = access => { if (!isEditor(access)) throw new ApiError(403,'Editor access required'); };
 const COOKIE = 'memento_session';
-const limits = new Map();
-let limiterRequests = 0;
-const limiter = (req, res, next) => {
-  if (++limiterRequests % 256 === 0) {
-    const now = Date.now();
-    for (const [key, value] of limits) if (value.until < now) limits.delete(key);
-  }
-  const isAuth = req.originalUrl.split('?')[0].startsWith('/api/auth/');
-  const key = `${req.ip}:${isAuth ? 'auth' : 'api'}`;
-  const now = Date.now();
-  let state = limits.get(key);
-  if (!state || state.until < now) state = { count: 0, until: now + 60_000 };
-  state.count++;
-  limits.set(key, state);
-  if (state.count > (key.endsWith(':auth') ? 20 : 120)) return res.status(429).json({ error: 'Too many requests' });
-  next();
-};
+const budgets = createRequestBudgets();
+const imageDelivery = createImageDelivery({
+  enabled: process.env.IMAGE_CACHE_ENABLED !== 'false',
+  fetchObject: async (metadata, { signal }) => {
+    const object = await s3.send(new GetObjectCommand({Bucket:process.env.R2_BUCKET,Key:metadata.key}),{abortSignal:signal});
+    return {body:object.Body,contentLength:object.ContentLength};
+  },
+});
 app.disable('x-powered-by');
 app.set('trust proxy', 'loopback');
 // Keep liveness independent of database, authentication and R2 availability.
 app.get('/health', (_req, res) => res.status(200).json({ ok: true, service: 'memento-api' }));
 app.use(express.json({ limit: '1mb', strict: true }));
-app.use('/api', limiter);
+app.use('/api', budgets.abuse);
+app.use('/api/auth', budgets.auth);
 app.use((req, res, next) => {
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('Referrer-Policy', 'no-referrer');
@@ -83,7 +78,7 @@ async function authenticate(req, res, next) {
     if (!token || token.length > 128) return res.status(401).json({ error: 'Authentication required' });
     const { rows } = await pool.query(`SELECT u.id, u.username FROM ${qschema}.sessions s JOIN ${qschema}.users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at > now()`, [hashSession(token)]);
     if (!rows[0]) return res.status(401).json({ error: 'Authentication required' });
-    req.user = rows[0]; next();
+    req.user = rows[0]; budgets.account(req,res,next);
   } catch (e) { next(e); }
 }
 function parseCookie(header = '') {
@@ -408,7 +403,12 @@ app.post('/api/images',auth,upload.single('file'),async(req,res,next)=>{
     next(error);
   }
 });
-app.get('/api/images/:id',auth,async(req,res,next)=>{try{const image=await imageAccess(req.user.id,req.params.id);if(!image)return fail(res,404,'Image not found');const variant=resolveVariant(image,req.query.variant || 'original');if(!variant)return fail(res,400,'Invalid image variant');const obj=await s3.send(new GetObjectCommand({Bucket:process.env.R2_BUCKET,Key:variant.key}));res.set({'Content-Type':variant.contentType,'Content-Length':String(variant.size),'Cache-Control':VARIANT_CACHE_CONTROL,'X-Content-Type-Options':'nosniff'});obj.Body.pipe(res);obj.Body.on('error',next);}catch(e){next(e);}});
+app.get('/api/images/:id',auth,async(req,res,next)=>{try{
+  const image=await imageAccess(req.user.id,req.params.id);if(!image)return fail(res,404,'Image not found');
+  const variant=resolveVariant(image,req.query.variant || 'original');if(!variant)return fail(res,400,'Invalid image variant');
+  if(!variant.key.startsWith(R2_PREFIX))throw new Error('Invalid image namespace');
+  await imageDelivery.deliver({req,res,metadata:variant});
+}catch(e){next(e);}});
 app.delete('/api/images/:id',auth,async(req,res)=>{
   await mutate(req,imageAccess,req.params.id,async(c,image)=>{
     requireEditor(image); await cleanup.enqueue(c,imageKeys([image]));
@@ -441,5 +441,5 @@ app.delete('/api/tags/:tag',auth,async(req,res)=>{
 
 // Named dependencies support deterministic fault injection without test-only HTTP routes.
 export { app, s3 };
-app.use((err,req,res,next)=>{if(res.headersSent)return next(err);if(['IMAGE_INVALID','IMAGE_TOO_LARGE','IMAGE_TRANSFORM_BUSY','TRANSFORM_BUSY'].includes(err?.code)){const status=err.code==='IMAGE_INVALID'?400:err.code==='IMAGE_TOO_LARGE'?413:503;if(status===503)res.set('Retry-After','2');return fail(res,status,status===400?'Invalid or unsupported image':status===413?'Image is too large':'Image processing temporarily unavailable');}if(err instanceof ApiError)return res.status(err.status).json({error:err.message,...err.details});if(['ECONNREFUSED','ECONNRESET','ETIMEDOUT','EHOSTUNREACH','53300','57P01','57P03','08006'].includes(err?.code)||/connection.*(timeout|terminated|closed)|timeout.*connect/i.test(err?.message||''))return fail(res,503,'Dependency temporarily unavailable');if(err instanceof multer.MulterError)return res.status(err.code==='LIMIT_FILE_SIZE'?413:400).json({error:'Invalid upload'});if(err?.code==='23505')return fail(res,409,'Resource already exists');if(err?.name==='NoSuchKey')return fail(res,404,'Image not found');res.status(500).json({error:'Internal server error'});});
+app.use((err,req,res,next)=>{if(res.headersSent)return next(err);if(['IMAGE_BUSY','IMAGE_TIMEOUT'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');res.set('Retry-After','2');return fail(res,503,'Image delivery temporarily unavailable');}if(['IMAGE_LENGTH_MISMATCH','IMAGE_METADATA_INVALID'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');return fail(res,502,'Image storage temporarily unavailable');}if(['IMAGE_INVALID','IMAGE_TOO_LARGE','IMAGE_TRANSFORM_BUSY','TRANSFORM_BUSY'].includes(err?.code)){const status=err.code==='IMAGE_INVALID'?400:err.code==='IMAGE_TOO_LARGE'?413:503;if(status===503)res.set('Retry-After','2');return fail(res,status,status===400?'Invalid or unsupported image':status===413?'Image is too large':'Image processing temporarily unavailable');}if(err instanceof ApiError)return res.status(err.status).json({error:err.message,...err.details});if(['ECONNREFUSED','ECONNRESET','ETIMEDOUT','EHOSTUNREACH','53300','57P01','57P03','08006'].includes(err?.code)||/connection.*(timeout|terminated|closed)|timeout.*connect/i.test(err?.message||''))return fail(res,503,'Dependency temporarily unavailable');if(err instanceof multer.MulterError)return res.status(err.code==='LIMIT_FILE_SIZE'?413:400).json({error:'Invalid upload'});if(err?.code==='23505')return fail(res,409,'Resource already exists');if(err?.name==='NoSuchKey')return fail(res,404,'Image not found');res.status(500).json({error:'Internal server error'});});
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){const stopCleanup=startCleanup(cleanup,()=>process.stderr.write('Cleanup drain unavailable\n'));const server=app.listen(PORT,'127.0.0.1',()=>console.log(`Memento API listening on 127.0.0.1:${PORT}`));const stop=()=>{stopCleanup();server.close(async()=>{await pool.end();process.exit(0);});};process.on('SIGTERM',stop);process.on('SIGINT',stop);}
