@@ -17,6 +17,8 @@ const EventDetailModal = lazy(() => import('./components/EventDetailModal').then
 const ImageLightbox = lazy(() => import('./components/ImageLightbox').then(module => ({ default: module.ImageLightbox })));
 const BlindboxMemory = lazy(() => import('./components/BlindboxMemory').then(module => ({ default: module.BlindboxMemory })));
 import { Dices } from 'lucide-react';
+import { MemoryResurfacing } from './components/MemoryResurfacing';
+import type { MemoryVisit } from './lib/memoryResurfacing';
 import { DeferredUiBoundary } from './components/DeferredUiBoundary';
 
 export default function App() {
@@ -32,6 +34,8 @@ export default function App() {
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [apiTags, setApiTags] = useState<ApiTag[]>([]);
   const [collaborationInvitations, setCollaborationInvitations] = useState<CollaborationInvitation[]>([]);
+  const [visits, setVisits] = useState<MemoryVisit[]>([]);
+  const visitWrites = useRef(new Map<string, number>());
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const [perspectiveError, setPerspectiveError] = useState('');
@@ -58,6 +62,7 @@ export default function App() {
         authGenerationRef.current += 1;
         resetSnapshots();
         setUser(null);
+        setVisits([]);
         setAuthStatus('anonymous');
         setEventTracks([]);
         setEvents([]);
@@ -200,12 +205,54 @@ export default function App() {
     setLightboxState({ images: [], index: 0, isOpen: false });
     setPendingImageRetry(null); setDataError(''); setSessionError(''); setPerspectiveError('');
     setDataLoading(false); setUploadRunning(false); uploadBusy.current = false; reactionPending.current.clear();
-    setSelectedTrackKey('all');
+    setSelectedTrackKey('all'); setVisits([]); visitWrites.current.clear();
     setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', milestonesOnly: false, hasImagesOnly: false }));
   }
 
+  // Visit history is private to this visitor; a failed write or read never blocks the timeline.
+  const recordVisit = useCallback((track: Pick<EventTrack, 'id' | 'resourceOwnerId'> | null | undefined) => {
+    if (!track?.id || !track.resourceOwnerId) return;
+    const key = `${track.resourceOwnerId}:${track.id}`;
+    const now = Date.now();
+    if ((visitWrites.current.get(key) ?? 0) > now - 60_000) return;
+    visitWrites.current.set(key, now);
+    const generation = authGenerationRef.current;
+    dataApi.recordTrackVisit(track.resourceOwnerId, track.id).then(({ visit }) => {
+      if (generation !== authGenerationRef.current) return;
+      // A malformed response must never corrupt the private visit list.
+      if (!visit?.trackId || !visit.trackOwnerId) return;
+      setVisits(previous => [...previous.filter(item => `${item.trackOwnerId}:${item.trackId}` !== key), visit]);
+    }).catch(() => {
+      if (generation !== authGenerationRef.current) return;
+      visitWrites.current.delete(key);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!user || !dataReady) return;
+    const generation = authGenerationRef.current;
+    dataApi.trackVisits()
+      .then(list => { if (generation === authGenerationRef.current) setVisits(list); })
+      .catch(() => { if (generation === authGenerationRef.current) setVisits([]); });
+  }, [user, dataReady]);
+
+  const openDetail = (event: TimelineEvent) => {
+    const track = eventTracks.find(item => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
+    recordVisit(track);
+    setEventToView(event);
+  };
+
+  /** Suggestion open: exact identity, no unrelated filter may hide its track. */
+  const openSuggested = (event: TimelineEvent) => {
+    const track = eventTracks.find(item => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
+    setFilters(previous => ({ ...previous, search: '', selectedTags: [], selectedEmotions: [], selectedYear: 'all', milestonesOnly: false, hasImagesOnly: false }));
+    if (track) handleSelectTrack(track);
+    openDetail(event);
+  };
+
   // Handle Event Track selection
   const handleSelectTrack = (track: EventTrack | null) => {
+    recordVisit(track);
     setSelectedTrackKey(track ? trackIdentity(track) : 'all');
     setFilters((prev) => ({ ...prev, selectedEventId: track?.id ?? 'all' }));
   };
@@ -535,6 +582,10 @@ export default function App() {
           onExportJsonAsync={exportJsonWithPerspectives}
           canCreateEntry={eventTracks.some((track) => track.accessRole === 'owner' || track.accessRole === 'editor')}
         />
+        {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
+        {selectedTrackKey === 'all' && (
+          <MemoryResurfacing events={events} tracks={eventTracks} visits={visits} onOpen={openSuggested} />
+        )}
         {/* Event-Based Timeline Navigation & Overview */}
         <EventTrackNav
           tracks={eventTracks}
@@ -599,7 +650,7 @@ export default function App() {
               tracks={eventTracks}
               currentTrackKey={selectedTrackKey}
               onSelectTrack={handleSelectTrack}
-              onViewDetails={(evt) => setEventToView(evt)}
+              onViewDetails={openDetail}
               onEdit={(evt) => {
                 setEventToEdit(evt);
                 setIsEventModalOpen(true);
@@ -639,7 +690,7 @@ export default function App() {
               events={filteredEvents}
               tracks={eventTracks}
               onSelectTrack={handleSelectTrack}
-              onViewDetails={(evt) => setEventToView(evt)}
+              onViewDetails={openDetail}
               onEdit={(evt) => {
                 setEventToEdit(evt);
                 setIsEventModalOpen(true);
@@ -654,7 +705,7 @@ export default function App() {
               events={filteredEvents}
               tracks={eventTracks}
               onSelectTrack={handleSelectTrack}
-              onViewDetails={(evt) => setEventToView(evt)}
+              onViewDetails={openDetail}
               onTagClick={handleTagClick}
               onOpenImageLightbox={handleOpenLightbox}
             />

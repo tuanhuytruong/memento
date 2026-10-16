@@ -60,6 +60,8 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
   const [error, setError] = useState('');
   const [showActors, setShowActors] = useState(false);
   const draftDirty = useRef(false);
+  const [canContribute, setCanContribute] = useState(false);
+  const [reflectionSignal, setReflectionSignal] = useState(0);
   const perspectivePending = useRef(false);
   const pending = useRef(false);
   const alive = useRef(true);
@@ -320,6 +322,19 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
             </div>
           )}
 
+          {canContribute && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-amber-300 bg-amber-50/50 px-3 py-2 dark:border-amber-800 dark:bg-amber-950/20">
+              <p className="min-w-0 text-xs text-stone-600 dark:text-stone-300">Remember this moment from today's distance.</p>
+              <button
+                type="button"
+                onClick={() => setReflectionSignal(value => value + 1)}
+                className="min-h-11 shrink-0 rounded-lg border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:bg-stone-900 dark:text-amber-300 dark:hover:bg-stone-800"
+              >
+                Bây giờ nghĩ lại…
+              </button>
+            </div>
+          )}
+
           <MomentPerspectives
             event={event}
             currentUserId={currentUserId}
@@ -327,6 +342,8 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
             onUpdate={onUpdatePerspective}
             onDelete={onDeletePerspective}
             onDraftStateChange={onDraftStateChange}
+            onWriteCapabilityChange={setCanContribute}
+            reflectionSignal={reflectionSignal}
           />
 
           {/* Tag Categorization Badges */}

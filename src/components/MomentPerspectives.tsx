@@ -10,6 +10,10 @@ interface Props {
   onUpdate: (id: string, body: string, expectedVersion: number) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onDraftStateChange?: (dirty: boolean, pending: boolean) => void;
+  /** Server-authoritative create capability, reported up so entry points fail closed. */
+  onWriteCapabilityChange?: (canWrite: boolean) => void;
+  /** Incremented by the detail modal's "Bây giờ nghĩ lại…" entry; opens kind=reflection. */
+  reflectionSignal?: number;
 }
 
 function localDateTime(value: string) {
@@ -18,7 +22,7 @@ function localDateTime(value: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
-export function MomentPerspectives({ event, currentUserId, initialKind = 'perspective', onCreate, onUpdate, onDelete, onDraftStateChange }: Props) {
+export function MomentPerspectives({ event, currentUserId, initialKind = 'perspective', onCreate, onUpdate, onDelete, onDraftStateChange, onWriteCapabilityChange, reflectionSignal = 0 }: Props) {
   const ownerId = event.resourceOwnerId;
   const identity = ownerId ? `${ownerId}:${event.id}` : '';
   const [items, setItems] = useState<MomentPerspective[]>([]);
@@ -36,6 +40,7 @@ export function MomentPerspectives({ event, currentUserId, initialKind = 'perspe
   const [busy, setBusy] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const generation = useRef(0);
+  const handledReflection = useRef(0);
   const identityEpoch = useRef(0);
   const alive = useRef(true);
   const requestPending = useRef(false);
@@ -94,6 +99,20 @@ export function MomentPerspectives({ event, currentUserId, initialKind = 'perspe
     void load();
     return () => { alive.current = false; generation.current += 1; requestPending.current = false; };
   }, [identity, initialKind, load]);
+
+  useEffect(() => { onWriteCapabilityChange?.(canWrite); }, [canWrite, onWriteCapabilityChange]);
+
+  // "Bây giờ nghĩ lại…" opens the shared composer as a dated reflection; capability gates it.
+  useEffect(() => {
+    if (!reflectionSignal || reflectionSignal === handledReflection.current) return;
+    handledReflection.current = reflectionSignal;
+    if (!canWrite || busy) return;
+    const dirty = editingId ? draft.trim() !== initialDraft.current : draft.trim().length > 0;
+    if (dirty && !window.confirm('Discard your unsaved perspective?')) return;
+    initialDraft.current = ''; setDraft(''); setEditingId(null);
+    setConflictVersion(null); setConflictLatestText(''); requestId.current = null;
+    setKind('reflection'); setComposerOpen(true);
+  }, [reflectionSignal, canWrite, busy, editingId, draft]);
 
   const save = async () => {
     if (requestPending.current || busy) return;
@@ -158,7 +177,7 @@ export function MomentPerspectives({ event, currentUserId, initialKind = 'perspe
     {nextCursor && <button type="button" disabled={loading} className="min-h-11 rounded-lg px-3 text-sm underline disabled:opacity-50" onClick={() => void load(nextCursor, true)}>{loading ? 'Loading…' : 'Load more'}</button>}
     {composerOpen && canWrite && <div className="space-y-2 rounded-xl bg-amber-50/70 p-3 dark:bg-amber-950/20">
       {conflictVersion !== null && <div role="alert" className="space-y-2 rounded-lg border border-amber-300 p-3 text-sm dark:border-amber-800"><p>This story changed while you were editing. Compare the latest saved words before choosing what to do.</p><p className="whitespace-pre-wrap break-words rounded bg-white/70 p-2 dark:bg-black/20">{conflictLatestText}</p><div className="flex flex-wrap gap-2"><button type="button" className="min-h-11 underline" onClick={() => { initialDraft.current = ''; setDraft(conflictLatestText); setConflictVersion(null); setConflictLatestText(''); setEditingId(null); setComposerOpen(false); }}>Use latest and discard my draft</button><button type="button" className="min-h-11 underline" onClick={() => { if (window.confirm('Replace the latest saved words with your draft?')) setConflictVersion(null); }}>Replace latest with my draft</button></div></div>}
-      <label className="block text-xs font-semibold text-stone-600 dark:text-stone-300">{editingId ? 'Edit your words' : kind === 'reflection' ? 'Bây giờ nghĩ lại…' : 'What do you remember?'}<textarea value={draft} maxLength={2000} rows={4} onChange={event => setDraft(event.target.value)} className="mt-1 w-full min-w-0 resize-y rounded-lg border border-stone-300 bg-white p-3 text-sm leading-relaxed dark:border-stone-700 dark:bg-stone-950" placeholder="Write your own memory; the original story stays unchanged." /></label>
+      <label className="block text-xs font-semibold text-stone-600 dark:text-stone-300">{editingId ? 'Edit your words' : kind === 'reflection' ? 'Looking back · written today' : 'What do you remember?'}<textarea value={draft} maxLength={2000} rows={4} onChange={event => setDraft(event.target.value)} className="mt-1 w-full min-w-0 resize-y rounded-lg border border-stone-300 bg-white p-3 text-sm leading-relaxed dark:border-stone-700 dark:bg-stone-950" placeholder="Write your own memory; the original story stays unchanged." /></label>
       {!editingId && <p className="text-xs text-stone-500">If sharing access ends, your words remain with this memory, but you can no longer view it.</p>}
       <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-stone-500">{draft.length}/2,000</span><div className="flex gap-2"><button type="button" disabled={busy} className="min-h-11 rounded-lg px-3 text-sm text-stone-600 underline disabled:opacity-50" onClick={() => { if (busy) return; const dirty = editingId ? draft.trim() !== initialDraft.current : draft.trim().length > 0; if (dirty && !window.confirm('Discard your unsaved perspective?')) return; initialDraft.current = ''; setComposerOpen(false); setDraft(''); setEditingId(null); setConflictVersion(null); setConflictLatestText(''); requestId.current = null; }}>Cancel</button><button type="button" disabled={busy || !draft.trim()} className="min-h-11 rounded-lg bg-amber-700 px-4 text-sm font-semibold text-white disabled:opacity-50" onClick={() => void save()}>{busy ? 'Saving…' : editingId ? 'Save changes' : 'Save perspective'}</button></div></div>
     </div>}

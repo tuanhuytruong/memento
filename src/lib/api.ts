@@ -131,6 +131,9 @@ export const dataApi = {
   updateTrack: async (id: string, track: Omit<EventTrack, 'id' | 'createdAt' | 'updatedAt'>) =>
     requireResource<EventTrack>(await request(`/tracks/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(track) }), ['track'], 'track'),
   deleteTrack: (id: string) => request(`/tracks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  trackVisits: async () => unwrapList<{ trackOwnerId: string; trackId: string; lastOpenedAt: string }>(await request('/track-visits'), ['visits']),
+  recordTrackVisit: (ownerId: string, trackId: string) =>
+    request<{ visit: { trackOwnerId: string; trackId: string; lastOpenedAt: string } }>(`/tracks/${encodeURIComponent(trackId)}/visit`, { method: 'PUT', body: JSON.stringify({ ownerId }) }),
   moments: async () => unwrapList<TimelineEvent>(await request('/moments'), ['moments']),
   perspectives: (momentId: string, ownerId: string, cursor?: string) => {
     const params = new URLSearchParams({ ownerId, limit: '20' });

@@ -17,7 +17,17 @@ async function fixture(browser, options={}) {
  const context=await browser.newContext({viewport:options.viewport||{width:390,height:844},reducedMotion:options.reduced?'reduce':'no-preference'});
  if(options.saveData) await context.addInitScript(()=>Object.defineProperty(navigator,'connection',{value:{saveData:true,effectiveType:'4g'}}));
  const page=await context.newPage(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
- const state={account:'A',requests:[],puts:[],uploadIds:[],deletes:0,moments:[structuredClone(moment)],failImages:false,perspectiveExportGate:null,perspectiveExportStarted:null,...options};
+ const state={account:'A',requests:[],puts:[],uploadIds:[],deletes:0,moments:[structuredClone(moment)],tracks:[track],visits:[],visitWrites:[],perspectives:[],failImages:false,perspectiveExportGate:null,perspectiveExportStarted:null,...options};
+ if(options.resurfacing){
+  const now=new Date();const yy=now.getFullYear();const pad=n=>String(n).padStart(2,'0');
+  const otherDay=now.getDate()===15?16:15;
+  state.tracks=[track,{...track,id:'qa-track-2',title:'Second chapter'},{...track,id:'qa-track-3',title:'Third chapter'}];
+  state.moments=[structuredClone(moment),
+   {...structuredClone(moment),id:'qa-anniv',eventId:'qa-track',title:'Anniversary memory',date:`${yy-2}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`,images:[],description:'anniv'},
+   {...structuredClone(moment),id:'qa-monthly',eventId:'qa-track-2',title:'Monthly memory',date:`${yy-1}-${pad(now.getMonth()+1)}-${pad(otherDay)}`,images:[],description:'monthly'},
+   {...structuredClone(moment),id:'qa-old',eventId:'qa-track-3',title:'Old memory',date:`${yy-3}-${String(((now.getMonth()+4)%12)+1).padStart(2,'0')}-10`,images:[],description:'old'}];
+  state.visits=options.visits||[];
+ }
  await page.route('**/api/**',async route=>{
   const req=route.request(); const url=new URL(req.url());state.requests.push(url.pathname+url.search);
   if(url.pathname.startsWith('/api/images/')) {
@@ -35,13 +45,14 @@ async function fixture(browser, options={}) {
     if(state.trackSaveGate)await state.trackSaveGate.promise;
     return route.fulfill({status:503,json:{error:'Synthetic track save failure'}});
   }
-  else if(url.pathname==='/api/tracks')body={tracks:[track]};
+  else if(url.pathname==='/api/tracks')body={tracks:state.tracks};
   else if(url.pathname==='/api/tags')body={tags:[]};
   else if(url.pathname==='/api/moments' && req.method()==='GET') {
     if(state.refreshFailure){state.refreshFailure=false;return route.fulfill({status:503,json:{error:'synthetic refresh failure'}});}
     body={moments:state.moments};
   }
-  else if(url.pathname==='/api/moments/qa-moment/perspectives')body={perspectives:[],nextCursor:null,capabilities:{canCreate:true,canModerate:true}};
+  else if(/^\/api\/moments\/[^/]+\/perspectives$/.test(url.pathname)&&req.method()==='GET')body={perspectives:state.perspectives,nextCursor:null,capabilities:{canRead:true,canCreate:state.perspectiveCanCreate!==false,canModerate:true}};
+  else if(/^\/api\/moments\/[^/]+\/perspectives$/.test(url.pathname)&&req.method()==='POST'){const b=req.postDataJSON();const item={id:'p'+(state.perspectives.length+1),momentOwnerId:b.ownerId,momentId:url.pathname.split('/')[3],authorId:state.account,username:'synthetic-'+state.account,kind:b.kind,body:b.body,version:1,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};state.perspectives.push(item);return route.fulfill({status:201,json:{perspective:item}});}
   else if(url.pathname==='/api/moments/qa-moment' && req.method()==='DELETE') {state.deletes++;body={};}
   else if(url.pathname==='/api/moments' && req.method()==='POST') {
     state.created=deferred(); if(state.createGate){state.createStarted?.resolve();await state.createGate.promise;}
@@ -65,6 +76,8 @@ async function fixture(browser, options={}) {
     body={image:{id:'fixture-upload'}};
   }
   else if(url.pathname==='/api/tags')body={tags:[]};
+  else if(url.pathname==='/api/track-visits'){if(state.visitFailure)return route.fulfill({status:503,json:{error:'Synthetic visit history failure'}});body={visits:state.visits};}
+  else if(/^\/api\/tracks\/[^/]+\/visit$/.test(url.pathname)&&req.method()==='PUT'){const b=req.postDataJSON();state.visitWrites.push({trackId:url.pathname.split('/')[3],...b});return route.fulfill({json:{visit:{trackOwnerId:b.ownerId||'A',trackId:url.pathname.split('/')[3],lastOpenedAt:new Date().toISOString()}}});}
   else if(url.pathname==='/api/perspectives/export') {
     if(state.perspectiveExportStarted)state.perspectiveExportStarted.resolve();
     if(state.perspectiveExportGate)await state.perspectiveExportGate.promise;
@@ -230,6 +243,107 @@ async function logoutAndLogin(page){
    results.push(`nonempty draft ${dismissal.name} dismissal asks before discard; cancel preserves draft and accept proceeds PASS`);await context.close();
   }
   {const {page,state,context,errors}=await fixture(browser);state.failImages=true;await page.locator('#event-card-A\\:qa-moment img').first().click();await delay(100);await page.locator('#lightbox-next-button').click();state.failImages=false;await page.locator('#lightbox-next-button').click();await imageReady(page);await delay(650);const image=page.locator('#image-lightbox-overlay img');assert((await image.getAttribute('src')).includes('qa-2'));assert(!(await image.getAttribute('src')).includes('retry='));assert.equal(await page.locator('#image-lightbox-overlay').getByText('Photo unavailable',{exact:true}).count(),0);assert.deepEqual(errors,[]);results.push('rapid navigation cancels prior failed photo retry and stale callbacks PASS');await context.close();}
+  // ---- Phase 2: "Ngày ấy" rediscovery + reflection (synthetic controlled routes) ----
+  {const stale=new Date(Date.now()-400*864e5).toISOString();
+   const {page,state,context,errors}=await fixture(browser,{resurfacing:true,viewport:{width:1200,height:900},visits:[{trackOwnerId:'A',trackId:'qa-track-3',lastOpenedAt:stale}]});
+   const section=page.locator('#memory-resurfacing');
+   await section.waitFor();
+   const cards=await section.locator('li button').allTextContents();
+   assert.equal(cards.length,3,'three compact suggestions');
+   const expect=[['Anniversary memory','On this day'],['Monthly memory','This month last year'],["Old memory","haven't revisited"]];
+   for(const pair of expect){const matches=cards.filter(text=>text.includes(pair[0]));assert.equal(matches.length,1,`exactly one card for ${pair[0]}`);assert(matches[0].includes(pair[1]),`reason for ${pair[0]}: ${matches[0]}`);}
+   assert.equal(state.requests.filter(u=>u.startsWith('/api/track-visits')).length,1,'single private visit-history read');
+   await page.locator('#tab-event-track-A-qa-track-2').click();
+   assert.equal(await section.count(),0,'section only in the all-tracks overview');
+   await page.locator('#tab-all-events-merged').click();
+   await section.waitFor();
+   await page.locator('#timeline-search-input').fill('zzz-no-match');
+   const suggestionOpen=state.visitWrites.length;
+   await section.locator('li').first().locator('button').click();
+   await page.locator('#event-detail-card').waitFor();
+   assert.equal(await page.locator('#timeline-search-input').inputValue(),'','suggestion clears an unrelated active filter');
+   assert.equal(await page.locator('#event-detail-card').innerText().then(t=>t.includes('Anniversary memory')),true,'suggestion opens its exact moment');
+   assert.equal(state.visitWrites.length,suggestionOpen+1,'opening records exactly one private visit');
+   await page.keyboard.press('Escape');
+   await page.locator('#event-detail-card').waitFor({state:'detached',timeout:3000});
+   const momentsBefore=state.requests.filter(u=>u==='/api/moments').length;
+   await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+   await delay(1200);
+   assert.equal(state.requests.filter(u=>u==='/api/moments').length,momentsBefore,'no polling on focus/refresh');
+   assert.equal(state.requests.filter(u=>u.startsWith('/api/track-visits')).length,1,'no repeat visit-history reads');
+   assert.deepEqual(errors,[]);
+   results.push('Ngày ấy overview, truthful reasons, track-only placement, filter clear, private visit, no polling PASS');await context.close();}
+  {const {page,state,context,errors}=await fixture(browser,{resurfacing:true});
+   const section=page.locator('#memory-resurfacing');
+   await section.waitFor();
+   assert.equal(await section.locator('li').count(),3);
+   assert.equal(await section.locator('li').nth(1).isVisible(),false,'mobile shows one featured card');
+   assert.equal(await section.locator('li').nth(2).isVisible(),false,'mobile hides the rest until See more');
+   await hit(section.getByRole('button',{name:/^See more/}));
+   assert.equal(await section.locator('li').nth(1).isVisible(),true,'See more reveals card 2');
+   assert.equal(await section.locator('li').nth(2).isVisible(),true,'See more reveals card 3');
+   await hit(section.getByRole('button',{name:'Show less',exact:true}));
+   assert.equal(await section.locator('li').nth(1).isVisible(),false,'Show less collapses again');
+   assert.deepEqual(errors,[]);
+   results.push('mobile 390 featured card plus explicit See more/Show less with 44px targets PASS');await context.close();}
+  {const {page,state,context,errors}=await fixture(browser);
+   await page.locator('#event-card-A\\:qa-moment h3').click();
+   await page.locator('#event-detail-card').waitFor();
+   const reflect=page.getByRole('button',{name:'Bây giờ nghĩ lại…',exact:true});
+   await reflect.waitFor();
+   await reflect.click();
+   const textarea=page.locator('#event-detail-card textarea');
+   await textarea.waitFor();
+   assert.equal(await page.getByText('Looking back · written today',{exact:true}).count(),1,'dated reflection composer label');
+   await textarea.fill('Nhìn lại sau một năm');
+   await page.getByRole('button',{name:'Save perspective',exact:true}).click();
+   await page.getByText('Nhìn lại sau một năm',{exact:true}).waitFor();
+   assert.equal(state.perspectives.length,1);
+   assert((await page.locator('#event-detail-card').innerText()).includes('Looking back ·'),'saved item labelled Looking back');
+   assert.equal(state.perspectives[0].kind,'reflection','reflection saved as kind=reflection');
+   assert.equal(state.perspectives[0].body,'Nhìn lại sau một năm');
+   assert.equal(state.perspectives[0].momentId,'qa-moment');
+   assert.equal(state.puts.length,0,'original story not overwritten');
+   assert.equal(await page.locator('#event-detail-card').innerText().then(t=>t.includes('Controlled fixture')),true,'original description still shown');
+   assert.deepEqual(errors,[]);
+   results.push('Bây giờ nghĩ lại opens dated reflection composer, saves reflection without touching the story PASS');await context.close();}
+  {const {page,state,context,errors}=await fixture(browser,{perspectiveCanCreate:false});
+   await page.locator('#event-card-A\\:qa-moment h3').click();
+   await page.locator('#event-detail-card').waitFor();
+   await page.getByText('Editor access is needed to add a perspective.').waitFor();
+   assert.equal(await page.getByRole('button',{name:'Add your perspective',exact:true}).count(),0,'viewer gets no write CTA');
+   assert.equal(await page.getByRole('button',{name:'Bây giờ nghĩ lại…',exact:true}).count(),0,'viewer gets no reflection entry');
+   assert((await page.locator('#event-detail-card').innerText()).includes('Controlled fixture'),'viewer still reads the story');
+   assert.deepEqual(errors,[]);
+   results.push('read-only viewer reads perspectives without any write or reflection CTA PASS');await context.close();}
+  {const {page,state,context,errors}=await fixture(browser,{resurfacing:true,visitFailure:true});
+   const section=page.locator('#memory-resurfacing');
+   await section.waitFor();
+   // innerText is visibility-scoped on mobile; read the full rendered text instead.
+   const text=await section.evaluate(el=>el.textContent||'');
+   assert(text.includes('A chapter to revisit'),'unknown visit history uses truthful neutral copy');
+   assert(!text.includes("haven't revisited"),'no stale-visit claim when history is unavailable');
+   await page.locator('#event-card-A\\:qa-moment h3').click();
+   await page.locator('#event-detail-card').waitFor();
+   assert.equal(await page.locator('[role=alert]').count(),0,'visit history failure never blocks the timeline');
+   assert.deepEqual(errors,[]);
+   results.push('visit-history read failure keeps neutral copy and a fully usable timeline PASS');await context.close();}
+  {const {page,state,context,errors}=await fixture(browser,{resurfacing:true,viewport:{width:1200,height:900}});
+   const section=page.locator('#memory-resurfacing');
+   await section.waitFor();
+   assert((await section.innerText()).includes('Anniversary memory'));
+   page.on('dialog',dialog=>dialog.accept());
+   await section.locator('li').first().locator('button').click();
+   await page.locator('#event-detail-card').waitFor();
+   await page.locator('#event-detail-card').getByTitle('Delete event',{exact:true}).click();
+   await page.locator('#event-detail-card').waitFor({state:'detached',timeout:3000});
+   await page.locator('#tab-all-events-merged').click();
+   await section.waitFor();
+   const after=await section.innerText();
+   assert(!after.includes('Anniversary memory'),'deleted moment leaves the suggestions');
+   assert((await section.locator('li button').count())<=3,'still capped at three');
+   assert.deepEqual(errors,[]);
+   results.push('deletion while a suggestion is shown removes it without stale capture PASS');await context.close();}
   console.log(JSON.stringify({kind:'synthetic controlled-route browser QA, not real authenticated E2E',results},null,2));
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
