@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import sharp from 'sharp';
 import { ImageCache, ImageLoadScheduler, invalidateImageObject, imageCache } from '../image-cache.mjs';
 import { createImageDelivery, imageEtag } from '../image-delivery.mjs';
-import { makeImageVariants, imageTransformStats, MAX_IMAGE_INPUT_BYTES } from '../image-variants.mjs';
+import { makeImageVariants, resolveVariant, imageTransformStats, MAX_IMAGE_INPUT_BYTES } from '../image-variants.mjs';
 const source = (data, contentLength = data.length) => ({ body: Readable.from([data]), contentLength });
 const value = Buffer.from('test');
 const load = async () => source(value);
@@ -196,4 +196,21 @@ test('variant transform admission bounds concurrent decode and queued input byte
   assert.ok(imageTransformStats().active <= 2); assert.ok(imageTransformStats().queued <= 4); assert.ok(imageTransformStats().pendingBytes <= 48 * 1024 * 1024);
   const settled = await results; assert.equal(settled.filter(result => result.status === 'rejected' && result.reason.code === 'IMAGE_TRANSFORM_BUSY').length, 6);
   assert.deepEqual(imageTransformStats(), { active: 0, queued: 0, pendingBytes: 0 });
+});
+
+
+test('HTTP pre-header timeout keeps response available for mapped 503', async () => {
+  const service=createImageDelivery({timeoutMs:20,cache:new ImageCache(),fetchObject:async()=>{await delay(60);return source(value);}});
+  const server=createServer(async(req,res)=>{try{await service.deliver({req,res,metadata:meta()});}catch(error){assert.equal(res.headersSent,false);assert.equal(res.destroyed,false);res.statusCode=error.code==='IMAGE_TIMEOUT'?503:502;res.end(error.code);}});
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  try{const r=await fetch(`http://127.0.0.1:${server.address().port}`);assert.equal(r.status,503);assert.equal(await r.text(),'IMAGE_TIMEOUT');}finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
+});
+test('resolver normalizes PostgreSQL bigint and actual fallback variant for delivery', async()=>{
+ const row={object_key:'memento_dev/original',size:'4',content_type:'image/jpeg',thumb_object_key:'memento_dev/thumb',thumb_size:'4'};
+ const fallback=resolveVariant(row,'display');assert.equal(fallback.variant,'original');assert.equal(fallback.size,4);
+ const thumbnail=resolveVariant(row,'thumb');assert.equal(thumbnail.variant,'thumb');assert.equal(thumbnail.size,4);
+ const service=createImageDelivery({fetchObject:async()=>source(value),cache:new ImageCache()});
+ const server=createServer(async(req,res)=>{await service.deliver({req,res,metadata:req.url==='/fallback'?fallback:thumbnail});});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ try{for(const path of ['/fallback','/thumb']){const r=await fetch(`http://127.0.0.1:${server.address().port}${path}`);assert.equal(r.status,200);assert.equal(await r.text(),'test');}}finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
 });

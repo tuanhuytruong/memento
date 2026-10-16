@@ -49,7 +49,7 @@ export function createImageDelivery({ cache = imageCache, fetchObject, enabled =
     if (req.aborted || res.destroyed) cancel();
     const timer = setTimeout(() => controller.abort(imageError('IMAGE_TIMEOUT')), timeoutMs);
     timer.unref?.();
-    const destroy = () => { body?.destroy(signal.reason); if (!res.destroyed) res.destroy(signal.reason); };
+    const destroy = () => { body?.destroy(signal.reason); if (res.headersSent && !res.destroyed) res.destroy(signal.reason); };
     signal.addEventListener('abort', destroy, { once: true });
     try {
       release = await requests.acquire(0, signal);

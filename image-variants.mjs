@@ -53,7 +53,7 @@ export async function makeImageVariants(buffer, contentType) {
 
 export function resolveVariant(image, requested) {
   if (!['original', 'thumb', 'display'].includes(requested)) return null;
-  if (requested === 'thumb' && image.thumb_object_key) return { key: image.thumb_object_key, size: image.thumb_size, contentType: 'image/webp' };
-  if (requested === 'display' && image.display_object_key) return { key: image.display_object_key, size: image.display_size, contentType: 'image/webp' };
-  return { key: image.object_key, size: image.size, contentType: image.content_type };
+  if (requested === 'thumb' && image.thumb_object_key) return { key: image.thumb_object_key, size: Number(image.thumb_size), contentType: 'image/webp', variant: 'thumb' };
+  if (requested === 'display' && image.display_object_key) return { key: image.display_object_key, size: Number(image.display_size), contentType: 'image/webp', variant: 'display' };
+  return { key: image.object_key, size: Number(image.size), contentType: image.content_type, variant: 'original' };
 }
