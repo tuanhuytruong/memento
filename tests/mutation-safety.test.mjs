@@ -170,6 +170,17 @@ test('Phase A PostgreSQL races, dependency failures and durable storage fault re
    assert.equal((await upload(Buffer.concat([imageBytes,Buffer.from('different')]))).status,409);
    assert.equal((await sql(`SELECT 1 FROM ${qschema}.images WHERE uploader_id=$1 AND upload_key=$2`,[editor,key])).rowCount,1);
    assert.equal((await req(`/api/tracks/${track}/collaborators/${editor}`,{method:'DELETE'})).status,200);assert.equal((await upload()).status,404);
+   // Different owners may use the same moment ID. A replay cannot cross that identity.
+   const otherTrack=(await req('/api/tracks',{method:'POST',as:viewer,body:{title:'other-owner-replay'}})).data.track.id;
+   await sql(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document) SELECT $1,id,$2,jsonb_set(document,'{eventId}',to_jsonb($2::text)) FROM ${qschema}.moments WHERE owner_id=$3 AND id=$4`,[viewer,otherTrack,owner,moment]);
+   const recipient=(await sql(`SELECT username FROM ${qschema}.users WHERE id=$1`,[editor])).rows[0].username;
+   const invitation=await req(`/api/tracks/${otherTrack}/collaborators`,{method:'POST',as:viewer,body:{username:recipient,role:'editor'}});
+   assert.equal(invitation.status,201);assert.equal((await req(`/api/collaboration-invitations/${invitation.data.collaborator.id}/accept`,{method:'POST',as:editor})).status,200);
+   let storageCalls=0;s3.send=async()=>{storageCalls++;return {};};
+   const crossed=await upload();assert.equal(crossed.status,409);assert.equal(crossed.data.image,undefined);assert.equal(storageCalls,0);
+   assert.equal((await sql(`SELECT 1 FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2`,[viewer,moment])).rowCount,0);
+   assert.equal((await req(`/api/tracks/${otherTrack}`,{method:'DELETE',as:viewer})).status,200);
+
    const queue=cleanupQueue({pool,qschema,prefix:'memento_dev/',remove:async()=>{}});await queue.drain({limit:100,retry:true,ids:ownedJobs});s3.send=rawSend;
   });
 
