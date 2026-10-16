@@ -17,7 +17,9 @@ async function fixture(browser, options={}) {
  const context=await browser.newContext({viewport:options.viewport||{width:390,height:844},reducedMotion:options.reduced?'reduce':'no-preference'});
  if(options.saveData) await context.addInitScript(()=>Object.defineProperty(navigator,'connection',{value:{saveData:true,effectiveType:'4g'}}));
  const page=await context.newPage(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
- const state={account:'A',requests:[],puts:[],uploadIds:[],deletes:0,moments:[structuredClone(moment)],tracks:[track],visits:[],visitWrites:[],perspectives:[],failImages:false,perspectiveExportGate:null,perspectiveExportStarted:null,...options};
+ // 2x2 opaque red PNG, decoded by the browser for preview and by tests for bytes.
+ const postcardPng=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR42mP8z8Dwn4GBgYERABIcAgN2FBM+AAAAAElFTkSuQmCC','base64');
+ const state={account:'A',requests:[],puts:[],uploadIds:[],deletes:0,moments:[structuredClone(moment)],tracks:[track],visits:[],visitWrites:[],perspectives:[],postcardRenders:[],postcardPng,failImages:false,perspectiveExportGate:null,perspectiveExportStarted:null,...options};
  if(options.resurfacing){
   const now=new Date();const yy=now.getFullYear();const pad=n=>String(n).padStart(2,'0');
   const otherDay=now.getDate()===15?16:15;
@@ -45,7 +47,7 @@ async function fixture(browser, options={}) {
     if(state.trackSaveGate)await state.trackSaveGate.promise;
     return route.fulfill({status:503,json:{error:'Synthetic track save failure'}});
   }
-  else if(url.pathname==='/api/tracks')body={tracks:state.tracks};
+  else if(url.pathname==='/api/tracks')body={tracks:state.tracks.map(t=>state.viewerTracks?{...t,accessRole:'viewer'}:t)};
   else if(url.pathname==='/api/tags')body={tags:[]};
   else if(url.pathname==='/api/moments' && req.method()==='GET') {
     if(state.refreshFailure){state.refreshFailure=false;return route.fulfill({status:503,json:{error:'synthetic refresh failure'}});}
@@ -77,6 +79,11 @@ async function fixture(browser, options={}) {
   }
   else if(url.pathname==='/api/tags')body={tags:[]};
   else if(url.pathname==='/api/track-visits'){if(state.visitFailure)return route.fulfill({status:503,json:{error:'Synthetic visit history failure'}});body={visits:state.visits};}
+  else if(url.pathname==='/api/postcards/render'&&req.method()==='POST'){
+    const payload=req.postDataJSON();state.postcardRenders.push(payload);
+    if(state.postcardRenderFailure)return route.fulfill({status:422,json:{error:'Synthetic postcard failure'}});
+    // Fixed synthetic PNG: enough for decode/dimension/same-bytes assertions.
+    return route.fulfill({status:200,contentType:'image/png',headers:{'Cache-Control':'no-store','Content-Disposition':'attachment; filename="memento-postcard.png"'},body:state.postcardPng});}
   else if(/^\/api\/tracks\/[^/]+\/visit$/.test(url.pathname)&&req.method()==='PUT'){const b=req.postDataJSON();state.visitWrites.push({trackId:url.pathname.split('/')[3],...b});return route.fulfill({json:{visit:{trackOwnerId:b.ownerId||'A',trackId:url.pathname.split('/')[3],lastOpenedAt:new Date().toISOString()}}});}
   else if(url.pathname==='/api/perspectives/export') {
     if(state.perspectiveExportStarted)state.perspectiveExportStarted.resolve();
@@ -299,6 +306,8 @@ async function logoutAndLogin(page){
    await page.getByRole('button',{name:'Save perspective',exact:true}).click();
    await page.getByText('Nhìn lại sau một năm',{exact:true}).waitFor();
    assert.equal(state.perspectives.length,1);
+   // Wait for the refetched list to render the saved item, then read it.
+   await page.locator('#event-detail-card').getByText(/^Looking back ·/).waitFor();
    assert((await page.locator('#event-detail-card').innerText()).includes('Looking back ·'),'saved item labelled Looking back');
    assert.equal(state.perspectives[0].kind,'reflection','reflection saved as kind=reflection');
    assert.equal(state.perspectives[0].body,'Nhìn lại sau một năm');
@@ -344,6 +353,113 @@ async function logoutAndLogin(page){
    assert((await section.locator('li button').count())<=3,'still capped at three');
    assert.deepEqual(errors,[]);
    results.push('deletion while a suggestion is shown removes it without stale capture PASS');await context.close();}
+
+  // ---- Phase 3: postcard composer (synthetic controlled routes) ----
+  {const {page,state,context,errors}=await fixture(browser,{viewerTracks:true});
+   await page.getByTitle('More actions',{exact:true}).click();
+   assert.equal(await page.getByRole('menuitem',{name:'Create postcard',exact:true}).count(),0,'no entry without an owned track');
+   assert.equal(await page.getByRole('menuitem',{name:'Export backup (JSON)',exact:true}).count(),1,'JSON backup still offered');
+   await page.getByRole('menuitem',{name:'Export backup (JSON)',exact:true}).click();
+   assert.deepEqual(errors,[]);
+   results.push('postcard entry hidden without an owned track while JSON backup stays PASS');await context.close();}
+  {const {page,state,context,errors}=await fixture(browser);
+   await page.getByTitle('More actions',{exact:true}).click();
+   await page.getByRole('menuitem',{name:'Create postcard',exact:true}).click();
+   const dialog=page.locator('#postcard-composer');
+   await dialog.waitFor();
+   // Template bounds explain themselves instead of silently refusing.
+   await dialog.getByRole('button',{name:'Ordinary day',exact:true}).click();
+   assert((await dialog.innerText()).includes('One to three moments'),'template hint shown');
+   await dialog.getByRole('button',{name:'Journey',exact:true}).click();
+   await dialog.locator('select').selectOption('A:qa-track');
+   await dialog.getByRole('checkbox',{name:/SyntheticMemory/}).check();
+   await dialog.getByRole('button',{name:'Continue',exact:true}).click();
+   await dialog.getByRole('heading',{name:'Wording'}).waitFor();
+   await dialog.getByPlaceholder('Nhật ký mùa hè').fill('Nhật ký Đà Nẵng');
+   await dialog.getByRole('button',{name:'Continue',exact:true}).click();
+   await dialog.getByRole('heading',{name:'Preview'}).waitFor();
+   await dialog.getByRole('button',{name:'Generate preview',exact:true}).click();
+   await page.getByTestId('postcard-preview').waitFor();
+   assert.equal(state.postcardRenders.length,1,'exactly one render request');
+   assert.equal(state.postcardRenders[0].template,'journey');
+   assert.deepEqual(state.postcardRenders[0].moments,[{ownerId:'A',id:'qa-moment'}]);
+   assert.equal(state.postcardRenders[0].title,'Nhật ký Đà Nẵng');
+   // Download serves the same bytes the preview displayed.
+   const [download]=await Promise.all([page.waitForEvent('download'),dialog.getByRole('button',{name:/Download PNG/}).click()]);
+   const saved=fs.readFileSync(await download.path());
+   assert.equal(download.suggestedFilename(),'memento-postcard.png','content-free filename');
+   assert.equal(saved.equals(state.postcardPng),true,'download is the exact previewed PNG');
+   assert.deepEqual(errors,[]);
+   results.push('postcard select→customize→preview→download with exact same bytes PASS');await context.close();}
+  {const {page,state,context,errors}=await fixture(browser);
+   await page.getByTitle('More actions',{exact:true}).click();
+   await page.getByRole('menuitem',{name:'Create postcard',exact:true}).click();
+   const dialog=page.locator('#postcard-composer');
+   await dialog.waitFor();
+   await dialog.locator('select').selectOption('A:qa-track');
+   await dialog.getByRole('checkbox',{name:/SyntheticMemory/}).check();
+   await dialog.getByRole('button',{name:'Continue',exact:true}).click();
+   // The title field caps entry at 80 characters (no silent clipping later),
+   // and an empty title is explained before any render request is made.
+   const titleInput=dialog.getByPlaceholder('Nhật ký mùa hè');
+   assert.equal(await titleInput.getAttribute('maxlength'),'80','title capped at the field');
+   await titleInput.fill('y'.repeat(120));
+   assert.equal((await titleInput.inputValue()).length,80,'field enforces the cap');
+   await titleInput.fill('');
+   await dialog.getByRole('button',{name:'Continue',exact:true}).click();
+   assert((await dialog.innerText()).includes('Add a short title for the postcard.'),'client guidance before any request');
+   assert.equal(state.postcardRenders.length,0,'no render requested for invalid input');
+   assert.equal(await page.locator('#postcard-composer[role=dialog]').count(),1,'dialog stays open on guidance');
+   assert.deepEqual(errors,[]);
+   results.push('postcard over-limit title explained with no render request PASS');await context.close();}
+  {const {page,state,context,errors}=await fixture(browser,{postcardRenderFailure:true});
+   await page.getByTitle('More actions',{exact:true}).click();
+   await page.getByRole('menuitem',{name:'Create postcard',exact:true}).click();
+   const dialog=page.locator('#postcard-composer');
+   await dialog.waitFor();
+   await dialog.locator('select').selectOption('A:qa-track');
+   await dialog.getByRole('checkbox',{name:/SyntheticMemory/}).check();
+   await dialog.getByRole('button',{name:'Continue',exact:true}).click();
+   await dialog.getByPlaceholder('Nhật ký mùa hè').fill('Thử lại');
+   await dialog.getByRole('button',{name:'Continue',exact:true}).click();
+   await dialog.getByRole('button',{name:'Generate preview',exact:true}).click();
+   const alert=dialog.getByRole('alert');
+   await alert.waitFor();
+   assert((await alert.innerText()).includes('Synthetic postcard failure'),'actionable failure surfaced');
+   assert.equal(await page.getByTestId('postcard-preview').count(),0,'no fake preview after failure');
+   // A retry is offered and works once the failure clears.
+   state.postcardRenderFailure=false;
+   await dialog.getByRole('button',{name:'Generate preview',exact:true}).click();
+   await page.getByTestId('postcard-preview').waitFor();
+   assert.deepEqual(errors,[]);
+   results.push('postcard render failure is actionable and retryable PASS');await context.close();}
+  // Desktop viewport: the Back control only exists in the side-by-side layout;
+  // mobile reaches Customize through its step tabs instead.
+  {const {page,state,context,errors}=await fixture(browser,{viewport:{width:1200,height:900}});
+   await page.getByTitle('More actions',{exact:true}).click();
+   await page.getByRole('menuitem',{name:'Create postcard',exact:true}).click();
+   const dialog=page.locator('#postcard-composer');
+   await dialog.waitFor();
+   await dialog.locator('select').selectOption('A:qa-track');
+   await dialog.getByRole('checkbox',{name:/SyntheticMemory/}).check();
+   await dialog.getByRole('button',{name:'Continue',exact:true}).click();
+   await dialog.getByPlaceholder('Nhật ký mùa hè').fill('Trước khi đổi tài khoản');
+   await dialog.getByRole('button',{name:'Continue',exact:true}).click();
+   await dialog.getByRole('button',{name:'Generate preview',exact:true}).click();
+   await page.getByTestId('postcard-preview').waitFor();
+   assert.equal(state.postcardRenders.length,1);
+   // Editing after a preview must invalidate it rather than serve stale bytes.
+   await dialog.getByRole('button',{name:'Back',exact:true}).click();
+   await dialog.getByPlaceholder('Một dòng nhớ về ngày ấy…').fill('Thêm một dòng ký ức');
+   assert.equal(await page.getByTestId('postcard-preview').count(),0,'edit invalidates the preview');
+   assert((await dialog.innerText()).includes('need a new preview'),'user told to regenerate');
+   // Switching accounts must clear composer state and any rendered bytes.
+   await page.keyboard.press('Escape');
+   await dialog.waitFor({state:'detached',timeout:3000});
+   assert.equal(await page.locator('#postcard-composer').count(),0,'composer closed');
+   assert.deepEqual(errors,[]);
+   results.push('postcard preview invalidates on edit and closes on dismissal PASS');await context.close();}
+
   console.log(JSON.stringify({kind:'synthetic controlled-route browser QA, not real authenticated E2E',results},null,2));
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

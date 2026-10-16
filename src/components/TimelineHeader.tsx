@@ -17,6 +17,8 @@ interface TimelineHeaderProps {
   onAddNewEvent: () => void;
   onExportJson: () => void;
   onExportJsonAsync?: () => Promise<void>;
+  /** Hidden entirely when the signed-in user owns no track. */
+  onCreatePostcard?: () => void;
   username?: string;
   onLogout?: () => void;
   canCreateEntry?: boolean;
@@ -28,6 +30,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
   onAddNewEvent,
   onExportJson,
   onExportJsonAsync,
+  onCreatePostcard,
   username,
   onLogout,
   canCreateEntry = true,
@@ -110,6 +113,19 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
                   <Download className="w-3.5 h-3.5 text-stone-500" />
                   Export backup (JSON)
                 </button>
+                {onCreatePostcard && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    id="create-postcard"
+                    onClick={() => { setMenuOpen(false); onCreatePostcard(); }}
+                    title="Create a private postcard from your own moments"
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800 flex items-center gap-2"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                    Create postcard
+                  </button>
+                )}
               </div>
             )}
           </div>

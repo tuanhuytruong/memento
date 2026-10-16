@@ -29,6 +29,25 @@ export interface LocationMetadata {
   lng?: number;
 }
 
+/** One postcard selection cell: a moment plus at most one of its own photos. */
+export interface PostcardSelection {
+  event: TimelineEvent;
+  imageId: string | null;
+  caption: string;
+}
+
+export type PostcardTemplateKey = 'journey' | 'ordinary' | 'month';
+
+export interface PostcardRequest {
+  template: PostcardTemplateKey;
+  moments: { ownerId: string; id: string }[];
+  images: (string | null)[];
+  captions: string[];
+  title: string;
+  note: string;
+  showDate: boolean;
+}
+
 export interface EventTrack {
   id: string;
   title: string; // e.g. "AI Era", "New Company"

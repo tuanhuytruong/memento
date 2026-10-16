@@ -16,6 +16,8 @@ const EventModal = lazy(() => import('./components/EventModal').then(module => (
 const EventDetailModal = lazy(() => import('./components/EventDetailModal').then(module => ({ default: module.EventDetailModal })));
 const ImageLightbox = lazy(() => import('./components/ImageLightbox').then(module => ({ default: module.ImageLightbox })));
 const BlindboxMemory = lazy(() => import('./components/BlindboxMemory').then(module => ({ default: module.BlindboxMemory })));
+// Postcard rendering is a heavy, rarely-used flow; it never joins the initial bundle.
+const PostcardComposer = lazy(() => import('./components/PostcardComposer').then(module => ({ default: module.PostcardComposer })));
 import { Dices } from 'lucide-react';
 import { MemoryResurfacing } from './components/MemoryResurfacing';
 import type { MemoryVisit } from './lib/memoryResurfacing';
@@ -184,6 +186,7 @@ export default function App() {
   const [trackToEdit, setTrackToEdit] = useState<EventTrack | null>(null);
 
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
+  const [isPostcardOpen, setIsPostcardOpen] = useState(false);
   const [eventToEdit, setEventToEdit] = useState<TimelineEvent | null>(null);
   const [eventToView, setEventToView] = useState<TimelineEvent | null>(null);
 
@@ -206,6 +209,7 @@ export default function App() {
     setPendingImageRetry(null); setDataError(''); setSessionError(''); setPerspectiveError('');
     setDataLoading(false); setUploadRunning(false); uploadBusy.current = false; reactionPending.current.clear();
     setSelectedTrackKey('all'); setVisits([]); visitWrites.current.clear();
+    setIsPostcardOpen(false);
     setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', milestonesOnly: false, hasImagesOnly: false }));
   }
 
@@ -580,6 +584,8 @@ export default function App() {
           }}
           onExportJson={() => exportTimelineData(eventTracks, events, apiTags.map((tag) => tag.name))}
           onExportJsonAsync={exportJsonWithPerspectives}
+          // Export is owner-only, so the entry point disappears without an owned track.
+          onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
           canCreateEntry={eventTracks.some((track) => track.accessRole === 'owner' || track.accessRole === 'editor')}
         />
         {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
@@ -788,6 +794,14 @@ export default function App() {
         isOpen={lightboxState.isOpen}
         onClose={() => setLightboxState((prev) => ({ ...prev, isOpen: false }))}
         onNavigate={(newIndex) => setLightboxState((prev) => ({ ...prev, index: newIndex }))}
+      />}
+      {isPostcardOpen && <PostcardComposer
+        key={`${user.id}:${authGenerationRef.current}`}
+        isOpen={isPostcardOpen}
+        tracks={eventTracks}
+        events={events}
+        currentUserId={user.id}
+        onClose={() => setIsPostcardOpen(false)}
       />}
       </Suspense></DeferredUiBoundary>
     </div>
