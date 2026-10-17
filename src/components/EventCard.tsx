@@ -82,8 +82,11 @@ export const EventCard: React.FC<EventCardProps> = ({
       {/* Main Event Card */}
       <div
         id={`event-card-${momentIdentity(event)}`}
+        // Not in the tab order; it is only a focus TARGET when the detail view
+        // closes, so keyboard users land back on the card they came from.
+        tabIndex={-1}
         onClick={() => onViewDetails(event)}
-        className={`min-w-0 flex-1 break-words rounded-2xl p-4 sm:p-5 transition-all duration-200 cursor-pointer bg-white dark:bg-stone-900 border ${
+        className={`min-w-0 flex-1 break-words rounded-2xl p-4 sm:p-5 transition-all duration-200 cursor-pointer bg-white dark:bg-stone-900 border focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 ${
           event.isMilestone
             ? 'border-amber-300 dark:border-amber-800/80 shadow-md ring-1 ring-amber-400/20'
             : 'border-stone-200/80 dark:border-stone-800 shadow-xs hover:shadow-md hover:border-stone-300 dark:hover:border-stone-700'

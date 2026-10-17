@@ -16,8 +16,14 @@ interface TimelineViewProps {
   onTagClick: (tag: string) => void;
   onOpenImageLightbox: (images: string[], index: number) => void;
   onAddNewEvent: () => void;
+  /** Offered when the account has no track to write into yet. */
+  onAddNewTrack?: () => void;
   onResetFilters?: () => void;
   isFiltered?: boolean;
+  /** Server-authoritative capability: never render an unusable CTA. */
+  canCreateEntry: boolean;
+  /** True when the account has no track at all, so the empty state can ask for one. */
+  hasAnyTrack: boolean;
 }
 
 export const TimelineView: React.FC<TimelineViewProps> = ({
@@ -31,8 +37,11 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   onTagClick,
   onOpenImageLightbox,
   onAddNewEvent,
+  onAddNewTrack,
   onResetFilters,
   isFiltered,
+  canCreateEntry,
+  hasAnyTrack,
 }) => {
   const trackMap = new Map(tracks.map((track) => [trackIdentity(track), track]));
   const currentTrack = tracks.find((t) => trackIdentity(t) === currentTrackKey);
@@ -54,6 +63,10 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
         <h3 className="text-lg font-bold font-display text-stone-900 dark:text-stone-100 mb-1">
           {isFiltered
             ? 'No matching timeline entries'
+            : !hasAnyTrack
+            ? 'Create your first track'
+            : !canCreateEntry
+            ? 'Nothing to show here yet'
             : currentTrack
             ? `No entries in ${currentTrack.title} yet`
             : 'Your timeline is clear'}
@@ -61,6 +74,10 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
         <p className="text-xs sm:text-sm text-stone-500 dark:text-stone-400 mb-6 leading-relaxed">
           {isFiltered
             ? 'Try adjusting your tag filters, search term, or emotion criteria.'
+            : !hasAnyTrack
+            ? 'Tracks group your memories into chapters — a trip, a year, a project. Create one to start logging moments.'
+            : !canCreateEntry
+            ? 'You have read-only access to the tracks shared with you. The owner can grant editing access if you would like to add your own memories here.'
             : currentTrack
             ? `Log the first milestone or moment for the ${currentTrack.title} event timeline.`
             : 'Start chronicling your life events, milestones, feelings, ideas, and travels.'}
@@ -69,19 +86,32 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
           {isFiltered && onResetFilters ? (
             <button
               onClick={onResetFilters}
-              className="px-4 py-2 text-xs font-semibold rounded-xl border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 transition"
+              className="px-4 py-2 min-h-11 text-xs font-semibold rounded-xl border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 transition"
             >
               Reset Filters
             </button>
           ) : null}
-          <button
-            id="empty-state-add-event"
-            onClick={onAddNewEvent}
-            className="px-5 py-2 text-xs font-semibold rounded-xl bg-amber-600 hover:bg-amber-700 text-white shadow-sm transition flex items-center gap-1.5"
-          >
-            <Plus className="w-4 h-4" />{' '}
-            {currentTrack ? `Add to ${currentTrack.title}` : 'Log First Event'}
-          </button>
+          {/* A zero-track account cannot create a moment at all, so the only
+              usable next step is creating a track. */}
+          {!isFiltered && !hasAnyTrack && onAddNewTrack ? (
+            <button
+              id="empty-state-add-track"
+              onClick={onAddNewTrack}
+              className="px-5 py-2 min-h-11 text-xs font-semibold rounded-xl bg-amber-600 hover:bg-amber-700 text-white shadow-sm transition flex items-center gap-1.5"
+            >
+              <Plus className="w-4 h-4" /> Create your first track
+            </button>
+          ) : null}
+          {!isFiltered && hasAnyTrack && canCreateEntry && (
+            <button
+              id="empty-state-add-event"
+              onClick={onAddNewEvent}
+              className="px-5 py-2 min-h-11 text-xs font-semibold rounded-xl bg-amber-600 hover:bg-amber-700 text-white shadow-sm transition flex items-center gap-1.5"
+            >
+              <Plus className="w-4 h-4" />{' '}
+              {currentTrack ? `Add to ${currentTrack.title}` : 'Log First Event'}
+            </button>
+          )}
         </div>
       </div>
     );

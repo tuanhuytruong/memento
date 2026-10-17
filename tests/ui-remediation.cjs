@@ -53,6 +53,14 @@ async function fixture(browser, options={}) {
     if(state.refreshFailure){state.refreshFailure=false;return route.fulfill({status:503,json:{error:'synthetic refresh failure'}});}
     body={moments:state.moments};
   }
+  else if(/^\/api\/moments\/[^/]+$/.test(url.pathname) && req.method()==='GET') {
+    // Exact single-moment read used by the conflict comparison.
+    state.singleMomentRequests=(state.singleMomentRequests||0)+1;
+    const id=url.pathname.split('/').pop();
+    const found=state.moments.find(m=>m.id===id);
+    if(!found || state.singleMomentMissing) return route.fulfill({status:404,json:{error:'Moment not found'}});
+    body={moment:{...found,...(state.singleMomentPatch||{})}};
+  }
   else if(/^\/api\/moments\/[^/]+\/perspectives$/.test(url.pathname)&&req.method()==='GET')body={perspectives:state.perspectives,nextCursor:null,capabilities:{canRead:true,canCreate:state.perspectiveCanCreate!==false,canModerate:true}};
   else if(/^\/api\/moments\/[^/]+\/perspectives$/.test(url.pathname)&&req.method()==='POST'){const b=req.postDataJSON();const item={id:'p'+(state.perspectives.length+1),momentOwnerId:b.ownerId,momentId:url.pathname.split('/')[3],authorId:state.account,username:'synthetic-'+state.account,kind:b.kind,body:b.body,version:1,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};state.perspectives.push(item);return route.fulfill({status:201,json:{perspective:item}});}
   else if(url.pathname==='/api/moments/qa-moment' && req.method()==='DELETE') {state.deletes++;body={};}
@@ -62,8 +70,12 @@ async function fixture(browser, options={}) {
     body={moment:{...moment,...req.postDataJSON(),id:'created-A',version:1}};
   }
   else if(url.pathname==='/api/moments/qa-moment' && req.method()==='PUT') {
+    const n=(state.momentPutCount=(state.momentPutCount||0)+1);
     state.puts.push(req.postDataJSON());
-    return route.fulfill({status:409,json:{error:'Synthetic conflict'}});
+    // conflictCount bounds how many moment PUTs answer 409; the default keeps
+    // the historical always-conflict behaviour for the existing journeys.
+    if(n<=(state.conflictCount??999))return route.fulfill({status:409,json:{error:'Synthetic conflict',code:'VERSION_CONFLICT'}});
+    return route.fulfill({json:{moment:{...state.moments[0],...req.postDataJSON(),version:(state.singleMomentPatch?.version??3)+1}}});
   }
   else if(url.pathname.endsWith('/reactions')) {
     state.puts.push({method:req.method(),...req.postDataJSON()});
@@ -93,7 +105,11 @@ async function fixture(browser, options={}) {
   else if(url.pathname==='/api/collaboration-invitations')body={invitations:[]};
   return route.fulfill({json:body});
  });
- await page.goto(base,{waitUntil:'networkidle'});await page.locator('#event-card-A\\:qa-moment').waitFor();
+ await page.goto(base,{waitUntil:'networkidle'});
+ // Empty fixtures (no moments) wait for a stable app marker instead of a card
+ // that will never render.
+ if(state.moments.length) await page.locator('#event-card-A\\:qa-moment').waitFor();
+ else await page.locator('#open-create-event-modal, #empty-state-add-track, #empty-timeline-state').first().waitFor();
  return {context,page,state,errors};
 }
 async function hit(locator){
@@ -200,11 +216,30 @@ async function logoutAndLogin(page){
    assert(!state.requests.some(url=>/qa-[12]\?variant=display/.test(url)),'prefetched before decode');gate.resolve();await imageReady(page);await page.waitForTimeout(200);assert(state.requests.some(url=>url.includes('qa-1?variant=display')));assert(!state.requests.some(url=>url.includes('qa-2?variant=display')));results.push('prefetch waits current decode, one forward neighbor at edge PASS');await context.close();}
   {const {page,state,context}=await fixture(browser,{saveData:true,reduced:true});await page.locator('#event-card-A\\:qa-moment img').first().click();await imageReady(page);await delay(200);assert(!state.requests.some(url=>/qa-[123]\?variant=display/.test(url)));results.push('Save-Data disables prefetch PASS');await context.close();}
   {const {page,state,context}=await fixture(browser);state.failImages=true;await page.locator('#event-card-A\\:qa-moment img').first().click();await page.getByRole('button',{name:'Retry photo',exact:true}).waitFor();const before=state.requests.filter(url=>url.includes('variant=display')).length;await delay(800);assert.equal(state.requests.filter(url=>url.includes('variant=display')).length,before);state.failImages=false;await page.getByRole('button',{name:'Retry photo',exact:true}).click();await imageReady(page);results.push('PrivateImage bounded automatic retry, stable failure and explicit recovery PASS');await context.close();}
-  {const {page,state,context}=await fixture(browser);await page.locator('#event-card-A\\:qa-moment h3').click();await page.locator('#event-detail-card').getByTitle('Edit event',{exact:true}).click();await page.locator('#event-modal-backdrop input').first().waitFor();
+  {const {page,state,context}=await fixture(browser,{singleMomentPatch:{version:7,title:'Latest saved title',description:'Latest saved story'},conflictCount:2});await page.locator('#event-card-A\\:qa-moment h3').click();await page.locator('#event-detail-card').getByTitle('Edit event',{exact:true}).click();await page.locator('#event-modal-backdrop input').first().waitFor();
    // Title is a required text input; avoid relying on decorative label association.
    const inputs=await page.locator('#event-modal-backdrop input').evaluateAll(xs=>xs.map(x=>({type:x.type,value:x.value,required:x.required})));
    const target=page.locator('#event-modal-backdrop input').nth(inputs.findIndex(x=>x.value===moment.title));await target.fill('Retained synthetic local draft');
-   await page.locator('#save-event-button').click();await page.getByText(/Your draft is preserved here/).waitFor();assert.equal(await target.inputValue(),'Retained synthetic local draft');assert.equal(state.puts[0].expectedVersion,3);assert.equal(await page.locator('#event-modal-backdrop').count(),1);results.push('409 retains local form and loaded expectedVersion PASS');await context.close();}
+   await page.locator('#save-event-button').click();
+   // Phase 1 Task 1.4: a 409 opens an escaped side-by-side comparison against the
+   // exact (ownerId, id) read — never a blind overwrite, never a copy-to-app ask.
+   const panel=page.locator('#moment-conflict-panel');await panel.waitFor();
+   const panelText=await panel.textContent()||'';
+   assert.equal(state.puts[0].expectedVersion,3,'first save still targets the displayed version');
+   assert(panelText.includes('Retained synthetic local draft'),'draft shown in Your edits');
+   assert(panelText.includes('Latest saved title'),'server version shown alongside');
+   assert(/version/i.test(panelText),'a version number is part of the comparison');
+   assert(panelText.includes('7'),'the server version value is shown');
+   assert.equal(await target.inputValue(),'Retained synthetic local draft','draft preserved while comparing');
+   assert.equal(state.singleMomentRequests,1,'exactly one exact single-moment read');
+   await page.locator('#conflict-dismiss').click();assert.equal(await panel.count(),0,'Keep comparing hides the panel');assert.equal(await target.inputValue(),'Retained synthetic local draft');
+   // "Use latest saved values" adopts server state AND its version, then saves cleanly.
+   await page.locator('#save-event-button').click();await panel.waitFor();await page.locator('#conflict-use-latest').click();await page.locator('#moment-conflict-panel').waitFor({state:'detached'});
+   assert.equal(await target.inputValue(),'Latest saved title','form adopts the server values');
+   assert.equal(state.puts.length,2,'adopting latest never re-submits on its own');
+   await page.locator('#save-event-button').click();await page.locator('#event-modal-backdrop').waitFor({state:'detached',timeout:3000});
+   assert.equal(state.puts[2].expectedVersion,7,'the adopted version is carried into the next save');
+   results.push('409 opens escaped comparison; Use latest adopts values and version; save then succeeds PASS');await context.close();}
   {const gate=deferred(),started=deferred();const {page,state,context,errors}=await fixture(browser,{perspectiveExportGate:gate,perspectiveExportStarted:started});
    await page.getByTitle('More actions',{exact:true}).click();await page.getByRole('menuitem',{name:/Export backup/}).click();await started.promise;await logoutAndLogin(page);gate.resolve();await delay(300);
    assert.equal(await page.getByRole('alert').count(),0,'previous-account export error must not appear after session switch');assert.deepEqual(errors,[]);
@@ -354,6 +389,149 @@ async function logoutAndLogin(page){
    assert((await section.locator('li button').count())<=3,'still capped at three');
    assert.deepEqual(errors,[]);
    results.push('deletion while a suggestion is shown removes it without stale capture PASS');await context.close();}
+
+  // ---- Phase 1: composer UX, drafts, conflicts, capability ----
+  {const {page,state,context,errors}=await fixture(browser);
+   // Story and title first; optional metadata stays collapsed until asked for.
+   await page.locator('#open-create-event-modal').click();await page.locator('#event-modal-backdrop').waitFor();
+   assert.equal(await page.locator('#event-title-input').count(),1,'title is a first-class field');
+   assert.equal(await page.locator('#event-description-input').count(),1,'story is a first-class field');
+   assert.equal(await page.locator('#toggle-more-details').getAttribute('aria-expanded'),'false','More details collapsed by default on create');
+   const titleY=await page.locator('#event-title-input').boundingBox().then(b=>b.y);
+   const storyY=await page.locator('#event-description-input').boundingBox().then(b=>b.y);
+   assert(storyY>titleY,'story follows the title, both before the optional sections');
+   const photoY=await page.locator('#upload-image-button').boundingBox().then(b=>b.y);
+   assert(storyY<photoY,'the story sits above photos');
+   // Neutral defaults: no emotion and no milestone tag is invented for you.
+   // The only pressed control in the form is the preselected writable track.
+   await page.locator('#toggle-more-details').click();
+   assert.equal(await page.locator('#toggle-milestone-button').getAttribute('aria-pressed'),'false','no milestone invented');
+   assert.equal(await page.locator('#event-modal-backdrop button[aria-pressed=true]').count(),1,'only the track is preselected');
+   assert.equal(await page.locator('#event-modal-backdrop').getByText('Clear emotion',{exact:true}).count(),0,'no emotion preselected');
+   assert.equal(await page.locator('#event-modal-backdrop [aria-label^="Intensity"]').count(),0,'no intensity control until an emotion is chosen');
+   // Choosing an emotion reveals intensity; every newly exposed control is a
+   // real touch target rather than an inline text link.
+   await page.locator('#event-modal-backdrop button[aria-pressed=false]').filter({hasText:'Joyful'}).first().click();
+   for(const label of ['Intensity 1','Intensity 5']){
+     const b=page.locator(`#event-modal-backdrop button[aria-label="${label}"]`);const r=await b.boundingBox();
+     assert(r.width>=44 && r.height>=44,`${label} ${r.width}x${r.height} >= 44`);
+   }
+   await page.locator('#event-modal-backdrop').getByText('Clear emotion',{exact:true}).click();
+   assert.equal(await page.locator('#event-modal-backdrop [aria-label^="Intensity"]').count(),0,'clearing the emotion removes intensity');
+   assert.deepEqual(errors,[]);
+   results.push('composer leads with title+story, More details collapsed, no invented emotion/milestone PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser);
+   // Task 1.3: a dirty composer asks once on every dismissal path, and the
+   // three choices behave exactly as offered.
+   await page.locator('#open-create-event-modal').click();await page.locator('#event-title-input').waitFor();
+   await page.locator('#event-title-input').fill('Bản nháp cần giữ');
+   await page.locator('#cancel-event-button').click();
+   const panel=page.locator('#draft-dismissal-panel');await panel.waitFor();
+   assert((await panel.innerText()).includes('closing the tab or reloading can lose it'),'the honest session-only limit is stated');
+   await page.locator('#draft-continue-button').click();await page.locator('#draft-dismissal-panel').waitFor({state:'detached'});
+   assert.equal(await page.locator('#event-title-input').inputValue(),'Bản nháp cần giữ','Continue editing keeps the text');
+   await page.keyboard.press('Escape');await panel.waitFor();
+   await page.locator('#draft-keep-button').click();await page.locator('#event-modal-backdrop').waitFor({state:'detached',timeout:3000});
+   // Same page session, same scope: the kept draft comes back.
+   await page.locator('#open-create-event-modal').click();await page.locator('#event-title-input').waitFor();
+   assert.equal(await page.locator('#event-title-input').inputValue(),'Bản nháp cần giữ','kept draft restored within the same session');
+   // Discard really discards.
+   await page.locator('#event-title-input').fill('Sẽ bị bỏ');
+   await page.locator('#close-event-modal').click();await panel.waitFor();
+   await page.locator('#draft-discard-button').click();await page.locator('#event-modal-backdrop').waitFor({state:'detached',timeout:3000});
+   await page.locator('#open-create-event-modal').click();await page.locator('#event-title-input').waitFor();
+   assert.equal(await page.locator('#event-title-input').inputValue(),'','discarded draft is gone');
+   // A clean form never asks.
+   await page.locator('#cancel-event-button').click();await page.locator('#event-modal-backdrop').waitFor({state:'detached',timeout:3000});
+   assert.equal(await panel.count(),0,'a clean form closes without asking');
+   assert.deepEqual(errors,[]);
+   results.push('dirty composer asks once; Keep restores, Discard clears, clean form closes silently PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{singleMomentPatch:{version:9,title:'Server latest',description:'Server story'},conflictCount:999,singleMomentMissing:true});
+   // A deleted or revoked memory is reported as an access change; the user's own
+   // text stays on screen so nothing typed is lost to a silent failure.
+   await page.locator('#event-card-A\\:qa-moment h3').click();await page.locator('#event-detail-card').getByTitle('Edit event',{exact:true}).click();await page.locator('#event-title-input').waitFor();
+   await page.locator('#event-title-input').fill('Vẫn còn ở đây');
+   await page.locator('#save-event-button').click();
+   await page.getByText('This memory is no longer available').waitFor();
+   assert((await page.locator('#moment-conflict-panel').innerText()).includes('Vẫn còn ở đây'),'typed text stays visible for copying');
+   assert.equal(await page.locator('#event-title-input').inputValue(),'Vẫn còn ở đây','form is not cleared');
+   assert.equal(await page.locator('#event-modal-backdrop').count(),1,'the composer stays open');
+   assert.deepEqual(errors,[]);
+   results.push('deleted/revoked memory reported as access change with the draft kept on screen PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{viewerTracks:true,moments:[]});
+   // Server-authoritative capability: no unusable CTA is ever rendered.
+   assert.equal(await page.locator('#open-create-event-modal').count(),0,'no New entry CTA for a viewer-only account');
+   await page.locator('#empty-timeline-state').waitFor();
+   const text=await page.locator('#empty-timeline-state').evaluate(el=>el.textContent||'');
+   assert(text.includes('read-only'),'empty state explains the read-only access');
+   assert.equal(await page.locator('#empty-state-add-event').count(),0,'no unusable Add entry CTA');
+   assert.deepEqual(errors,[]);
+   results.push('viewer-only account sees no create CTA, only a truthful empty state PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{tracks:[],moments:[]});
+   // A zero-track account can only create a track; the CTA says exactly that.
+   await page.locator('#empty-timeline-state').waitFor();
+   assert((await page.locator('#empty-timeline-state').evaluate(el=>el.textContent||'')).includes('Create your first track'));
+   await hit(page.locator('#empty-state-add-track'));await page.locator('#event-track-modal-backdrop').waitFor();
+   assert.deepEqual(errors,[]);
+   results.push('zero-track account is offered Create your first track, not a dead Add moment PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{viewport:{width:390,height:844}});
+   // Metrics collapse to one compact line; the full ribbon needs an explicit tap.
+   const details=page.locator('#toggle-metrics-details');
+   assert(await details.isVisible(),'compact metrics line with a Details toggle');
+   await hit(details);
+   assert(await page.getByText('Attached Photos',{exact:true}).isVisible(),'Details reveals the metrics');
+   // Footer: Save and Cancel are real, reachable controls at 390x844.
+   await hit(page.locator('#open-create-event-modal'));
+   await page.locator('#event-modal-backdrop').waitFor();
+   for(const id of ['save-event-button','cancel-event-button']){
+     const el=page.locator(`#${id}`);assert(await el.isVisible(),`${id} visible`);
+     const r=await el.boundingBox();assert(r.height>=44,`${id} height ${r.height} >= 44`);
+   }
+   // The footer is a flex sibling of the scroll region, so it stays in the
+   // viewport while the body scrolls — it never overlays the photo grid.
+   const cardBox=await page.locator('#event-modal-card').boundingBox();
+   const footerBox=await page.locator('#cancel-event-button').boundingBox();
+   assert(footerBox.y+footerBox.height<=cardBox.y+cardBox.height+1,'footer sits inside the card');
+   assert.equal(await page.locator('#event-modal-backdrop').evaluate(el=>el.querySelectorAll('#event-modal-form > div').length>0),true,'scroll region holds the sections');
+   await page.locator('#event-modal-form').evaluate(el=>{el.scrollTop=el.scrollHeight;});
+   const footerAfterScroll=await page.locator('#cancel-event-button').boundingBox();
+   assert(Math.abs(footerAfterScroll.y-footerBox.y)<2,'footer stays put while the form scrolls');
+   assert.deepEqual(errors,[]);
+   results.push('mobile compact metrics with Details; composer footer controls reachable and >=44px PASS');await context.close();}
+
+  {const many=[track];for(let i=2;i<=12;i++)many.push({...track,id:'qa-track-'+i,title:'Chapter '+String(i).padStart(2,'0')});
+   const {page,state,context,errors}=await fixture(browser,{tracks:many});
+   // Task 1.5: a long track strip stays bounded and searchable instead of
+   // pushing the first memory below the fold.
+   const strip=page.locator('button[id^=tab-event-track-]');
+   assert.equal(await strip.count(),8,'only the preview renders initially');
+   const showAll=page.locator('#toggle-show-all-tracks');
+   assert(await showAll.isVisible(),'Show all appears when the list is long');
+   await hit(showAll);
+   assert.equal(await strip.count(),12,'Show all reveals every chapter');
+   await page.locator('#track-nav-search').fill('Chapter 03');
+   assert.equal(await strip.count(),1,'search narrows the strip');
+   assert((await strip.allInnerTexts()).join(' ').includes('Chapter 03'),'search matches by name');
+   await page.locator('#track-nav-search').fill('');
+   assert.equal(await strip.count(),12,'clearing search restores every chapter');
+   // Select a chapter that falls outside the preview, then collapse: the current
+   // selection must stay visible so the user never loses their place.
+   const tail=strip.nth(11);await tail.scrollIntoViewIfNeeded();await tail.click();
+   await hit(showAll);
+   assert.equal(await strip.count(),8,'strip collapses back to the preview');
+   assert((await strip.allInnerTexts()).join(' ').includes('Chapter 12'),'the selected chapter stays in the preview');
+   // The merged banner reports counts, never a concatenation of every name.
+   await hit(page.locator('#tab-all-events-merged'));
+   const banner=await page.locator('header,nav,div').filter({hasText:'merged chronological progression'}).first().evaluate(el=>el.textContent||'');
+   assert(banner.includes('12'),'banner states the timeline count');
+   assert(!banner.includes('Chapter 02, Chapter 03'),'banner does not concatenate every track name');
+   assert.deepEqual(errors,[]);
+   results.push('track strip bounded to preview with Show all and search; merged banner counts, no name dump PASS');await context.close();}
 
   // ---- Phase 3: postcard composer (synthetic controlled routes) ----
   {const {page,state,context,errors}=await fixture(browser,{viewerTracks:true});

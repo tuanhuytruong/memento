@@ -2,6 +2,7 @@ import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRe
 import { TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
 import { exportTimelineData } from './lib/storage';
 import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
+import { releaseAllMomentDrafts } from './lib/useMomentDraft';
 import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation } from './lib/api';
 import { CollaborationModal, SharedInvitations } from './components/CollaborationModal';
 import { AuthScreen } from './components/AuthScreen';
@@ -42,6 +43,8 @@ export default function App() {
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const [perspectiveError, setPerspectiveError] = useState('');
   const authGenerationRef = useRef(0);
+  // Which card opened the detail view, so closing can return focus and scroll.
+  const detailOpenerKey = useRef<string | null>(null);
   const uploadBusy = useRef(false);
   const reactionPending = useRef(new Set<string>());
   const assertSession = (generation: number) => { if (generation !== authGenerationRef.current) throw new Error('Session changed. Request result discarded.'); };
@@ -210,6 +213,8 @@ export default function App() {
     setDataLoading(false); setUploadRunning(false); uploadBusy.current = false; reactionPending.current.clear();
     setSelectedTrackKey('all'); setVisits([]); visitWrites.current.clear();
     setIsPostcardOpen(false);
+    // No private draft crosses an account or session boundary.
+    releaseAllMomentDrafts().forEach((url) => { try { URL.revokeObjectURL(url); } catch { /* already revoked */ } });
     setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', milestonesOnly: false, hasImagesOnly: false }));
   }
 
@@ -242,8 +247,25 @@ export default function App() {
 
   const openDetail = (event: TimelineEvent) => {
     const track = eventTracks.find(item => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
+    // Remember where the user came from so closing returns focus and scroll to
+    // that card instead of dropping them at the top of the page.
+    detailOpenerKey.current = momentIdentity(event);
     recordVisit(track);
     setEventToView(event);
+  };
+
+  /** Close the detail and put the user back where they were in the list. */
+  const closeDetail = () => {
+    const key = detailOpenerKey.current;
+    detailOpenerKey.current = null;
+    setEventToView(null);
+    if (!key) return;
+    window.requestAnimationFrame(() => {
+      const card = document.getElementById(`event-card-${key}`);
+      if (!card) return;
+      card.focus({ preventScroll: true });
+      card.scrollIntoView({ block: 'nearest' });
+    });
   };
 
   /** Suggestion open: exact identity, no unrelated filter may hide its track. */
@@ -306,6 +328,9 @@ export default function App() {
 
   const selectedTrack = eventTracks.find((track) => trackIdentity(track) === selectedTrackKey) || null;
   const canEditSelectedTrack = selectedTrack?.accessRole === 'owner' || selectedTrack?.accessRole === 'editor';
+  // Account-level write capability: one source for every create entry point,
+  // derived from server-authoritative roles rather than local UI state.
+  const canCreateEntry = eventTracks.some((track) => track.accessRole === 'owner' || track.accessRole === 'editor');
 
   // Persist each change before reflecting it in the UI; failed requests leave the prior data intact.
   const handleSaveTrack = async (
@@ -342,6 +367,24 @@ export default function App() {
       setFilters((prev) => ({ ...prev, selectedEventId: 'all' }));
     }
   };
+
+  // Combine server-managed tags with occurrence counts from server-backed moments.
+  // Composite-key maps: one pass over moments and one over tracks, never a
+  // repeated tracks.find inside the event iteration.
+  const trackByComposite = useMemo(() => {
+    const map = new Map<string, EventTrack>();
+    eventTracks.forEach((track) => map.set(trackIdentity(track), track));
+    return map;
+  }, [eventTracks]);
+
+  const momentCountByTrack = useMemo(() => {
+    const counts = new Map<string, number>();
+    events.forEach((event) => {
+      const key = `${event.resourceOwnerId ?? 'legacy'}:${event.eventId}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    return counts;
+  }, [events]);
 
   // Combine server-managed tags with occurrence counts from server-backed moments.
   const availableTags = useMemo(() => {
@@ -437,18 +480,23 @@ export default function App() {
   }, [events, selectedTrackKey, filters]);
 
   // Save a moment server-side first; local state changes only after a confirmed response.
+  // expectedVersion is optional: the composer passes the version it displayed,
+  // or the freshly reviewed one after a conflict rebase.
   const handleSaveEvent = async (
     data: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>,
     editId?: string,
     imageFiles: File[] = [],
-    eventOwnerId?: string
+    eventOwnerId?: string,
+    expectedVersion?: number
   ) => {
     const generation = authGenerationRef.current;
     if (uploadBusy.current || (imageFiles.length && pendingImageRetry)) throw new Error('Finish or retry the previous photo upload before attaching more files. Your draft is preserved.');
     // The loaded edit snapshot, NOT the freshest timeline, defines what this form was based on.
-    if (editId && (!eventToEdit || eventToEdit.id !== editId || !Number.isInteger(eventToEdit.version))) throw new Error('This edit has no version. Close and reopen the form before saving. Your draft is unchanged.');
+    if (editId && (!eventToEdit || eventToEdit.id !== editId)) throw new Error('This edit is no longer open. Close and reopen the form before saving. Your draft is unchanged.');
+    const version = expectedVersion ?? eventToEdit?.version;
+    if (editId && !Number.isInteger(version)) throw new Error('This edit has no version. Close and reopen the form before saving. Your draft is unchanged.');
     const saved = editId
-      ? await dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, eventToEdit!.version!, eventOwnerId || eventToEdit!.resourceOwnerId!)
+      ? await dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!)
       : await dataApi.createMoment(data, eventOwnerId!);
     assertSession(generation);
     setEvents((prev) => editId ? prev.map((event) => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
@@ -586,7 +634,7 @@ export default function App() {
           onExportJsonAsync={exportJsonWithPerspectives}
           // Export is owner-only, so the entry point disappears without an owned track.
           onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
-          canCreateEntry={eventTracks.some((track) => track.accessRole === 'owner' || track.accessRole === 'editor')}
+          canCreateEntry={canCreateEntry}
         />
         {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
         {selectedTrackKey === 'all' && (
@@ -608,14 +656,16 @@ export default function App() {
             setIsEventTrackModalOpen(true);
           }}
           onAddNewMoment={() => {
-            if (!canEditSelectedTrack) return;
+            // Role decides the CTA, including in the merged overview where no
+            // single track is selected.
+            if (!canCreateEntry) return;
             setEventToEdit(null);
             setIsEventModalOpen(true);
           }}
           onShareTrack={(track) => {
             if (track.accessRole === 'owner') setShareTrack(track);
           }}
-          canEditSelectedTrack={canEditSelectedTrack}
+          canEditSelectedTrack={canCreateEntry}
         />
 
         {/* Filter and Control Toolbar */}
@@ -655,6 +705,8 @@ export default function App() {
               events={filteredEvents}
               tracks={eventTracks}
               currentTrackKey={selectedTrackKey}
+              canCreateEntry={selectedTrack ? canEditSelectedTrack : canCreateEntry}
+              hasAnyTrack={eventTracks.length > 0}
               onSelectTrack={handleSelectTrack}
               onViewDetails={openDetail}
               onEdit={(evt) => {
@@ -667,6 +719,10 @@ export default function App() {
               onAddNewEvent={() => {
                 setEventToEdit(null);
                 setIsEventModalOpen(true);
+              }}
+              onAddNewTrack={() => {
+                setTrackToEdit(null);
+                setIsEventTrackModalOpen(true);
               }}
               onResetFilters={() =>
                 setFilters({
@@ -737,8 +793,9 @@ export default function App() {
         isOpen={isEventModalOpen}
         eventToEdit={eventToEdit}
         tracks={eventTracks}
-        defaultTrackKey={selectedTrack ? trackIdentity(selectedTrack) : (() => { const ownTrack = eventTracks.find((track) => track.resourceOwnerId === user.id); return ownTrack ? trackIdentity(ownTrack) : undefined; })()}
+        defaultTrackKey={selectedTrack ? trackIdentity(selectedTrack) : undefined}
         existingTags={availableTags.map((t) => t.name)}
+        sessionGeneration={authGenerationRef.current}
         onClose={() => {
           setIsEventModalOpen(false);
           setEventToEdit(null);
@@ -758,7 +815,7 @@ export default function App() {
         tracks={eventTracks}
         onSelectTrack={handleSelectTrack}
         isOpen={!!eventToView}
-        onClose={() => setEventToView(null)}
+        onClose={closeDetail}
         onEdit={(evt) => {
           setEventToEdit(evt);
           setIsEventModalOpen(true);

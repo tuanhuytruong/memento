@@ -89,8 +89,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           />
           {filters.search && (
             <button
+              type="button"
+              aria-label="Clear search"
               onClick={() => onFilterChange({ search: '' })}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-stone-400 hover:text-stone-600"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 min-h-11 min-w-11 flex items-center justify-center text-stone-400 hover:text-stone-600"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -103,8 +105,11 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           <div className="flex items-center p-1 rounded-xl bg-stone-100 dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700">
             <button
               id="view-timeline-btn"
+              type="button"
+              aria-pressed={viewMode === 'timeline'}
+              aria-label="Timeline view"
               onClick={() => onViewModeChange('timeline')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
                 viewMode === 'timeline'
                   ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
@@ -117,8 +122,11 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
             <button
               id="view-compact-btn"
+              type="button"
+              aria-pressed={viewMode === 'compact'}
+              aria-label="Compact list view"
               onClick={() => onViewModeChange('compact')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
                 viewMode === 'compact'
                   ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
@@ -131,8 +139,11 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
             <button
               id="view-gallery-btn"
+              type="button"
+              aria-pressed={viewMode === 'gallery'}
+              aria-label="Gallery view"
               onClick={() => onViewModeChange('gallery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
                 viewMode === 'gallery'
                   ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
@@ -147,12 +158,14 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           {/* Sort Direction Toggle */}
           <button
             id="toggle-sort-direction"
+            type="button"
+            aria-label={filters.sortDirection === 'newest' ? 'Sorted newest first. Activate to sort oldest first' : 'Sorted oldest first. Activate to sort newest first'}
             onClick={() =>
               onFilterChange({
                 sortDirection: filters.sortDirection === 'newest' ? 'oldest' : 'newest',
               })
             }
-            className="flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-medium border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:border-stone-300"
+            className="flex items-center gap-1 px-3 py-2 min-h-11 rounded-xl text-xs font-medium border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:border-stone-300"
             title="Sort direction"
           >
             <ArrowUpDown className="w-3.5 h-3.5 text-stone-500" />
@@ -164,8 +177,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           {/* More Filters Toggle */}
           <button
             id="toggle-advanced-filters"
+            type="button"
+            aria-expanded={showAdvanced}
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className={`flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-medium transition ${
+            className={`flex items-center gap-1 px-3 py-2 min-h-11 rounded-xl text-xs font-medium transition ${
               showAdvanced || activeFiltersCount > 0
                 ? 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-800'
                 : 'border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:border-stone-300'
@@ -188,8 +203,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           <Calendar className="w-3 h-3" /> Year:
         </span>
         <button
+          type="button"
+          aria-pressed={filters.selectedYear === 'all'}
           onClick={() => onFilterChange({ selectedYear: 'all' })}
-          className={`px-3 py-1 rounded-full font-medium transition shrink-0 ${
+          className={`px-3 py-1 min-h-11 rounded-full font-medium transition shrink-0 ${
             filters.selectedYear === 'all'
               ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900'
               : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -200,8 +217,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         {availableYears.map((yr) => (
           <button
             key={yr}
+            type="button"
+            aria-pressed={filters.selectedYear === yr}
             onClick={() => onFilterChange({ selectedYear: yr })}
-            className={`px-3 py-1 rounded-full font-medium transition shrink-0 ${
+            className={`px-3 py-1 min-h-11 rounded-full font-medium transition shrink-0 ${
               filters.selectedYear === yr
                 ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900'
                 : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -215,8 +234,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         <div className="h-4 w-px bg-stone-200 dark:bg-stone-700 mx-1 shrink-0" />
 
         <button
+          type="button"
+          aria-pressed={filters.milestonesOnly}
           onClick={() => onFilterChange({ milestonesOnly: !filters.milestonesOnly })}
-          className={`px-3 py-1 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
+          className={`px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
             filters.milestonesOnly
               ? 'bg-amber-500 text-white shadow-xs'
               : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -226,8 +247,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         </button>
 
         <button
+          type="button"
+          aria-pressed={filters.hasImagesOnly}
           onClick={() => onFilterChange({ hasImagesOnly: !filters.hasImagesOnly })}
-          className={`px-3 py-1 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
+          className={`px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
             filters.hasImagesOnly
               ? 'bg-sky-600 text-white shadow-xs'
               : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -238,8 +261,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
         {activeFiltersCount > 0 && (
           <button
+            type="button"
+            aria-label="Reset all filters"
             onClick={onResetFilters}
-            className="text-stone-500 hover:text-rose-600 text-xs ml-auto shrink-0 flex items-center gap-1 hover:underline"
+            className="text-stone-500 hover:text-rose-600 text-xs ml-auto shrink-0 flex items-center gap-1 hover:underline px-2 min-h-11"
           >
             <X className="w-3 h-3" /> Reset all
           </button>
