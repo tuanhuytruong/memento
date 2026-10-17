@@ -143,6 +143,10 @@ export const dataApi = {
     const result = await request<{ saved: { ownerId: string; id: string }[]; count: number }>('/saved');
     return { saved: result.saved, count: result.count };
   },
+  // Phase 3: the bounded read. Search text travels in a JSON body, never in a
+  // query string, so it cannot end up in a request log.
+  queryMoments: (body: Record<string, unknown>, signal?: AbortSignal) =>
+    request<{ moments: TimelineEvent[]; nextCursor: string | null; total?: number; facets?: Record<string, number> }>('/moments/query', { method: 'POST', body: JSON.stringify(body), signal }),
   savedMoments: async ({ limit = 40, cursor }: { limit?: number; cursor?: string } = {}) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (cursor) params.set('cursor', cursor);
