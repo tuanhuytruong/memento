@@ -2,6 +2,37 @@
 
 Base URL: same origin, `/api`. All endpoints except register/login require a valid session cookie where noted. Mutation requests (`POST`, `PUT`, `DELETE`) require a same-origin `Origin` header. JSON responses use `application/json`; errors use `{ "error": "..." }`.
 
+## Frozen compatibility and privacy contracts (Phase 0)
+
+These are named contracts, enforced by tests, not aspirations:
+
+- **Roles and identity.** Roles are `owner`, `editor`, `viewer`, plus `revoked` and `unrelated` which both resolve to `404` for the exact resource. Every domain resource is identified by the exact composite `(ownerId, id)`; the same `id` may exist under different owners and is never merged, guessed from row order, or authorized by a matching bare ID.
+- **Authorization is current and server-side.** Every read and mutation rechecks access at the moment it runs, including image streaming, reactions, perspectives, tags, uploads, cleanup and export. Hiding a control in the UI is never authorization. Revoked and unrelated callers receive the same denial.
+- **Session generations.** Client-side async results are fenced by the auth generation; a response from a previous account can never populate the next session's state.
+- **Moments sort order.** `GET /api/moments` returns the complete accessible set with no guaranteed server order. The client sorts deterministically by memory date plus optional time, newest or oldest, with owner id and moment id as tie-breakers. Order is not part of the wire contract.
+- **Tag semantics.** Multiple selected tags are OR semantics: a moment matches if it carries any selected tag. Tags are stored per owner; deleting a tag removes it from that owner's moments and tracks only.
+- **Date-only behavior.** A date-only moment (`YYYY-MM-DD`) is validated as a real calendar date, stored as the literal date plus optional `HH:MM` time, and never reinterpreted in UTC. Timestamp-form dates must carry an explicit offset or `Z`.
+- **Owned versus accessible counts.** The client's counts, year lists and tag lists derive from the loaded accessible set (owned plus accepted collaborations), never from a separate server counter. A revoked track's moments leave those derivations immediately.
+- **Export scope.** JSON backup contains tracks, moments, tags and (when requested) perspectives the signed-in user currently owns or can access, plus same-origin `/api/images/:id` references — never photo bytes, never object keys. Perspectives export covers owned moments only and follows every page before download; any page failure prevents the file.
+- **Draft retention.** Create/edit drafts are kept in memory for the current signed-in page session only (see Phase 1). No localStorage/IndexedDB/private-text persistence, no network transmission of drafts, and reload or tab close can lose them.
+- **Cache policy.** Authenticated image responses (including server-cache hits and 304s) use `Cache-Control: private, max-age=300, must-revalidate`. There are no public URLs, no shared/CDN caching and no long-lived `immutable` caching for private images. Static hashed assets are `public, max-age=31536000, immutable`; HTML and `/api/` are `no-store`.
+- **Build/test output is not UI proof.** A passing lint/build/test run, a green health endpoint or a bundle hash cannot prove layout fit, permission behavior or performance. Browser interaction QA and measurements are separate evidence.
+
+## Frozen compatibility and privacy contracts (Phase 1)
+
+- **Version conflicts are recoverable, never silent.** A `409` carries `{ "code": "VERSION_CONFLICT", "currentVersion": number }`. The client keeps the user's draft on screen and reads the current version through the exact `(ownerId, id)` read below; it never auto-resubmits and never force-overwrites. Adopting the server version is an explicit action that also adopts its version number.
+- **Conflicted or denied content is never rewritten by the client.** "Your edits" and "Latest saved" are rendered as escaped plain text. A deleted or revoked memory stops the save, reports an access change, and leaves the user's typed text on screen to copy — it never renders freshly denied server content.
+- **Draft images are never authority.** Only attachments still present on the freshly fetched server version are kept when adopting latest values; pending local files stay pending. The server continues validating every image association and parent track.
+- **Memory dates are local calendar dates.** The entry date default is built from the user's local calendar day, and a date-only value keeps its literal `YYYY-MM-DD`. Created/edited timestamps stay server-authoritative, and historical memory dates are never rewritten.
+- **Create capability comes from server roles.** Whether a create affordance renders is decided by the caller's `owner`/`editor` role on some current track — never by which track happens to be selected locally. An account with no track is offered track creation, because it cannot create a moment at all; a viewer-only account gets read-only guidance.
+- **Drafts are one in-memory session store.** Drafts are keyed by auth generation, create/edit identity, expected version and owner; they are cleared on logout/account switch, are never written to localStorage/IndexedDB, and are never transmitted. Blob preview URLs have exactly one owner at a time.
+
+## Exact moment read (Phase 1)
+
+- `GET /api/moments/:id?ownerId=<uuid>` returns `{ "moment": { ...fields, "version": number, "resourceOwnerId": string } }` for the caller's currently authorized access to that exact `(ownerId, id)`.
+- Errors: `400` when `ownerId` is missing or not a UUID, `401` unauthenticated, `404` for revoked or unrelated access. It never falls back to cached metadata for a resource the caller may no longer read.
+- This is the only read the conflict comparison uses, so its denial behavior is a frozen contract.
+
 ## Authentication
 
 - `POST /api/auth/register` JSON `{ "username": string, "password": string, "inviteCode": string }`; consumes a one-time invite and returns `{ "user": { "id": string, "username": string } }` plus an HttpOnly session cookie.
@@ -37,7 +68,8 @@ Moment records preserve TimelineEvent fields. `id`, `eventId` (track ID), `date`
 ## Images
 
 - `POST /api/images` requires exact moment identity `(ownerId, momentId)` and multipart form fields `file` (JPEG, PNG, GIF, or WebP, maximum 10 MiB), `momentId`, and `ownerId` (the moment resource owner's UUID) → `{ "image": { "id": string, "url": "/api/images/:id", "momentId": string, "contentType": string, "size": number } }`, status 201.
-- `GET /api/images/:id` streams authenticated image content with its validated content type and private/no-store cache headers.
+- `GET /api/images/:id` streams authenticated image content with its validated content type and `Cache-Control: private, max-age=300, must-revalidate` (never `no-store`; see the frozen cache-policy contract above).
+- `POST /api/images` is admitted before the multipart body is buffered: a global and per-account concurrency cap plus a 10 MiB byte reservation per admitted upload. Overload returns `503` with `Retry-After: 2` before any multipart bytes are held in memory; a body that stalls for 60s is destroyed with `408`. The reservation is held until the associated transform/storage work settles, including on failure, so a disconnect mid-upload cannot free capacity still in use. Multipart metadata is bounded (≤8 fields, ≤10 parts, ≤4 KiB per field).
 - `DELETE /api/images/:id` deletes the owned image → `{ "ok": true }`.
 
 Object keys are generated by the server only, under the environment-specific R2 prefix. The dev deployment requires `memento_dev/`; clients cannot provide object keys.
@@ -51,6 +83,22 @@ Object keys are generated by the server only, under the environment-specific R2 
 ## Data and security
 
 All records and image operations are scoped to the authenticated user. Sessions are opaque, stored by hash, expire, and are revoked on logout. Authentication cookies are `HttpOnly; Secure; SameSite=Lax`. Request bodies are validated and mutations reject missing or cross-origin `Origin` headers. No endpoint accepts or returns raw R2 object keys.
+
+## Runtime lifecycle, cleanup and database budgets
+
+- **One entrypoint wiring.** `runtime-lifecycle.mjs` is the single startup/shutdown path for both direct execution (`node server.mjs`) and the PM2 wrapper (`pm2-start.mjs`, an operational file that is deployed locally and never committed with features). Starting twice in one process is a no-op: exactly one HTTP listener and one leased cleanup worker.
+- **Cleanup worker.** The durable object-cleanup worker starts through whichever entrypoint actually serves traffic, drains in bounded passes with namespace validation, live-reference veto and worker leases, and stops admitting new passes on shutdown. `stop()` waits up to 10s for an in-flight pass and reports `settled:false` if it was still running; the manifest then replays after its lease expires, so no manual drain is ever required. `/health` stays independent of the database, storage and the cleanup worker.
+- **Database budgets.** Pool acquisition (default 5s), statement execution (20s), idle-in-transaction (20s) and the per-owner advisory-lock wait (10s) are all bounded and overridable via `DB_ACQUIRE_TIMEOUT_MS`, `DB_STATEMENT_TIMEOUT_MS`, `DB_IDLE_TX_TIMEOUT_MS`, `DB_LOCK_TIMEOUT_MS`. A lock/statement timeout is a **retryable known-not-committed** failure (`503` + `Retry-After: 1`, "your change was not saved"); a connection drop during `COMMIT` is reported as an **ambiguous outcome** (`503` telling the user to refresh and check before retrying) and is never advertised as safe to replay. `/health` does not consult the database and no public DB diagnostics exist.
+
+## Baseline measurement harness
+
+`tests/performance-baseline.cjs` records reproducible Phase 0 baselines (not performance claims): controlled synthetic UI fixtures at 100/1,000/5,000 moments via route interception (payload bytes, request counts, cold/warm usable-timeline time, filter interaction, card DOM count, JS heap), a live authorized DEV API/R2 first-byte section using temporary resources that are deleted afterwards, and a DEV-only index inventory with bounded `EXPLAIN (ANALYZE, BUFFERS)` under a 5s statement timeout. Evidence lands in `.hermes/evidence/next-phase-0/`. The harness prints its limitations: synthetic fixtures are never authenticated account E2E or an R2 benchmark. Invoke it on DEV with:
+
+```bash
+NODE_PATH=/home/ubuntu/.cache/memento-ui-playwright/node_modules \
+CHROMIUM_PATH=/home/ubuntu/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux-arm64/chrome-headless-shell \
+MEMENTO_BASELINE_LIVE=1 node tests/performance-baseline.cjs
+```
 
 ## Perspectives and reflections
 
@@ -68,6 +116,7 @@ All records and image operations are scoped to the authenticated user. Sessions 
 - Text limits are guided, not clipped: title ≤ 80 characters, personal note ≤ 500, caption ≤ 80 per moment. Text that cannot fit its allotted area returns 400 with an actionable message rather than a silently truncated image.
 - Export is **owner-only**. Every selected moment is re-checked with a fresh exact-owner read immediately before its photo bytes are requested; a viewer, editor or revoked collaborator receives 403, an unrelated account receives 404, and anonymous callers receive 401. A photo that does not belong to the moment it was selected under is rejected with 422.
 - No database transaction is held across storage reads or rendering. Each photo read is bounded by a 20s timeout and a 24MB cap, and cancels on client disconnect. Rendering runs at most one per process with a two-deep queue (503 with `Retry-After` when full) and a 30s wall-clock bound. Animated GIF and multi-page images are rejected explicitly (422) instead of being rendered as stills.
+- **Whole-pipeline admission precedes every source read.** At most two renders are in flight process-wide, at most one per account, with a nominal byte reservation of 24MB per selected photo capped at 96MB pending. Overload is rejected with `503` + `Retry-After: 2` before a single R2 byte is fetched. A shared source-read budget (four concurrent reads process-wide) aggregates fetches across all in-flight postcards; waiting reads are released to their owner and reject on client disconnect. Reservations are released exactly once, after the underlying fetch/render work has actually settled — a client timeout or disconnect ends the caller's wait, not the native work, and the render slot stays occupied until Sharp settles.
 - Nothing is persisted: no postcard table, no object storage write, no public URL. Output carries no EXIF, IPTC or XMP from the source photos. Text reaches the renderer only as escaped literal strings — never markup, never a URL, never a client-supplied path or storage key.
 - Render requests are metered separately from saved-content writes: 12 per user per minute (`render` budget), returning 429 with `Retry-After` beyond that.
 - The UI downloads the exact bytes the server returned for the preview; it does not re-request or re-render at download time.
