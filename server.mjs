@@ -18,7 +18,7 @@ import { createUploadAdmission } from './upload-admission.mjs';
 import { makeImageVariants, resolveVariant, VARIANT_CACHE_CONTROL } from './image-variants.mjs';
 import { listVisitState, recordVisit } from './track-visits.mjs';
 import { setSaved, listSaved, savedCount, savedIdentities, decodeSavedCursor } from './saved-moments.mjs';
-import { queryMoments, queryFacets, validateQueryRequest } from './moment-queries.mjs';
+import { queryMoments, queryFacets, overviewMoments, validateQueryRequest } from './moment-queries.mjs';
 import { validatePostcardRequest } from './postcard-layout.mjs';
 import { renderPostcard } from './postcard-renderer.mjs';
 import { resolvePostcardPhotos } from './postcard-sources.mjs';
@@ -396,6 +396,17 @@ app.post('/api/moments/query', auth, asyncHandler(async (req, res) => {
       ? { facets: { milestones: aggregate.milestones, withImages: aggregate.with_images, years: aggregate.years, earliest: aggregate.earliest, latest: aggregate.latest } }
       : {}),
   });
+}));
+
+// Phase 3 Task 3.2: full-scope account summary. The header, track counts, tag
+// counts and year list all need every authorized memory, not just the page on
+// screen — deriving them from a paginated list would make the header report
+// only the first 40 memories as the account grew. This is one aggregate read
+// over the same authorization boundary, so it stays correct independently.
+// It must be declared BEFORE /api/moments/:id, which would otherwise match it.
+app.get('/api/moments/overview', auth, asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ overview: await overviewMoments(pool, req.user.id, DB_SCHEMA) });
 }));
 
 // Exact single-moment read: same authorization boundary as the list, used by

@@ -327,3 +327,88 @@ test('search, filters and authorization scope behave exactly as the client does'
     server.close();
   }
 });
+
+test('overview equals what deriving from the full set would give, across an authorization boundary', { timeout: 180000 }, async t => {
+  if (process.env.RUN_INTEGRATION !== '1') return t.skip('Set RUN_INTEGRATION=1 for DB-backed overview');
+  const { app } = await import('../server.mjs');
+  const { pool, createInvite, qschema } = await import('../memento-db.mjs');
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  async function request(path, { method = 'GET', token, body } = {}) {
+    const headers = {};
+    if (token) headers.Cookie = `memento_session=${token}`;
+    if (method !== 'GET') { headers.Origin = base; headers['Content-Type'] = 'application/json'; }
+    const res = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const type = res.headers.get('content-type') || '';
+    return { res, data: type.includes('application/json') ? await res.json() : await res.text() };
+  }
+  async function register(prefix) {
+    const uname = `${prefix}_${UUID().replaceAll('-', '').slice(0, 18)}`;
+    const r = await request('/api/auth/register', { method: 'POST', body: { username: uname, password: 'a-very-long-test-password-1', inviteCode: await createInvite(1) } });
+    assert.equal(r.res.status, 200);
+    return { id: r.data.user.id, username: uname, token: r.res.headers.get('set-cookie').match(/memento_session=([^;]+)/)[1] };
+  }
+  const owner = await register('ovo');
+  const viewer = await register('ovv');
+  try {
+    const track = await request('/api/tracks', { method: 'POST', token: owner.token, body: { title: 'Overview track', description: '', color: 'indigo', icon: 'Heart', tags: [] } });
+    const trackId = track.data.track.id;
+    const privateTrack = await request('/api/tracks', { method: 'POST', token: owner.token, body: { title: 'Hidden track', description: '', color: 'indigo', icon: 'Lock', tags: [] } });
+    const hiddenId = privateTrack.data.track.id;
+    const mk = (id, eventId, body) => request('/api/moments', { method: 'POST', token: owner.token, body: { id, eventId, eventOwnerId: owner.id, description: 'x', tags: [], images: [], ...body } });
+    assert.equal((await mk('o-1', trackId, { title: 'Đà Lạt', date: '2026-05-04', tags: ['du lịch', 'núi'], location: { city: 'Đà Lạt' } })).res.status, 201);
+    assert.equal((await mk('o-2', trackId, { title: 'Huế', date: '2025-01-02', tags: ['du lịch'], isMilestone: true, location: { name: 'Kinh thành' } })).res.status, 201);
+    assert.equal((await mk('o-3', hiddenId, { title: 'Riêng', date: '2024-03-03', tags: ['công việc'] })).res.status, 201);
+
+    const overview = await request('/api/moments/overview', { token: owner.token });
+    assert.equal(overview.res.status, 200);
+    const o = overview.data.overview;
+    assert.equal(o.total, 3, 'the owner sees all three');
+    assert.equal(o.milestones, 1);
+    assert.equal(o.places, 2, 'Đà Lạt city and Kinh thành name, counted once each');
+    assert.equal(o.tracks.length, 2, 'both tracks have a row');
+    const byTrack = Object.fromEntries(o.tracks.map(r => [r.trackId, r]));
+    assert.equal(byTrack[trackId].count, 2);
+    assert.equal(byTrack[trackId].milestones, 1);
+    assert.equal(byTrack[hiddenId].count, 1);
+    assert.deepEqual(o.tags.map(t => t.name).sort(), ['công việc', 'du lịch', 'núi']);
+    assert.equal(o.tags.find(t => t.name === 'du lịch').count, 2, 'a shared tag counts both memories');
+    assert.deepEqual(o.years, ['2026', '2025', '2024'], 'newest year first');
+    assert.equal(o.earliest, '2024-03-03');
+    assert.equal(o.latest, '2026-05-04');
+
+    // Parity: deriving the same numbers from the full fetch must agree.
+    const full = await request('/api/moments', { token: owner.token });
+    const events = full.data.moments;
+    assert.equal(events.length, o.total, 'total equals the full-set length');
+    assert.equal(events.filter(e => e.isMilestone).length, o.milestones, 'milestones parity');
+    assert.equal(events.reduce((acc, e) => acc + (e.images?.length || 0), 0), o.photos, 'photo parity');
+    const places = new Set(events.map(e => e.location?.city || e.location?.name).filter(Boolean));
+    assert.equal(places.size, o.places, 'unique place parity');
+    const tagCounts = {};
+    events.forEach(e => (e.tags || []).forEach(tag => { tagCounts[tag] = (tagCounts[tag] || 0) + 1; }));
+    assert.deepEqual(Object.fromEntries(o.tags.map(t => [t.name, t.count])), tagCounts, 'tag counts parity');
+    const years = new Set();
+    events.forEach(e => { if (e.date && e.date.length >= 4) years.add(e.date.substring(0, 4)); });
+    assert.deepEqual(o.years, [...years].sort((a, b) => b.localeCompare(a)), 'year list parity');
+
+    // A viewer's overview excludes the unshared track entirely, both the total
+    // and the per-track row.
+    const invite = await request(`/api/tracks/${trackId}/collaborators`, { method: 'POST', token: owner.token, body: { username: viewer.username, role: 'viewer' } });
+    assert.equal(invite.res.status, 201);
+    assert.equal((await request(`/api/collaboration-invitations/${invite.data.collaborator.id}/accept`, { method: 'POST', token: viewer.token })).res.status, 200);
+    const viewerOverview = await request('/api/moments/overview', { token: viewer.token });
+    assert.equal(viewerOverview.data.overview.total, 2, 'the hidden track contributes nothing');
+    assert.equal(viewerOverview.data.overview.tracks.length, 1, 'no row for a track the viewer cannot read');
+    assert.deepEqual(viewerOverview.data.overview.tags.map(t => t.name).sort(), ['du lịch', 'núi'], 'a private tag never leaks');
+    // Revoke and the count drops with it.
+    assert.equal((await request(`/api/tracks/${trackId}/collaborators/${viewer.id}`, { method: 'DELETE', token: owner.token })).res.status, 200);
+    assert.equal((await request('/api/moments/overview', { token: viewer.token })).data.overview.total, 0, 'authorization is current, not cached');
+    // Unauthenticated callers get nothing.
+    assert.equal((await request('/api/moments/overview')).res.status, 401);
+  } finally {
+    await pool.query(`DELETE FROM ${qschema}.users WHERE id IN ($1,$2)`, [owner.id, viewer.id]).catch(() => {});
+    server.close();
+  }
+});

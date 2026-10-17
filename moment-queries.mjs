@@ -425,3 +425,77 @@ export async function queryFacets(client, userId, request, schema) {
     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`.replace(/\{schema\}/g, schema), args);
   return rows[0];
 }
+
+
+/**
+ * Everything the shell derives from the whole account: header metrics, per
+ * track counts, tag counts and the year list. Computed in SQL over the same
+ * authorized scope, so these numbers stay full-scope correct once the list
+ * itself is paginated — deriving them from a loaded page would make the
+ * header quietly report only the first 40 memories.
+ */
+export async function overviewMoments(client, userId, schema) {
+  const [totals, perTrack, tags, years] = await Promise.all([
+    client.query(`
+      WITH authorized AS (${AUTHORIZED_SCOPE}),
+      q AS (SELECT * FROM authorized)
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE (q.document->'isMilestone')::text = 'true')::int AS milestones,
+        COUNT(DISTINCT COALESCE(NULLIF(q.document->'location'->>'city', ''), NULLIF(q.document->'location'->>'name', '')))
+          FILTER (WHERE COALESCE(NULLIF(q.document->'location'->>'city', ''), NULLIF(q.document->'location'->>'name', '')) <> '')::int AS places,
+        COALESCE(sum((SELECT COUNT(*) FROM {schema}.images i WHERE i.owner_id = q.owner_id AND i.moment_id = q.id))::int, 0) AS photos,
+        COALESCE(min(NULLIF(left(q.document->>'date', 10), '')), '') AS earliest,
+        COALESCE(max(NULLIF(left(q.document->>'date', 10), '')), '') AS latest
+      FROM q`.replace(/\{schema\}/g, schema), [userId]),
+
+    client.query(`
+      WITH authorized AS (${AUTHORIZED_SCOPE}),
+      q AS (SELECT * FROM authorized)
+      SELECT q.owner_id AS track_owner_id, q.event_id AS track_id,
+             COUNT(*)::int AS count,
+             COUNT(*) FILTER (WHERE (q.document->'isMilestone')::text = 'true')::int AS milestones,
+             COALESCE(sum((SELECT COUNT(*) FROM {schema}.images i WHERE i.owner_id = q.owner_id AND i.moment_id = q.id))::int, 0) AS photos,
+             COALESCE(min(left(q.document->>'date', 10)), '') AS min_date,
+             COALESCE(max(left(q.document->>'date', 10)), '') AS max_date
+      FROM q GROUP BY q.owner_id, q.event_id`.replace(/\{schema\}/g, schema), [userId]),
+
+    client.query(`
+      WITH authorized AS (${AUTHORIZED_SCOPE}),
+      q AS (SELECT * FROM authorized)
+      SELECT t.value AS name, COUNT(*)::int AS count
+      FROM q,
+           LATERAL jsonb_array_elements_text(coalesce(q.document->'tags', '[]'::jsonb)) AS t(value)
+      WHERE t.value <> ''
+      GROUP BY t.value ORDER BY count DESC, t.value ASC`.replace(/\{schema\}/g, schema), [userId]),
+
+    client.query(`
+      WITH authorized AS (${AUTHORIZED_SCOPE}),
+      q AS (SELECT * FROM authorized)
+      SELECT DISTINCT left(q.document->>'date', 4) AS year
+      FROM q
+      WHERE q.document->>'date' ~ '^\\d{4}-\\d{2}-\\d{2}$'
+      ORDER BY year DESC`.replace(/\{schema\}/g, schema), [userId]),
+  ]);
+
+  const total = totals.rows[0];
+  return {
+    total: total.total,
+    milestones: total.milestones,
+    places: total.places,
+    photos: total.photos,
+    earliest: total.earliest || null,
+    latest: total.latest || null,
+    tracks: perTrack.rows.map(row => ({
+      trackOwnerId: row.track_owner_id,
+      trackId: row.track_id,
+      count: row.count,
+      milestones: row.milestones,
+      photos: row.photos,
+      minDate: row.min_date || null,
+      maxDate: row.max_date || null,
+    })),
+    tags: tags.rows.map(row => ({ name: row.name, count: row.count })),
+    years: years.rows.map(row => row.year),
+  };
+}
