@@ -17,6 +17,7 @@ import { createRequestBudgets } from './request-budgets.mjs';
 import { createUploadAdmission } from './upload-admission.mjs';
 import { makeImageVariants, resolveVariant, VARIANT_CACHE_CONTROL } from './image-variants.mjs';
 import { listVisitState, recordVisit } from './track-visits.mjs';
+import { setSaved, listSaved, savedCount, savedIdentities, decodeSavedCursor } from './saved-moments.mjs';
 import { validatePostcardRequest } from './postcard-layout.mjs';
 import { renderPostcard } from './postcard-renderer.mjs';
 import { resolvePostcardPhotos } from './postcard-sources.mjs';
@@ -384,6 +385,49 @@ app.get('/api/moments/:id',auth,async(req,res,next)=>{try{
   ]);
   res.json({moment:safeMoment(moment.document,images.rows,reactions.get(`${moment.owner_id}:${moment.id}`)||[],moment.version,moment.owner_id)});
 }catch(e){next(e);}});
+// Phase 2 Task 2.2: a save is the caller's private bookkeeping. It is
+// serialized with the owner's mutation locks and rechecks exact access under
+// the lock, so a revoke, move or delete racing the save always wins.
+app.put('/api/moments/:id/saved', auth, async (req, res, next) => { try {
+  const ownerId = req.body?.ownerId;
+  if (!validUuid(ownerId)) throw new ApiError(400, 'Invalid moment owner');
+  const active = req.body?.active;
+  if (typeof active !== 'boolean') throw new ApiError(400, 'active must be a boolean');
+  const result = await mutate(req, (userId, identity, client) => exactMomentAccess(userId, identity, client),
+    { ownerId, id: req.params.id },
+    async (client) => setSaved(client, req.user.id, { ownerId, id: req.params.id }, active, DB_SCHEMA));
+  res.json({ saved: result });
+} catch (e) { next(e); } });
+
+// The caller's saved identities, intersected with moments they can currently
+// read. One read renders the pressed state everywhere; a revoked memory leaves
+// both the list and the count without leaking an id or a title.
+app.get('/api/saved', auth, asyncHandler(async (req, res) => {
+  const [saved, count] = await Promise.all([
+    savedIdentities(pool, req.user.id, DB_SCHEMA),
+    savedCount(pool, req.user.id, DB_SCHEMA),
+  ]);
+  res.set('Cache-Control', 'no-store');
+  res.json({ saved: saved.map(key => {
+    const [owner, id] = key.split(':');
+    return { ownerId: owner, id };
+  }), count });
+}));
+
+// Paginated saved view, newest first, for when the caller wants the list
+// itself rather than the pressed state on cards they already have loaded.
+app.get('/api/saved/moments', auth, asyncHandler(async (req, res) => {
+  const raw = req.query.cursor;
+  const cursor = decodeSavedCursor(raw);
+  if (cursor === undefined) throw new ApiError(400, 'Invalid cursor');
+  const limitRaw = req.query.limit ?? '40';
+  const limit = Number(limitRaw);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new ApiError(400, 'Invalid limit');
+  const page = await listSaved(pool, req.user.id, { limit, cursor }, DB_SCHEMA);
+  res.set('Cache-Control', 'no-store');
+  res.json(page);
+}));
+
 app.get('/api/moments/:id/perspectives', auth, async (req,res,next) => { try {
   const ownerId=req.query.ownerId, limitRaw=req.query.limit ?? '20';
   const limit=Number(limitRaw);

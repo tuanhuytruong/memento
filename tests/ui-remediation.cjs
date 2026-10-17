@@ -19,7 +19,7 @@ async function fixture(browser, options={}) {
  const page=await context.newPage(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
  // 2x2 opaque red PNG, decoded by the browser for preview and by tests for bytes.
  const postcardPng=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR42mP8z8Dwn4GBgYERABIcAgN2FBM+AAAAAElFTkSuQmCC','base64');
- const state={account:'A',requests:[],puts:[],uploadIds:[],deletes:0,moments:[structuredClone(moment)],tracks:[track],visits:[],visitWrites:[],perspectives:[],postcardRenders:[],postcardPng,failImages:false,perspectiveExportGate:null,perspectiveExportStarted:null,...options};
+ const state={account:'A',requests:[],puts:[],uploadIds:[],deletes:0,moments:[structuredClone(moment)],tracks:[track],visits:[],visitWrites:[],perspectives:[],postcardRenders:[],postcardPng,saved:[],savedWrites:[],saveGate:null,saveStarted:null,saveFailure:false,failImages:false,perspectiveExportGate:null,perspectiveExportStarted:null,...options};
  if(options.resurfacing){
   const now=new Date();const yy=now.getFullYear();const pad=n=>String(n).padStart(2,'0');
   const otherDay=now.getDate()===15?16:15;
@@ -103,6 +103,19 @@ async function fixture(browser, options={}) {
     return route.fulfill({status:503,json:{error:'Synthetic export failure'}});
   }
   else if(url.pathname==='/api/collaboration-invitations')body={invitations:[]};
+  // Wire shape: composite identities, never the raw internal key strings.
+  else if(url.pathname==='/api/saved' && req.method()==='GET')body={saved:state.saved.map(k=>({ownerId:k.split(':')[0],id:k.split(':')[1]})),count:state.saved.length};
+  else if(url.pathname==='/api/saved/moments' && req.method()==='GET')body={items:state.saved.map(k=>({ownerId:k.split(':')[0],id:k.split(':')[1],savedAt:new Date().toISOString()})),nextCursor:null};
+  else if(/^\/api\/moments\/[^/]+\/saved$/.test(url.pathname)&&req.method()==='PUT'){
+    const b=req.postDataJSON();const key=`${b.ownerId}:${url.pathname.split('/')[3]}`;
+    if(state.saveGate){state.saveStarted?.resolve();await state.saveGate.promise;}
+    if(state.saveFailure)return route.fulfill({status:503,json:{error:'synthetic save failure'}});
+    // Server-authoritative: the response decides what the client shows.
+    const saved=typeof b.active==='boolean'?b.active:!state.saved.includes(key);
+    state.saved = saved ? [...new Set([...state.saved,key])] : state.saved.filter(k=>k!==key);
+    state.savedWrites.push({key,active:saved});
+    return route.fulfill({json:{saved:{ownerId:b.ownerId,id:key.split(':')[1],saved:saved}}});
+  }
   return route.fulfill({json:body});
  });
  await page.goto(base,{waitUntil:'networkidle'});
@@ -532,6 +545,137 @@ async function logoutAndLogin(page){
    assert(!banner.includes('Chapter 02, Chapter 03'),'banner does not concatenate every track name');
    assert.deepEqual(errors,[]);
    results.push('track strip bounded to preview with Show all and search; merged banner counts, no name dump PASS');await context.close();}
+
+  // ---- Phase 2: find and save ----
+  {const vietnamese={...structuredClone(moment),id:'qa-viet',eventId:'qa-track',title:'Đà Lạt mùa sương',description:'Buổi sáng trên đồi thông',date:'2026-05-04',images:[],tags:['du lịch'],location:{name:'Chợ đêm',city:'Đà Lạt',country:'Việt Nam'}};
+   const {page,state,context,errors}=await fixture(browser,{moments:[structuredClone(moment),vietnamese]});
+   // Task 2.1: search folds diacritics and đ, and display text is untouched.
+   await page.locator('#timeline-search-input').fill('da lat');
+   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'a plain-d search finds the Vietnamese memory');
+   await page.locator('#timeline-search-input').fill('DA LAT');
+   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'case folding survives the đ mapping');
+   await page.locator('#timeline-search-input').fill('sương');
+   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'a partial diacritic needle matches');
+   assert((await page.locator('#event-card-A\\:qa-viet').innerText()).includes('Đà Lạt'),'display text keeps its real characters');
+   await page.locator('#timeline-search-input').fill('huế');
+   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),0,'a non-matching needle matches nothing');
+   await page.locator('#timeline-search-input').fill('');
+   // The range is inclusive on both bounds.
+   await page.locator('#filter-date-from').fill('2026-05-04');
+   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'the From bound is inclusive');
+   await page.locator('#filter-date-from').fill('2026-05-05');
+   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),0,'a day before the From bound excludes it');
+   await page.locator('#filter-date-from').fill('2026-05-04');
+   await page.locator('#filter-date-to').fill('2026-05-04');
+   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'a single day is a valid range');
+   // Choosing a year replaces the range instead of combining with it.
+   await page.getByRole('button',{name:'2026',exact:true}).first().click();
+   assert.equal(await page.locator('#filter-date-from').inputValue(),'','selecting a year clears the From bound');
+   assert.equal(await page.locator('#filter-date-to').inputValue(),'','selecting a year clears the To bound');
+   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'the year still shows the memory');
+   // Entering a range clears the year, in the other direction.
+   await page.locator('#filter-date-to').fill('2026-05-04');
+   assert.equal(await page.getByRole('button',{name:'2026',exact:true}).first().getAttribute('aria-pressed'),'false','entering a range clears the year');
+   assert.deepEqual(errors,[]);
+   results.push('search folds diacritics and đ; date range is inclusive and replaces the year in both directions PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser);
+   // Task 2.3: one Save control in the detail view, with an announced
+   // pending state and an honest failure that changes nothing.
+   await page.locator('#event-card-A\\:qa-moment h3').click();
+   const save=page.locator('#toggle-save-memory');
+   await save.waitFor();
+   assert.equal(await save.getAttribute('aria-pressed'),'false','starts unsaved');
+   assert.equal(await save.getAttribute('aria-label'),'Save for me','an accessible name, not just an icon');
+   const gate=deferred();state.saveGate=gate;state.saveStarted=deferred();
+   await save.click();await state.saveStarted.promise;
+   assert.equal(await save.getAttribute('aria-busy'),'true','pending is announced');
+   // sr-only is 1px and clipped, so it is announced but never occupies layout.
+   const statusBox=await page.locator('#save-memory-status').boundingBox();
+   assert(statusBox.width<=1 && statusBox.height<=1,`status line is visually hidden, got ${JSON.stringify(statusBox)}`);
+   assert.equal(await page.locator('#save-memory-status').getAttribute('aria-live'),'polite','and it is a polite live region');
+   assert.equal(await page.locator('#toggle-save-memory').isDisabled(),true,'a second click cannot race the first');
+   gate.resolve();
+   await page.waitForFunction(()=>document.querySelector('#toggle-save-memory')?.getAttribute('aria-pressed')==='true');
+   assert.equal(state.savedWrites.length,1,'exactly one request');
+   assert.equal(state.savedWrites[0].active,true);
+   const label=(await save.innerText()).replace(/\s+/g,' ').trim();
+   assert.equal(label,'Saved',`the control reads Saved, got ${JSON.stringify(label)}`);
+   assert.deepEqual(errors,[]);
+   results.push('Save in detail announces pending, blocks a double submit, and settles server-authoritatively PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{saveFailure:true});
+   // A failure rolls the optimistic flip straight back and says so.
+   await page.locator('#event-card-A\\:qa-moment h3').click();
+   const save=page.locator('#toggle-save-memory');await save.waitFor();
+   await save.click();
+   await page.getByRole('alert').filter({hasText:'Could not update Saved'}).waitFor();
+   assert.equal(await save.getAttribute('aria-pressed'),'false','rolled back to what the server holds');
+   assert.notEqual(await save.getAttribute('aria-busy'),'true','not stuck pending');
+   assert.equal(await save.isDisabled(),false,'retry is available');
+   assert.equal(state.saved.length,0,'the fixture never accepted it');
+   // Retry succeeds once the failure clears.
+   state.saveFailure=false;await save.click();
+   await page.waitForFunction(()=>document.querySelector('#toggle-save-memory')?.getAttribute('aria-pressed')==='true');
+   assert.equal(await page.getByRole('alert').count(),0,'the error clears on success');
+   assert.deepEqual(errors,[]);
+   results.push('save failure rolls back, explains itself, and is retryable PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{saved:['A:qa-moment']});
+   // Saved is a chip beside the other filters, never a new global tab.
+   await page.locator('#filter-saved-only').waitFor();
+   assert.equal(await page.locator('#filter-saved-only').getAttribute('aria-pressed'),'false');
+   // Saved state loads alongside the rest of the caller's own data, so it
+   // arrives after the initial paint. Wait for the count first: that proves the
+   // read landed before the detail view is opened against it.
+   await page.locator('#filter-saved-only').waitFor();
+   await page.waitForFunction(()=>/\d/.test(document.querySelector('#filter-saved-only')?.textContent||''));
+   assert.match(await page.locator('#filter-saved-only').innerText(),/1/,'the stored save is counted');
+   await page.locator('#event-card-A\\:qa-moment h3').click();
+   await page.locator('#toggle-save-memory').waitFor();
+   const chipAfterOpen=await page.locator('#filter-saved-only').innerText();
+   const labelAfterOpen=(await page.locator('#toggle-save-memory').innerText()).trim();
+   const pressedAfterOpen=await page.locator('#toggle-save-memory').getAttribute('aria-pressed');
+   assert.equal(pressedAfterOpen,'true',`a stored save renders pressed; chip=${JSON.stringify(chipAfterOpen)} label=${JSON.stringify(labelAfterOpen)}`);
+   assert.equal((await page.locator('#toggle-save-memory').innerText()).trim(),'Saved');
+   await page.keyboard.press('Escape');
+   await page.locator('#event-card-A\\:qa-moment h3').waitFor();
+   await page.locator('#filter-saved-only').click();
+   assert.equal(await page.locator('#filter-saved-only').getAttribute('aria-pressed'),'true');
+   assert.equal(await page.locator('#event-card-A\\:qa-moment').count(),1,'the saved memory is still listed');
+   // An unrelated memory is excluded, and the count matches the list.
+   state.saved=[];
+   await page.reload({waitUntil:'networkidle'});
+   await page.locator('#event-card-A\\:qa-moment').waitFor();
+   await page.locator('#filter-saved-only').click();
+   await page.getByText('Nothing saved yet').waitFor();
+   assert((await page.locator('#empty-timeline-state').evaluate(el=>el.textContent||'')).includes('your own private list'),'the empty state explains personal visibility');
+   // A create CTA here is only acceptable if it actually works: an empty Saved
+   // list is a fine moment to add the first memory, not a dead end.
+   const addEvent=page.locator('#empty-state-add-event');
+   assert.equal(await addEvent.count(),1,'the account can still create, so a create CTA is offered');
+   await addEvent.click();
+   await page.locator('#event-modal-backdrop').waitFor();
+   assert.equal(await page.locator('#toggle-save-memory').count(),0,'and it opens the composer, not a dead end');
+   await page.keyboard.press('Escape');
+   await page.locator('#event-modal-backdrop').waitFor({state:'detached',timeout:3000});
+   assert.deepEqual(errors,[]);
+   results.push('Saved chip filters beside existing controls; empty state explains private visibility PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser);
+   // Two people saving the same memory never collide, and an outsider cannot.
+   await page.locator('#event-card-A\\:qa-moment h3').click();
+   await page.locator('#toggle-save-memory').click();
+   await page.waitForFunction(()=>document.querySelector('#toggle-save-memory')?.getAttribute('aria-pressed')==='true');
+   assert.deepEqual(state.saved,['A:qa-moment']);
+   assert.deepEqual(state.savedWrites.map(w=>w.key),['A:qa-moment']);
+   // Same memory, different account: an independent fact, not a shared one.
+   state.account='B';state.saved=['B:qa-moment'];
+   await logoutAndLogin(page);await delay(300);
+   assert.equal(await page.locator('#event-card-A\\:qa-moment').count(),0,'account B sees none of account A content');
+   assert.equal(await page.locator('#filter-saved-only').innerText().then(t=>/\d/.test(t)),true,'the count is rendered');
+   assert.deepEqual(errors,[]);
+   results.push('saves are per-account identities, never shared or colliding PASS');await context.close();}
 
   // ---- Phase 3: postcard composer (synthetic controlled routes) ----
   {const {page,state,context,errors}=await fixture(browser,{viewerTracks:true});

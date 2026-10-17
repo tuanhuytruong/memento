@@ -135,6 +135,20 @@ export const dataApi = {
   recordTrackVisit: (ownerId: string, trackId: string) =>
     request<{ visit: { trackOwnerId: string; trackId: string; lastOpenedAt: string } }>(`/tracks/${encodeURIComponent(trackId)}/visit`, { method: 'PUT', body: JSON.stringify({ ownerId }) }),
   moments: async () => unwrapList<TimelineEvent>(await request('/moments'), ['moments']),
+  // Phase 2: a save is the caller's own bookkeeping. The server is always the
+  // authority; the client only reports its intent and rolls back on failure.
+  setSaved: (ownerId: string, id: string, active: boolean) =>
+    request<{ saved: { ownerId: string; id: string; saved: boolean } }>(`/moments/${encodeURIComponent(id)}/saved`, { method: 'PUT', body: JSON.stringify({ ownerId, active }) }),
+  saved: async () => {
+    const result = await request<{ saved: { ownerId: string; id: string }[]; count: number }>('/saved');
+    return { saved: result.saved, count: result.count };
+  },
+  savedMoments: async ({ limit = 40, cursor }: { limit?: number; cursor?: string } = {}) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (cursor) params.set('cursor', cursor);
+    const page = await request<{ items: { ownerId: string; id: string; savedAt: string }[]; nextCursor: string | null }>(`/saved/moments?${params}`);
+    return page;
+  },
   // Exact single-moment read for conflict comparison; same composite identity
   // and authorization boundary as every other moment route.
   moment: async (id: string, ownerId: string) =>

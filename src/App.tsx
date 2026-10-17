@@ -2,6 +2,7 @@ import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRe
 import { TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
 import { exportTimelineData } from './lib/storage';
 import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
+import { matchesMomentFilters, compareMoments, filterProjection, applyFilterPatch } from './lib/momentFilters';
 import { releaseAllMomentDrafts } from './lib/useMomentDraft';
 import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation } from './lib/api';
 import { CollaborationModal, SharedInvitations } from './components/CollaborationModal';
@@ -38,6 +39,12 @@ export default function App() {
   const [apiTags, setApiTags] = useState<ApiTag[]>([]);
   const [collaborationInvitations, setCollaborationInvitations] = useState<CollaborationInvitation[]>([]);
   const [visits, setVisits] = useState<MemoryVisit[]>([]);
+  // Phase 2: the caller's own saves. Server-authoritative; the client only
+  // reports intent and rolls back when the server disagrees.
+  const [savedKeys, setSavedKeys] = useState<ReadonlySet<string>>(new Set());
+  const [savedCount, setSavedCount] = useState(0);
+  const [saveState, setSaveState] = useState<'idle' | 'pending' | 'error'>('idle');
+  const saveGeneration = useRef(0);
   const visitWrites = useRef(new Map<string, number>());
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
@@ -177,8 +184,11 @@ export default function App() {
     selectedTags: [],
     selectedEmotions: [],
     selectedYear: 'all',
+    dateFrom: '',
+    dateTo: '',
     milestonesOnly: false,
     hasImagesOnly: false,
+    savedOnly: false,
     sortDirection: 'newest',
   });
 
@@ -215,7 +225,7 @@ export default function App() {
     setIsPostcardOpen(false);
     // No private draft crosses an account or session boundary.
     releaseAllMomentDrafts().forEach((url) => { try { URL.revokeObjectURL(url); } catch { /* already revoked */ } });
-    setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', milestonesOnly: false, hasImagesOnly: false }));
+    setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', dateFrom: '', dateTo: '', milestonesOnly: false, hasImagesOnly: false, savedOnly: false }));
   }
 
   // Visit history is private to this visitor; a failed write or read never blocks the timeline.
@@ -245,6 +255,69 @@ export default function App() {
       .catch(() => { if (generation === authGenerationRef.current) setVisits([]); });
   }, [user, dataReady]);
 
+  // Loads alongside the rest of the caller's own data, fenced by session
+  // generation so a previous account's saves can never populate this one.
+  useEffect(() => {
+    if (!user || !dataReady) return;
+    const generation = authGenerationRef.current;
+    dataApi.saved()
+      .then(result => {
+        if (generation !== authGenerationRef.current) return;
+        setSavedKeys(new Set(result.saved.map(item => `${item.ownerId}:${item.id}`)));
+        setSavedCount(result.count);
+      })
+      .catch(() => {
+        if (generation !== authGenerationRef.current) return;
+        setSavedKeys(new Set());
+        setSavedCount(0);
+      });
+  }, [user, dataReady]);
+
+  /**
+   * Toggle the caller's own save. The server is the authority: the list is
+   * updated optimistically so the control feels immediate, then corrected from
+   * the response, and rolled back entirely on any failure. A generation bump
+   * mid-flight discards the result rather than writing into the next session.
+   */
+  const handleToggleSave = useCallback(async (event: TimelineEvent) => {
+    const ownerId = event.resourceOwnerId;
+    const key = `${ownerId}:${event.id}`;
+    if (!ownerId) return;
+    const generation = authGenerationRef.current;
+    const requestGeneration = ++saveGeneration.current;
+    const wasSaved = savedKeys.has(key);
+    setSaveState('pending');
+    // Flip locally first; a revoke or a slow network must not feel stuck.
+    setSavedKeys(previous => {
+      const next = new Set(previous);
+      if (wasSaved) next.delete(key); else next.add(key);
+      return next;
+    });
+    setSavedCount(count => Math.max(0, count + (wasSaved ? -1 : 1)));
+    try {
+      const result = await dataApi.setSaved(ownerId, event.id, !wasSaved);
+      if (generation !== authGenerationRef.current || requestGeneration !== saveGeneration.current) return;
+      const saved = Boolean(result.saved?.saved);
+      setSavedKeys(previous => {
+        const next = new Set(previous);
+        if (saved) next.add(key); else next.delete(key);
+        return next;
+      });
+      setSavedCount(previous => Math.max(0, previous + (saved === wasSaved ? 0 : saved ? 1 : -1)));
+      setSaveState('idle');
+    } catch {
+      if (generation !== authGenerationRef.current || requestGeneration !== saveGeneration.current) return;
+      // Roll back to what the server actually holds.
+      setSavedKeys(previous => {
+        const next = new Set(previous);
+        if (wasSaved) next.add(key); else next.delete(key);
+        return next;
+      });
+      setSavedCount(count => Math.max(0, count + (wasSaved ? 1 : -1)));
+      setSaveState('error');
+    }
+  }, [savedKeys]);
+
   const openDetail = (event: TimelineEvent) => {
     const track = eventTracks.find(item => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
     // Remember where the user came from so closing returns focus and scroll to
@@ -271,7 +344,7 @@ export default function App() {
   /** Suggestion open: exact identity, no unrelated filter may hide its track. */
   const openSuggested = (event: TimelineEvent) => {
     const track = eventTracks.find(item => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
-    setFilters(previous => ({ ...previous, search: '', selectedTags: [], selectedEmotions: [], selectedYear: 'all', milestonesOnly: false, hasImagesOnly: false }));
+    setFilters(previous => ({ ...previous, search: '', selectedTags: [], selectedEmotions: [], selectedYear: 'all', dateFrom: '', dateTo: '', milestonesOnly: false, hasImagesOnly: false, savedOnly: false }));
     if (track) handleSelectTrack(track);
     openDetail(event);
   };
@@ -413,71 +486,16 @@ export default function App() {
 
   // Filter & Sort events
   const filteredEvents = useMemo(() => {
+    // Track focus is app state; every other predicate lives in one shared
+    // module so the client list, the resurfacing selector and the server
+    // query cannot drift apart.
+    const inSelectedTrack = (evt: TimelineEvent) =>
+      selectedTrackKey === 'all'
+      || (!!selectedTrack && evt.eventId === selectedTrack.id && evt.resourceOwnerId === selectedTrack.resourceOwnerId);
     return events
-      .filter((evt) => {
-        // Event Track Filter (unless 'all' / Merged view is active)
-        if (selectedTrackKey !== 'all' && (!selectedTrack || evt.eventId !== selectedTrack.id || evt.resourceOwnerId !== selectedTrack.resourceOwnerId)) return false;
-
-        // Search term matching
-        if (filters.search.trim()) {
-          const q = filters.search.toLowerCase().trim();
-          const matchTitle = evt.title.toLowerCase().includes(q);
-          const matchDesc = evt.description?.toLowerCase().includes(q);
-          const matchIdea = evt.idea?.toLowerCase().includes(q);
-          const matchLocation =
-            evt.location?.name?.toLowerCase().includes(q) ||
-            evt.location?.city?.toLowerCase().includes(q) ||
-            evt.location?.country?.toLowerCase().includes(q);
-          const matchTags = evt.tags?.some((t) => t.toLowerCase().includes(q));
-          const matchEmotion = evt.emotion?.toLowerCase().includes(q);
-
-          if (!matchTitle && !matchDesc && !matchIdea && !matchLocation && !matchTags && !matchEmotion) {
-            return false;
-          }
-        }
-
-        // Year filter
-        if (filters.selectedYear !== 'all') {
-          if (!evt.date.startsWith(filters.selectedYear)) {
-            return false;
-          }
-        }
-
-        // Tag filter (match any selected tag)
-        if (filters.selectedTags.length > 0) {
-          const hasMatchingTag = evt.tags?.some((t) => filters.selectedTags.includes(t));
-          if (!hasMatchingTag) return false;
-        }
-
-        // Emotion filter
-        if (filters.selectedEmotions.length > 0) {
-          if (!evt.emotion || !filters.selectedEmotions.includes(evt.emotion)) {
-            return false;
-          }
-        }
-
-        // Milestones only
-        if (filters.milestonesOnly && !evt.isMilestone) {
-          return false;
-        }
-
-        // Has photos only
-        if (filters.hasImagesOnly && (!evt.images || evt.images.length === 0)) {
-          return false;
-        }
-
-        return true;
-      })
-      .sort((a, b) => {
-        const timeA = `${a.date} ${a.time || '00:00'}`;
-        const timeB = `${b.date} ${b.time || '00:00'}`;
-        if (filters.sortDirection === 'newest') {
-          return timeB.localeCompare(timeA);
-        } else {
-          return timeA.localeCompare(timeB);
-        }
-      });
-  }, [events, selectedTrackKey, filters]);
+      .filter(evt => inSelectedTrack(evt) && matchesMomentFilters(evt, filterProjection(filters), evt => savedKeys.has(`${evt.resourceOwnerId}:${evt.id}`)))
+      .sort((a, b) => compareMoments(a, b, filters.sortDirection));
+  }, [events, selectedTrackKey, filters, savedKeys]);
 
   // Save a moment server-side first; local state changes only after a confirmed response.
   // expectedVersion is optional: the composer passes the version it displayed,
@@ -672,7 +690,7 @@ export default function App() {
         <div className="mb-8">
           <FilterBar
             filters={filters}
-            onFilterChange={(updated) => setFilters((prev) => ({ ...prev, ...updated }))}
+            onFilterChange={(updated) => setFilters((prev) => applyFilterPatch(prev, updated))}
             onResetFilters={() =>
               setFilters({
                 search: '',
@@ -680,8 +698,11 @@ export default function App() {
                 selectedTags: [],
                 selectedEmotions: [],
                 selectedYear: 'all',
+                dateFrom: '',
+                dateTo: '',
                 milestonesOnly: false,
                 hasImagesOnly: false,
+                savedOnly: false,
                 sortDirection: 'newest',
               })
             }
@@ -690,6 +711,7 @@ export default function App() {
             viewMode={viewMode}
             onViewModeChange={setViewMode}
             totalFilteredCount={filteredEvents.length}
+            savedCount={savedCount}
             totalCount={
               selectedTrackKey === 'all'
                 ? events.length
@@ -707,6 +729,7 @@ export default function App() {
               currentTrackKey={selectedTrackKey}
               canCreateEntry={selectedTrack ? canEditSelectedTrack : canCreateEntry}
               hasAnyTrack={eventTracks.length > 0}
+              savedOnly={filters.savedOnly}
               onSelectTrack={handleSelectTrack}
               onViewDetails={openDetail}
               onEdit={(evt) => {
@@ -731,8 +754,11 @@ export default function App() {
                   selectedTags: [],
                   selectedEmotions: [],
                   selectedYear: 'all',
+                  dateFrom: '',
+                  dateTo: '',
                   milestonesOnly: false,
                   hasImagesOnly: false,
+                  savedOnly: false,
                   sortDirection: 'newest',
                 })
               }
@@ -829,6 +855,9 @@ export default function App() {
         onDeletePerspective={handleDeletePerspective}
         sessionGeneration={authGenerationRef.current}
         currentUserId={user.id}
+        isSaved={eventToView ? savedKeys.has(`${eventToView.resourceOwnerId}:${eventToView.id}`) : false}
+        saveState={saveState}
+        onToggleSave={handleToggleSave}
       />}
 
       {!!shareTrack && <CollaborationModal key={`${user.id}:${authGenerationRef.current}`}

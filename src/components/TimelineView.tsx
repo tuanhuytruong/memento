@@ -24,6 +24,8 @@ interface TimelineViewProps {
   canCreateEntry: boolean;
   /** True when the account has no track at all, so the empty state can ask for one. */
   hasAnyTrack: boolean;
+  /** True when the list is empty because the Saved filter matched nothing. */
+  savedOnly?: boolean;
 }
 
 export const TimelineView: React.FC<TimelineViewProps> = ({
@@ -42,6 +44,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   isFiltered,
   canCreateEntry,
   hasAnyTrack,
+  savedOnly = false,
 }) => {
   const trackMap = new Map(tracks.map((track) => [trackIdentity(track), track]));
   const currentTrack = tracks.find((t) => trackIdentity(t) === currentTrackKey);
@@ -61,7 +64,9 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
           )}
         </div>
         <h3 className="text-lg font-bold font-display text-stone-900 dark:text-stone-100 mb-1">
-          {isFiltered
+          {savedOnly && !isFiltered
+            ? 'Nothing saved yet'
+            : isFiltered
             ? 'No matching timeline entries'
             : !hasAnyTrack
             ? 'Create your first track'
@@ -72,7 +77,9 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
             : 'Your timeline is clear'}
         </h3>
         <p className="text-xs sm:text-sm text-stone-500 dark:text-stone-400 mb-6 leading-relaxed">
-          {isFiltered
+          {savedOnly && !isFiltered
+            ? 'Saved is your own private list. Nobody else can see it — not the memory\u2019s owner, not other collaborators. Open any memory and choose Save to keep it here.'
+            : isFiltered
             ? 'Try adjusting your tag filters, search term, or emotion criteria.'
             : !hasAnyTrack
             ? 'Tracks group your memories into chapters — a trip, a year, a project. Create one to start logging moments.'

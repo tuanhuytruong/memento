@@ -7,7 +7,10 @@ import {
   Image as ImageIcon,
   ArrowUpDown,
   Calendar,
+  CalendarRange,
   Sparkles,
+  Bookmark,
+  BookmarkCheck,
   Tag,
   LayoutList,
   Columns,
@@ -15,6 +18,7 @@ import {
 } from 'lucide-react';
 import { FilterState, ViewMode, EmotionKey } from '../types';
 import { EMOTIONS } from '../data/emotions';
+import { validateDateRange } from '../lib/momentFilters';
 
 interface FilterBarProps {
   filters: FilterState;
@@ -26,6 +30,8 @@ interface FilterBarProps {
   onViewModeChange: (mode: ViewMode) => void;
   totalFilteredCount: number;
   totalCount: number;
+  /** The caller's own saved count, from the server. */
+  savedCount: number;
 }
 
 export const FilterBar: React.FC<FilterBarProps> = ({
@@ -38,6 +44,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   onViewModeChange,
   totalFilteredCount,
   totalCount,
+  savedCount,
 }) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -46,8 +53,12 @@ export const FilterBar: React.FC<FilterBarProps> = ({
     filters.selectedTags.length +
     filters.selectedEmotions.length +
     (filters.selectedYear !== 'all' ? 1 : 0) +
+    (filters.dateFrom || filters.dateTo ? 1 : 0) +
     (filters.milestonesOnly ? 1 : 0) +
-    (filters.hasImagesOnly ? 1 : 0);
+    (filters.hasImagesOnly ? 1 : 0) +
+    (filters.savedOnly ? 1 : 0);
+  // Shared with the server query: the same message for the same bad range.
+  const rangeError = validateDateRange(filters.dateFrom, filters.dateTo);
 
   const toggleTag = (tag: string) => {
     if (filters.selectedTags.includes(tag)) {
@@ -230,6 +241,43 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           </button>
         ))}
 
+        {/* Date range: an optional inclusive local-calendar window. Picking a
+            year clears it and vice versa, through one shared rule. */}
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+          <span className="text-stone-400 font-medium flex items-center gap-1 shrink-0">
+            <CalendarRange className="w-3 h-3" /> Dates
+          </span>
+          <label className="sr-only" htmlFor="filter-date-from">From date</label>
+          <input
+            id="filter-date-from"
+            type="date"
+            value={filters.dateFrom}
+            max={filters.dateTo || undefined}
+            onChange={(e) => onFilterChange({ dateFrom: e.target.value })}
+            className="px-2 py-1.5 min-h-11 min-w-0 flex-1 sm:flex-none basis-24 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+          />
+          <span className="text-stone-400 shrink-0" aria-hidden="true">→</span>
+          <label className="sr-only" htmlFor="filter-date-to">To date</label>
+          <input
+            id="filter-date-to"
+            type="date"
+            value={filters.dateTo}
+            min={filters.dateFrom || undefined}
+            onChange={(e) => onFilterChange({ dateTo: e.target.value })}
+            className="px-2 py-1.5 min-h-11 min-w-0 flex-1 sm:flex-none basis-24 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+          />
+          {(filters.dateFrom || filters.dateTo) && (
+            <button
+              type="button"
+              aria-label="Clear date range"
+              onClick={() => onFilterChange({ dateFrom: '', dateTo: '' })}
+              className="min-h-11 min-w-11 flex items-center justify-center text-stone-400 hover:text-stone-600"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
         {/* Quick toggle chips */}
         <div className="h-4 w-px bg-stone-200 dark:bg-stone-700 mx-1 shrink-0" />
 
@@ -244,6 +292,23 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           }`}
         >
           <Star className="w-3 h-3 fill-current" /> Milestones
+        </button>
+
+        {/* Saved is the caller's own list: a chip beside the other filters,
+            never a new global tab and never a milestone or a reaction. */}
+        <button
+          type="button"
+          id="filter-saved-only"
+          aria-pressed={filters.savedOnly}
+          onClick={() => onFilterChange({ savedOnly: !filters.savedOnly })}
+          className={`px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
+            filters.savedOnly
+              ? 'bg-amber-500 text-white shadow-xs'
+              : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
+          }`}
+        >
+          {filters.savedOnly ? <BookmarkCheck className="w-3 h-3" /> : <Bookmark className="w-3 h-3" />} Saved
+          <span className="ml-0.5 text-[11px] font-bold opacity-80">{savedCount}</span>
         </button>
 
         <button
@@ -270,6 +335,12 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           </button>
         )}
       </div>
+
+      {rangeError && (
+        <p role="alert" id="filter-range-error" className="text-xs text-rose-700 dark:text-rose-300">
+          {rangeError}
+        </p>
+      )}
 
       {/* Advanced Tag & Emotion Filters drawer */}
       {showAdvanced && (

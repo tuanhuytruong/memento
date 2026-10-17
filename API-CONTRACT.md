@@ -33,6 +33,31 @@ These are named contracts, enforced by tests, not aspirations:
 - Errors: `400` when `ownerId` is missing or not a UUID, `401` unauthenticated, `404` for revoked or unrelated access. It never falls back to cached metadata for a resource the caller may no longer read.
 - This is the only read the conflict comparison uses, so its denial behavior is a frozen contract.
 
+## Saved memories (Phase 2)
+
+A save is the caller's **own** bookkeeping. It is not a milestone, not a reaction and not collaboration. Nothing is copied from the author's content, and the memory's owner and other collaborators cannot see who saved what.
+
+- **Schema.** `saved_moments(user_id, moment_owner_id, moment_id, saved_at)`, primary key `(user_id, moment_owner_id, moment_id)`, foreign keys to the user and to the exact `(owner_id, id)` moment with delete cascades. There is no copied story, photo, public id or semantic profile.
+- **`PUT /api/moments/:id/saved`** JSON `{ "ownerId": string, "active": boolean }` → `{ "saved": { "ownerId": string, "id": string, "saved": boolean } }`. This is a **desired state, not a toggle**: repeating either value is the same fact, so a retried request and a double tap settle identically. There is deliberately no racing toggle endpoint.
+- **Who may save.** Anyone who can currently read the memory — owner, editor or viewer. Saving grants no edit or export right.
+- **Serialized with owner writes.** The save runs under the target owner's mutation locks and rechecks exact current access inside the transaction, so a revoke, move or delete racing the save always wins. A save after revocation is `404`.
+- **`GET /api/saved`** → `{ "saved": [{ "ownerId", "id" }], "count": number }`, `Cache-Control: no-store`. Both the list and the count are **intersected with the caller's current authorization** before returning, so a revoked memory leaves both without leaking an id or a title. Retaining a dormant relationship row does not restore authorization on its own.
+- **`GET /api/saved/moments?limit=&cursor=`** → `{ "items": [{ "ownerId", "id", "savedAt" }], "nextCursor": string | null }`. Newest first, keyset paginated (never `OFFSET`), default limit 40 / max 100, and it returns identities and timestamps only — never the author's content. A malformed or foreign cursor is `400`.
+- **Errors.** `400` for a missing/non-UUID `ownerId` or a non-boolean `active`, `401` unauthenticated, `404` when the memory is unreadable to the caller.
+- **Separate from content backup.** Saved state is *not* part of the JSON content export. It is private usage state and mixing it into an author-facing content file would misrepresent what a backup contains.
+
+## Search and filter semantics (Phase 2)
+
+One implementation (`src/lib/momentFilters.ts`) is shared by the client list, the resurfacing selector and the Blindbox, and mirrored by the server query.
+
+- **Search folding.** Comparison uses NFC, explicit `đ`/`Đ` → `d`/`D`, then combining-mark removal, then case and whitespace folding, so "da lat" finds "Đà Lạt". **Display and stored text are never rewritten.**
+- **Search fields.** Title, story, insight, tags, emotion, place name/city/country — exactly those. Collaborator perspective bodies are deliberately **not** in global search.
+- **Tag semantics.** Selected tags remain OR, matched on folded **equality** (no substring matching).
+- **Date range.** An optional inclusive `YYYY-MM-DD` From/To window, validated as real calendar dates and never browser-parsed. Picking a year replaces the range; entering a range clears the year — one shared rule in both directions.
+- **Undated and future dates.** A malformed memory date is never silently hidden by a range filter. A future memory date is filtered like any other date, not special-cased.
+- **Sort.** Canonical memory date, `HH:MM` time fallback, then owner UUID and moment id as tie-breakers. A malformed date sorts last rather than being parsed by the browser. Order is deterministic across machines and on the server.
+- **Privacy.** No search-phrase history, no analytics payload and no private text in query logs. The server read path for search must use a JSON body and must not log search text in the query string.
+
 ## Authentication
 
 - `POST /api/auth/register` JSON `{ "username": string, "password": string, "inviteCode": string }`; consumes a one-time invite and returns `{ "user": { "id": string, "username": string } }` plus an HttpOnly session cookie.

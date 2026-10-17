@@ -119,7 +119,13 @@ export interface FilterState {
   selectedTags: string[];
   selectedEmotions: EmotionKey[];
   selectedYear: string; // 'all' or '2026', '2025', etc.
+  /** Inclusive local calendar bounds, 'YYYY-MM-DD' or ''. Selecting a year
+      clears these and vice versa; see applyFilterPatch in lib/momentFilters. */
+  dateFrom: string;
+  dateTo: string;
   milestonesOnly: boolean;
   hasImagesOnly: boolean;
+  /** Saved is the caller's own list, not a milestone or a reaction. */
+  savedOnly: boolean;
   sortDirection: 'newest' | 'oldest';
 }
