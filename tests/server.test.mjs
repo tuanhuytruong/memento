@@ -129,8 +129,17 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
      const ownerPerspective=await request(`/api/moments/${momentId}/perspectives`,{method:'POST',token,body:{ownerId:userId,kind:'perspective',body:'Original owner perspective',clientRequestId:ownerRequestId}});assert.equal(ownerPerspective.res.status,201);const ownerPerspectiveId=ownerPerspective.data.perspective.id;
      const ownerPerspectiveReplay=await request(`/api/moments/${momentId}/perspectives`,{method:'POST',token,body:{ownerId:userId,kind:'perspective',body:'Original owner perspective',clientRequestId:ownerRequestId}});assert.equal(ownerPerspectiveReplay.res.status,201);assert.equal(ownerPerspectiveReplay.data.perspective.id,ownerPerspectiveId);
      assert.equal((await request(`/api/moments/${momentId}/perspectives?ownerId=${userId}`,{token})).data.perspectives.length,1);
+      // Phase 1 Task 1.4: the exact (ownerId, id) read is the only path the conflict
+      // comparison uses, so its authorization behaviour is a frozen contract.
+      const exactOwnerRead=await request(`/api/moments/${momentId}?ownerId=${userId}`,{token});
+      assert.equal(exactOwnerRead.res.status,200);
+      assert.equal(exactOwnerRead.data.moment.id,momentId);
+      assert.equal(exactOwnerRead.data.moment.resourceOwnerId,userId);
+      assert.equal((await request(`/api/moments/${momentId}?ownerId=${userId}`)).res.status,401,'unauthenticated exact read denied');
+      assert.equal((await request(`/api/moments/${momentId}?ownerId=${userId2}`,{token})).res.status,404,'an unrelated owner id yields 404, not content');
       // Revoke the viewer temporarily so this is truly an unauthorized exact-resource read.
       assert.equal((await request(`/api/tracks/${trackId}/collaborators/${userId2}`,{method:'DELETE',token})).res.status,200);
+      assert.equal((await request(`/api/moments/${momentId}?ownerId=${userId}`,{token:token2})).res.status,404,'revoked access yields 404 on the exact read, never cached metadata');
       assert.equal((await pool.query(`SELECT 1 FROM ${qschema}.moments WHERE owner_id=$1 AND id=$2`,[userId,momentId])).rowCount,1);
       // Hold the actual target owner's exclusive mutation lock while the former viewer requests that target.
       let releaseOwnerLock;const ownerLockGate=new Promise(resolve=>{releaseOwnerLock=resolve;});let signalOwnerLock;const ownerLockStarted=new Promise(resolve=>{signalOwnerLock=resolve;});

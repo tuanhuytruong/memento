@@ -135,6 +135,10 @@ export const dataApi = {
   recordTrackVisit: (ownerId: string, trackId: string) =>
     request<{ visit: { trackOwnerId: string; trackId: string; lastOpenedAt: string } }>(`/tracks/${encodeURIComponent(trackId)}/visit`, { method: 'PUT', body: JSON.stringify({ ownerId }) }),
   moments: async () => unwrapList<TimelineEvent>(await request('/moments'), ['moments']),
+  // Exact single-moment read for conflict comparison; same composite identity
+  // and authorization boundary as every other moment route.
+  moment: async (id: string, ownerId: string) =>
+    requireResource<TimelineEvent>(await request(`/moments/${encodeURIComponent(id)}?ownerId=${encodeURIComponent(ownerId)}`), ['moment'], 'moment'),
   perspectives: (momentId: string, ownerId: string, cursor?: string) => {
     const params = new URLSearchParams({ ownerId, limit: '20' });
     if (cursor) params.set('cursor', cursor);

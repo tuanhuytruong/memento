@@ -370,6 +370,20 @@ app.get('/api/moments', auth, async (req,res,next) => { try {
   const imagesByMoment=new Map(); for(const image of images.rows){const key=`${image.owner_id}:${image.moment_id}`;const list=imagesByMoment.get(key)||[];list.push(image);imagesByMoment.set(key,list);}
   res.json({moments:rows.map(row=>safeMoment(row.document,imagesByMoment.get(`${row.owner_id}:${row.id}`)||[],reactions.get(`${row.owner_id}:${row.id}`)||[],row.version,row.owner_id))});
 } catch(e){next(e);} });
+// Exact single-moment read: same authorization boundary as the list, used by
+// the client to compare a local draft against the current server state after a
+// 409. A revoked or unrelated resource answers 404, never stale metadata.
+app.get('/api/moments/:id',auth,async(req,res,next)=>{try{
+  const ownerId=req.query.ownerId;
+  if(!validUuid(ownerId))throw new ApiError(400,'Exact moment identity (ownerId) is required');
+  const moment=await exactMomentAccess(req.user.id,{ownerId,id:req.params.id});
+  if(!moment)return fail(res,404,'Moment not found');
+  const [images,reactions]=await Promise.all([
+    pool.query(`SELECT id FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2 ORDER BY created_at`,[moment.owner_id,moment.id]),
+    reactionSummaries(req.user.id,[moment]),
+  ]);
+  res.json({moment:safeMoment(moment.document,images.rows,reactions.get(`${moment.owner_id}:${moment.id}`)||[],moment.version,moment.owner_id)});
+}catch(e){next(e);}});
 app.get('/api/moments/:id/perspectives', auth, async (req,res,next) => { try {
   const ownerId=req.query.ownerId, limitRaw=req.query.limit ?? '20';
   const limit=Number(limitRaw);
