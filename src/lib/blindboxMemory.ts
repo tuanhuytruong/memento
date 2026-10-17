@@ -25,13 +25,13 @@ function corpus(event: TimelineEvent, track?: EventTrack) {
 
 export function revealMemory(events: TimelineEvent[], tracks: EventTrack[], intent: BlindboxIntent, query: string, random = Math.random): BlindboxResult | null {
   if (!events.length) return null;
-  const byId = new Map(tracks.map((track) => [track.id, track]));
+  const byId = new Map(tracks.map((track) => [`${track.resourceOwnerId}:${track.id}`, track]));
   const queryWords = words(query);
   const emotions = intent === 'surprise' ? [] : INTENT_EMOTIONS[intent];
   const scored = events.map((event) => {
     let score = 0;
     if (emotions.includes(event.emotion as EmotionKey)) score += 3;
-    const text = corpus(event, byId.get(event.eventId));
+    const text = corpus(event, byId.get(`${event.resourceOwnerId}:${event.eventId}`));
     score += queryWords.filter((word) => text.includes(word)).length * 2;
     return { event, score };
   });

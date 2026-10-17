@@ -21,8 +21,7 @@ interface TimelineHeaderProps {
   overview: AccountOverview | null;
   trackCount: number;
   onAddNewEvent: () => void;
-  onExportJson: () => void;
-  onExportJsonAsync?: () => Promise<void>;
+  onExportJson: () => void | Promise<void>;
   /** Hidden entirely when the signed-in user owns no track. */
   onCreatePostcard?: () => void;
   username?: string;
@@ -35,7 +34,6 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
   trackCount,
   onAddNewEvent,
   onExportJson,
-  onExportJsonAsync,
   onCreatePostcard,
   username,
   onLogout,
@@ -112,7 +110,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
                   id="export-timeline-json"
                   onClick={() => {
                     setMenuOpen(false);
-                    if (onExportJsonAsync) void onExportJsonAsync(); else onExportJson();
+                    void onExportJson();
                   }}
                   title="Export timeline data as JSON backup"
                   className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800 flex items-center gap-2"

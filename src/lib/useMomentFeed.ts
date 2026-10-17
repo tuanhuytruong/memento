@@ -132,6 +132,9 @@ export function useMomentFeed(options: {
   // work and the retained pages together, so one request can never complete
   // into another account's list.
   const scope = feedScopeHash(query, generation);
+  const [landedScope, setLandedScope] = useState(scope);
+  const activeController = useRef<AbortController | null>(null);
+  const busy = useRef(false);
   const requestId = useRef(0);
   const cursorRef = useRef<string | null>(null);
   const firstCursorRef = useRef<string | null | undefined>(undefined);
@@ -139,7 +142,10 @@ export function useMomentFeed(options: {
   const run = useCallback(async (mode: 'initial' | 'more', existing: TimelineEvent[][]) => {
     if (!enabled) return;
     const id = ++requestId.current;
+    activeController.current?.abort();
     const controller = new AbortController();
+    activeController.current = controller;
+    busy.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -147,6 +153,7 @@ export function useMomentFeed(options: {
       if (id !== requestId.current) return; // superseded: never land
       const next = mode === 'more' ? [...existing, page.moments] : [page.moments];
       const slid = slideWindow(next, maxRetainedPages);
+      setLandedScope(scope);
       setPages(slid.pages);
       setDropped(dropped => dropped + slid.dropped);
       cursorRef.current = page.nextCursor;
@@ -162,9 +169,9 @@ export function useMomentFeed(options: {
       if ((failure as { name?: string })?.name === 'AbortError') return;
       setError(failure instanceof Error ? failure.message : 'Could not load memories. Please retry.');
     } finally {
-      if (id === requestId.current) setLoading(false);
+      if (id === requestId.current) { busy.current = false; setLoading(false); }
     }
-  }, [fetchPage, query, enabled, maxRetainedPages]);
+  }, [fetchPage, query, scope, enabled, maxRetainedPages]);
 
   // Reset whenever the account or the filter scope changes.
   useEffect(() => {
@@ -177,24 +184,24 @@ export function useMomentFeed(options: {
     setDropped(0);
     setError(null);
     if (enabled) void run('initial', []);
-    return () => { requestId.current += 1; };
+    return () => { activeController.current?.abort(); requestId.current += 1; busy.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, enabled, reloadToken]);
 
   const loadMore = useCallback(() => {
-    if (loading || !cursor) return;
+    if (busy.current || !cursor) return;
     void run('more', pages);
   }, [loading, cursor, pages, run]);
 
   /** Slide the retained window back toward older content and fetch past it. */
   const older = useCallback(() => {
-    if (loading || !cursor) return;
+    if (busy.current || !cursor) return;
     void run('more', pages);
   }, [loading, cursor, pages, run]);
 
   /** Move the window back toward newer content; a fresh first page. */
   const newer = useCallback(() => {
-    if (loading) return;
+    if (busy.current) return;
     setDropped(0);
     void run('initial', []);
   }, [loading, run]);
@@ -205,9 +212,9 @@ export function useMomentFeed(options: {
   }, []);
 
   return {
-    items: dedupeByIdentity(pages),
-    total,
-    hasMore: cursor !== null,
+    items: enabled && landedScope === scope ? dedupeByIdentity(pages) : [],
+    total: enabled && landedScope === scope ? total : null,
+    hasMore: enabled && landedScope === scope && cursor !== null,
     loading,
     error,
     windowShifted: dropped > 0,

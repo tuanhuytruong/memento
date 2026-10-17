@@ -53,7 +53,51 @@ async function fixture(browser, options={}) {
     if(state.refreshFailure){state.refreshFailure=false;return route.fulfill({status:503,json:{error:'synthetic refresh failure'}});}
     body={moments:state.moments};
   }
+  else if(url.pathname==='/api/discovery/blindbox') {
+    body=state.moments.length?{event:state.moments[0],fallback:false}:null;
+  }
+  else if(url.pathname==='/api/discovery/postcard-picker') {
+    const q=req.postDataJSON()||{};const start=q.cursor?Number(q.cursor):0;
+    const eligible=state.moments.filter(m=>m.resourceOwnerId===state.account&&(!q.trackKey||`${m.resourceOwnerId}:${m.eventId}`===q.trackKey)&&(!q.search||m.title.toLowerCase().includes(q.search.toLowerCase())));
+    body={moments:eligible.slice(start,start+40),nextCursor:start+40<eligible.length?String(start+40):null};
+  }
+  else if(url.pathname==='/api/moments/resurfacing' && req.method()==='POST') {
+    // Bounded candidate pool. The fixture serves every well-formed past memory
+    // so the existing selector's outcome is unchanged here; the bound itself is
+    // pinned by the DB-backed parity test, which is where it can actually be
+    // measured against a real account.
+    const today=String(req.postDataJSON()?.today||'');
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(today))return route.fulfill({status:400,json:{error:'today must be a local calendar date'}});
+    body={moments:state.moments.filter(m=>/^\d{4}-\d{2}-\d{2}$/.test(m.date||'')&&m.date<=today)};
+  }
+  else if(url.pathname==='/api/moments/query' && req.method()==='POST') {
+    // Bounded main feed, independent from snapshot export pages.
+    const q=req.postDataJSON()||{};
+    const limit=Math.min(100,Math.max(1,Number(q.limit)||40));
+    const fold=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D').toLowerCase().replace(/\s+/g,' ').trim();
+    const eligible=state.moments.filter(m=>{
+      if(q.trackKey&&`${m.resourceOwnerId}:${m.eventId}`!==q.trackKey)return false;
+      if(q.search&&!fold([m.title,m.description,m.idea,(m.tags||[]).join(' '),m.location?.name,m.location?.city].filter(Boolean).join(' ')).includes(fold(q.search)))return false;
+      if(q.dateFrom&&m.date<q.dateFrom)return false;
+      if(q.dateTo&&m.date>q.dateTo)return false;
+      if(!q.dateFrom&&!q.dateTo&&q.selectedYear&&q.selectedYear!=='all'&&!m.date?.startsWith(q.selectedYear))return false;
+      if(q.selectedTags?.length&&!q.selectedTags.some(t=>m.tags?.includes(t)))return false;
+      if(q.selectedEmotions?.length&&!q.selectedEmotions.includes(m.emotion))return false;
+      if(q.milestonesOnly&&!m.isMilestone)return false;
+      if(q.hasImagesOnly&&!m.images?.length)return false;
+      if(q.savedOnly&&!state.saved.includes(`${m.resourceOwnerId}:${m.id}`))return false;
+      return true;
+    });
+    const sorted=[...eligible].sort((a,b)=>((a.date||'').localeCompare(b.date||'')||(a.time||'99:99').localeCompare(b.time||'99:99')||a.id.localeCompare(b.id))*(q.sortDirection==='oldest'?1:-1));
+    let start=0;
+    if(q.cursor){const m=/^p(\d+)$/.exec(String(q.cursor));if(!m)return route.fulfill({status:400,json:{error:'cursor does not match this query'}});start=Number(m[1]);}
+    const slice=sorted.slice(start,start+limit);
+    const nextIndex=start+limit;
+    state.queryRequests=(state.queryRequests||0)+1;
+    body={moments:slice,nextCursor:nextIndex<sorted.length?`p${nextIndex}`:null,...(q.includeTotal?{total:sorted.length}:{})};
+  }
   else if(url.pathname==='/api/moments/overview' && req.method()==='GET') {
+    if(state.refreshFailure){state.refreshFailure=false;return route.fulfill({status:503,json:{error:'synthetic refresh failure'}});}
     if(state.overviewOverride)return route.fulfill({json:{overview:state.overviewOverride}});
     // Full-scope summary. Derived from the fixture's whole set for the same
     // reason the real one aggregates in SQL: header and track counts must not
@@ -97,11 +141,11 @@ async function fixture(browser, options={}) {
   }
   else if(/^\/api\/moments\/[^/]+\/perspectives$/.test(url.pathname)&&req.method()==='GET')body={perspectives:state.perspectives,nextCursor:null,capabilities:{canRead:true,canCreate:state.perspectiveCanCreate!==false,canModerate:true}};
   else if(/^\/api\/moments\/[^/]+\/perspectives$/.test(url.pathname)&&req.method()==='POST'){const b=req.postDataJSON();const item={id:'p'+(state.perspectives.length+1),momentOwnerId:b.ownerId,momentId:url.pathname.split('/')[3],authorId:state.account,username:'synthetic-'+state.account,kind:b.kind,body:b.body,version:1,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};state.perspectives.push(item);return route.fulfill({status:201,json:{perspective:item}});}
-  else if(url.pathname==='/api/moments/qa-moment' && req.method()==='DELETE') {state.deletes++;body={};}
+  else if(/^\/api\/moments\/[^/]+$/.test(url.pathname) && req.method()==='DELETE') {state.deletes++;const id=url.pathname.split('/').pop();state.moments=state.moments.filter(m=>m.id!==id);body={};}
   else if(url.pathname==='/api/moments' && req.method()==='POST') {
     state.created=deferred(); if(state.createGate){state.createStarted?.resolve();await state.createGate.promise;}
     if(state.createFailure)return route.fulfill({status:503,json:{error:'Synthetic moment save failure'}});
-    body={moment:{...moment,...req.postDataJSON(),id:'created-A',version:1}};
+    body={moment:{...moment,...req.postDataJSON(),id:'created-A',version:1}};state.moments.unshift(body.moment);
   }
   else if(url.pathname==='/api/moments/qa-moment' && req.method()==='PUT') {
     const n=(state.momentPutCount=(state.momentPutCount||0)+1);
@@ -131,10 +175,25 @@ async function fixture(browser, options={}) {
     // Fixed synthetic PNG: enough for decode/dimension/same-bytes assertions.
     return route.fulfill({status:200,contentType:'image/png',headers:{'Cache-Control':'no-store','Content-Disposition':'attachment; filename="memento-postcard.png"'},body:state.postcardPng});}
   else if(/^\/api\/tracks\/[^/]+\/visit$/.test(url.pathname)&&req.method()==='PUT'){const b=req.postDataJSON();state.visitWrites.push({trackId:url.pathname.split('/')[3],...b});return route.fulfill({json:{visit:{trackOwnerId:b.ownerId||'A',trackId:url.pathname.split('/')[3],lastOpenedAt:new Date().toISOString()}}});}
-  else if(url.pathname==='/api/perspectives/export') {
-    if(state.perspectiveExportStarted)state.perspectiveExportStarted.resolve();
-    if(state.perspectiveExportGate)await state.perspectiveExportGate.promise;
-    return route.fulfill({status:503,json:{error:'Synthetic export failure'}});
+  else if(url.pathname.startsWith('/api/export/')) {
+    assert.equal(req.method(),'POST');
+    const action=url.pathname.split('/').pop();const q=req.postDataJSON()||{};
+    state.exportRequests??=[];state.exportRequests.push({action,...q});
+    const fingerprint='a'.repeat(64),token='synthetic-account-bound-token';
+    const components={moments:state.moments,tracks:state.exportTracks||state.tracks,tags:state.exportTags||[],perspectives:state.perspectives};
+    const counts=Object.fromEntries(Object.entries(components).map(([k,v])=>[k,v.length]));
+    if(action!=='start'){assert.equal(q.fingerprint,fingerprint);assert.equal(q.token,token);}
+    if(state.exportFailure===action || (action==='page' && state.exportFailure===q.kind))return route.fulfill({status:409,json:{error:'Synthetic export scope changed',code:'EXPORT_SCOPE_CHANGED'}});
+    if(action==='start')body={fingerprint,token,counts,scope:'all-authorized-moments;owned-perspectives',images:'references-to-stored-images-only'};
+    else if(action==='finalize')body={fingerprint,token,counts,complete:true};
+    else {
+      assert.equal(action,'page');assert(Object.hasOwn(components,q.kind),'known snapshot component');
+      assert(Number.isInteger(q.limit)&&q.limit>0&&q.limit<=100,'bounded snapshot page');
+      if(q.kind==='perspectives'&&state.perspectiveExportGate){state.perspectiveExportStarted?.resolve();await state.perspectiveExportGate.promise;return route.fulfill({status:503,json:{error:'Synthetic export failure'}});}
+      const start=q.cursor?Number(q.cursor):0;assert(Number.isInteger(start)&&start>=0);
+      const items=components[q.kind].slice(start,start+q.limit);
+      body={fingerprint,token,counts,items,nextCursor:start+q.limit<components[q.kind].length?String(start+q.limit):null};
+    }
   }
   else if(url.pathname==='/api/collaboration-invitations')body={invitations:[]};
   // Wire shape: composite identities, never the raw internal key strings.
@@ -155,9 +214,18 @@ async function fixture(browser, options={}) {
  await page.goto(base,{waitUntil:'networkidle'});
  // Empty fixtures (no moments) wait for a stable app marker instead of a card
  // that will never render.
- if(state.moments.length) await page.locator('#event-card-A\\:qa-moment').waitFor();
+ if(state.moments.length) await page.locator('#event-card-A\\:qa-moment').waitFor().catch(async error=>{console.error('FIXTURE FAILED',JSON.stringify({options,requests:state.requests,moments:state.moments.map(m=>({id:m.id,date:m.date})),body:await page.locator('body').innerText()}));throw error;});
  else await page.locator('#open-create-event-modal, #empty-state-add-track, #empty-timeline-state').first().waitFor();
  return {context,page,state,errors};
+}
+async function feedAction(page, action, matches) {
+ const response=page.waitForResponse(r=>r.url().endsWith('/api/moments/query')&&r.request().method()==='POST'&&matches(r.request().postDataJSON()));
+ await action();const landed=await response;assert.equal(landed.status(),200);await landed.finished();
+ await page.waitForFunction(()=>!document.querySelector('[aria-label="Loading memories"]'));
+}
+async function cardCount(page, id, expected, message) {
+ await page.waitForFunction(({id,expected})=>document.querySelectorAll(`[id="event-card-A:${id}"]`).length===expected,{id,expected});
+ assert.equal(await page.locator(`[id="event-card-A:${id}"]`).count(),expected,message);
 }
 async function hit(locator){
  await locator.scrollIntoViewIfNeeded();
@@ -356,9 +424,12 @@ async function logoutAndLogin(page){
    await page.keyboard.press('Escape');
    await page.locator('#event-detail-card').waitFor({state:'detached',timeout:3000});
    const momentsBefore=state.requests.filter(u=>u==='/api/moments').length;
+   const resurfacingBefore=state.requests.filter(u=>u==='/api/moments/resurfacing').length;
+   assert(resurfacingBefore>=1,'the candidate pool was fetched');
    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
    await delay(1200);
    assert.equal(state.requests.filter(u=>u==='/api/moments').length,momentsBefore,'no polling on focus/refresh');
+   assert.equal(state.requests.filter(u=>u==='/api/moments/resurfacing').length,resurfacingBefore,'a focus or midnight check does not re-read the pool');
    assert.equal(state.requests.filter(u=>u.startsWith('/api/track-visits')).length,1,'no repeat visit-history reads');
    assert.deepEqual(errors,[]);
    results.push('Ngày ấy overview, truthful reasons, track-only placement, filter clear, private visit, no polling PASS');await context.close();}
@@ -584,31 +655,31 @@ async function logoutAndLogin(page){
   {const vietnamese={...structuredClone(moment),id:'qa-viet',eventId:'qa-track',title:'Đà Lạt mùa sương',description:'Buổi sáng trên đồi thông',date:'2026-05-04',images:[],tags:['du lịch'],location:{name:'Chợ đêm',city:'Đà Lạt',country:'Việt Nam'}};
    const {page,state,context,errors}=await fixture(browser,{moments:[structuredClone(moment),vietnamese]});
    // Task 2.1: search folds diacritics and đ, and display text is untouched.
-   await page.locator('#timeline-search-input').fill('da lat');
-   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'a plain-d search finds the Vietnamese memory');
-   await page.locator('#timeline-search-input').fill('DA LAT');
-   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'case folding survives the đ mapping');
-   await page.locator('#timeline-search-input').fill('sương');
-   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'a partial diacritic needle matches');
+   await feedAction(page,()=>page.locator('#timeline-search-input').fill('da lat'),q=>q.search==='da lat');
+   await cardCount(page,'qa-viet',1,'a plain-d search finds the Vietnamese memory');
+   await feedAction(page,()=>page.locator('#timeline-search-input').fill('DA LAT'),q=>q.search==='DA LAT');
+   await cardCount(page,'qa-viet',1,'case folding survives the đ mapping');
+   await feedAction(page,()=>page.locator('#timeline-search-input').fill('sương'),q=>q.search==='sương');
+   await cardCount(page,'qa-viet',1,'a partial diacritic needle matches');
    assert((await page.locator('#event-card-A\\:qa-viet').innerText()).includes('Đà Lạt'),'display text keeps its real characters');
-   await page.locator('#timeline-search-input').fill('huế');
-   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),0,'a non-matching needle matches nothing');
-   await page.locator('#timeline-search-input').fill('');
+   await feedAction(page,()=>page.locator('#timeline-search-input').fill('huế'),q=>q.search==='huế');
+   await cardCount(page,'qa-viet',0,'a non-matching needle matches nothing');
+   await feedAction(page,()=>page.locator('#timeline-search-input').fill(''),q=>q.search==='');
    // The range is inclusive on both bounds.
-   await page.locator('#filter-date-from').fill('2026-05-04');
-   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'the From bound is inclusive');
-   await page.locator('#filter-date-from').fill('2026-05-05');
-   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),0,'a day before the From bound excludes it');
-   await page.locator('#filter-date-from').fill('2026-05-04');
-   await page.locator('#filter-date-to').fill('2026-05-04');
-   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'a single day is a valid range');
+   await feedAction(page,()=>page.locator('#filter-date-from').fill('2026-05-04'),q=>q.dateFrom==='2026-05-04');
+   await cardCount(page,'qa-viet',1,'the From bound is inclusive');
+   await feedAction(page,()=>page.locator('#filter-date-from').fill('2026-05-05'),q=>q.dateFrom==='2026-05-05');
+   await cardCount(page,'qa-viet',0,'a day before the From bound excludes it');
+   await feedAction(page,()=>page.locator('#filter-date-from').fill('2026-05-04'),q=>q.dateFrom==='2026-05-04');
+   await feedAction(page,()=>page.locator('#filter-date-to').fill('2026-05-04'),q=>q.dateTo==='2026-05-04');
+   await cardCount(page,'qa-viet',1,'a single day is a valid range');
    // Choosing a year replaces the range instead of combining with it.
-   await page.getByRole('button',{name:'2026',exact:true}).first().click();
+   await feedAction(page,()=>page.getByRole('button',{name:'2026',exact:true}).first().click(),q=>q.selectedYear==='2026'&&!q.dateFrom&&!q.dateTo);
    assert.equal(await page.locator('#filter-date-from').inputValue(),'','selecting a year clears the From bound');
    assert.equal(await page.locator('#filter-date-to').inputValue(),'','selecting a year clears the To bound');
-   assert.equal(await page.locator('#event-card-A\\:qa-viet').count(),1,'the year still shows the memory');
+   await cardCount(page,'qa-viet',1,'the year still shows the memory');
    // Entering a range clears the year, in the other direction.
-   await page.locator('#filter-date-to').fill('2026-05-04');
+   await feedAction(page,()=>page.locator('#filter-date-to').fill('2026-05-04'),q=>q.dateTo==='2026-05-04');
    assert.equal(await page.getByRole('button',{name:'2026',exact:true}).first().getAttribute('aria-pressed'),'false','entering a range clears the year');
    assert.deepEqual(errors,[]);
    results.push('search folds diacritics and đ; date range is inclusive and replaces the year in both directions PASS');await context.close();}
@@ -674,9 +745,9 @@ async function logoutAndLogin(page){
    assert.equal((await page.locator('#toggle-save-memory').innerText()).trim(),'Saved');
    await page.keyboard.press('Escape');
    await page.locator('#event-card-A\\:qa-moment h3').waitFor();
-   await page.locator('#filter-saved-only').click();
+   await feedAction(page,()=>page.locator('#filter-saved-only').click(),q=>q.savedOnly===true);
    assert.equal(await page.locator('#filter-saved-only').getAttribute('aria-pressed'),'true');
-   assert.equal(await page.locator('#event-card-A\\:qa-moment').count(),1,'the saved memory is still listed');
+   await cardCount(page,'qa-moment',1,'the saved memory is still listed');
    // An unrelated memory is excluded, and the count matches the list.
    state.saved=[];
    await page.reload({waitUntil:'networkidle'});
@@ -731,6 +802,46 @@ async function logoutAndLogin(page){
    assert(navText.includes(String(realTotal+11)),`the merged badge reports the server total too; nav=${JSON.stringify(navText)}`);
    assert.deepEqual(errors,[]);
    results.push('header, track badges and tag/year options report full-scope summary numbers, never the loaded page PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{moments:[]});
+   // Task 3.2: the backup must follow every page rather than serialise what
+   // happens to be loaded. The fixture serves 100 per request, so a complete
+   // file is only reachable if the export really loops.
+   const big=[];
+   for(let i=0;i<120;i++)big.push({id:`bulk-${i}`,resourceOwnerId:'A',eventId:'t1',version:1,title:`Bulk ${i}`,date:`2026-${String((i%12)+1).padStart(2,'0')}-${String((i%28)+1).padStart(2,'0')}`,description:'d',tags:[],images:[],createdAt:'2026-01-01',updatedAt:'2026-01-01',reactions:[]});
+   state.moments=big;state.exportTracks=[{...track,title:"Fresh snapshot track"}];state.exportTags=["fresh snapshot tag"];
+   state.queryRequests=0;
+   await page.reload({waitUntil:'networkidle'});
+   await page.locator('[id^=event-card-]').first().waitFor();
+   await page.locator('[title="More actions"]').click();
+   const downloadPromise=page.waitForEvent('download');
+   await page.locator('#export-timeline-json').click();
+   const download=await downloadPromise;
+   assert(download.url().startsWith('blob:'),`a backup is handed off as a Blob, not a data URL; got ${download.url().slice(0,24)}`);
+   const stream=await download.createReadStream();
+   const chunks=[];for await(const c of stream)chunks.push(c);
+   const payload=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+   assert.equal(payload.events.length,120,`every memory was exported, got ${payload.events.length}`);
+   assert.equal(payload.complete,true,'the payload states its own completeness');
+   assert.equal(payload.counts.moments,120,'and the count it reports matches the contents');
+   assert.equal(payload.scope.images,'references-to-stored-images-only','images are labelled as references, not photo bytes');
+   assert.equal(state.exportRequests.filter(r=>r.action==='page'&&r.kind==='moments').length,2,'snapshot export follows both pages independently of feed');
+   assert.deepEqual(state.exportRequests.filter(r=>r.action==='page').map(r=>r.kind),['moments','moments','tracks','tags','perspectives']);
+   assert.equal(state.exportRequests.at(-1).action,'finalize','all pages precede finalization');
+   assert.deepEqual(payload.eventTracks,state.exportTracks,'fresh snapshot tracks, not startup cache');
+   assert.deepEqual(payload.customTags,state.exportTags,'fresh snapshot tags, not startup cache');
+   assert.deepEqual(errors,[]);
+   results.push('backup follows every page, states its own scope, and downloads as a Blob PASS');await context.close();}
+
+  for(const failedStage of ['start','moments','tracks','tags','perspectives','finalize']) {
+   const {page,state,context,errors}=await fixture(browser,{exportFailure:failedStage});
+   const downloads=[];page.on('download',d=>downloads.push(d));
+   await page.getByTitle('More actions',{exact:true}).click();await page.locator('#export-timeline-json').click();
+   await page.getByRole('alert').filter({hasText:'Synthetic export scope changed'}).waitFor();
+   assert.equal(downloads.length,0,`${failedStage}: failed snapshot never downloads a partial file`);
+   if(failedStage!=='finalize')assert(!state.exportRequests.some(r=>r.action==='finalize'),'failed page cannot finalize');
+   assert.deepEqual(errors,[]);results.push(`backup ${failedStage} failure displays error and writes no download PASS`);await context.close();
+  }
 
   // ---- Phase 3: postcard composer (synthetic controlled routes) ----
   {const {page,state,context,errors}=await fixture(browser,{viewerTracks:true});

@@ -1,3 +1,7 @@
+import { mountExportSnapshotRoutes } from './export-snapshot.mjs';
+import { mountDiscoveryRoutes } from './discovery-routes.mjs';
+import { operationalMetrics, sampleOperationalState, cleanupExpiredSessions } from './operational-metrics.mjs';
+import { postcardRenderStats } from './postcard-renderer.mjs';
 import dotenv from 'dotenv';
 dotenv.config({ path: process.env.ENV_FILE || '.env.local', quiet: true });
 import express from 'express';
@@ -18,7 +22,7 @@ import { createUploadAdmission } from './upload-admission.mjs';
 import { makeImageVariants, resolveVariant, VARIANT_CACHE_CONTROL } from './image-variants.mjs';
 import { listVisitState, recordVisit } from './track-visits.mjs';
 import { setSaved, listSaved, savedCount, savedIdentities, decodeSavedCursor } from './saved-moments.mjs';
-import { queryMoments, queryFacets, overviewMoments, validateQueryRequest } from './moment-queries.mjs';
+import { queryMoments, queryFacets, overviewMoments, resurfacingCandidates, validateQueryRequest } from './moment-queries.mjs';
 import { validatePostcardRequest } from './postcard-layout.mjs';
 import { renderPostcard } from './postcard-renderer.mjs';
 import { resolvePostcardPhotos } from './postcard-sources.mjs';
@@ -61,6 +65,7 @@ const imageDelivery = createImageDelivery({
 });
 app.disable('x-powered-by');
 app.set('trust proxy', 'loopback');
+app.use(operationalMetrics.middleware);
 // Keep liveness independent of database, authentication and R2 availability.
 app.get('/health', (_req, res) => res.status(200).json({ ok: true, service: 'memento-api' }));
 app.use(express.json({ limit: '1mb', strict: true }));
@@ -409,6 +414,37 @@ app.get('/api/moments/overview', auth, asyncHandler(async (req, res) => {
   res.json({ overview: await overviewMoments(pool, req.user.id, DB_SCHEMA) });
 }));
 
+// Phase 3 Task 3.2: "Ngày ấy" candidate pool. The client sends its own local
+// calendar date rather than the server inferring one, so the same rule that
+// decides "on this day in a previous year" is the one the user is looking at
+// instead of a UTC conversion that silently shifts it. It is a read and a
+// POST only because the date belongs in a body, not a logged query string.
+app.post('/api/moments/resurfacing', auth, asyncHandler(async (req, res) => {
+  const today = req.body?.today;
+  if (typeof today !== 'string') throw new ApiError(400, 'today is required');
+  const rows = await resurfacingCandidates(pool, req.user.id, today, DB_SCHEMA);
+  // The pool is bounded by track count and calendar pattern, never by account
+  // size, so one batched image read covers it — no per-card query, and no
+  // album-wide original prefetch.
+  const images = rows.length
+    ? await pool.query(
+      `SELECT DISTINCT ON (owner_id,moment_id) owner_id, moment_id, id FROM ${DB_SCHEMA}.images WHERE (owner_id, moment_id) IN (SELECT * FROM unnest($1::uuid[], $2::text[])) ORDER BY owner_id,moment_id,created_at,id`,
+      [rows.map(r => r.owner_id), rows.map(r => r.id)],
+    )
+    : { rows: [] };
+  const imagesByMoment = new Map();
+  for (const image of images.rows) {
+    const key = `${image.owner_id}:${image.moment_id}`;
+    const list = imagesByMoment.get(key) || [];
+    list.push(image);
+    imagesByMoment.set(key, list);
+  }
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    moments: rows.map(row => safeMoment(row.document, imagesByMoment.get(`${row.owner_id}:${row.id}`) || [], [], row.version, row.owner_id)),
+  });
+}));
+
 // Exact single-moment read: same authorization boundary as the list, used by
 // the client to compare a local draft against the current server state after a
 // 409. A revoked or unrelated resource answers 404, never stale metadata.
@@ -755,11 +791,21 @@ app.delete('/api/tags/:tag',auth,async(req,res)=>{
   res.json({ok:true});
 });
 
+mountExportSnapshotRoutes(app, { auth, pool, qschema, safeMoment });
+mountDiscoveryRoutes(app, { auth: authenticate, pool, qschema, safeMoment });
+
 // Named dependencies support deterministic fault injection without test-only HTTP routes.
 // Runtime wiring is shared by direct execution and the PM2 wrapper so the leased
 // cleanup worker starts exactly once through whichever entrypoint actually serves.
 export const runtime = createRuntime({
   app, pool, cleanup,
+  backgroundTick: async () => {
+    await cleanupExpiredSessions(pool, qschema, 100);
+    if (process.env.MEMENTO_OPERATIONAL_LOG === '1') {
+      const snapshot = await sampleOperationalState({ pool, qschema, imageDelivery, renderStats: postcardRenderStats });
+      console.info(JSON.stringify({ type: 'memento-operational', ...snapshot }));
+    }
+  },
   onCleanupError: () => process.stderr.write('Cleanup drain unavailable\n'),
   onListenError: (error) => { console.error('Memento API listen failed:', error?.message || error); process.exit(1); },
 });

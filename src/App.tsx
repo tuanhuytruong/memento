@@ -1,9 +1,11 @@
 import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { AccountOverview, TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
-import { exportTimelineData } from './lib/storage';
+import { buildCompleteBackup, downloadBackup } from './lib/exportBackup';
 import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
 import { matchesMomentFilters, compareMoments, filterProjection, applyFilterPatch } from './lib/momentFilters';
 import { releaseAllMomentDrafts } from './lib/useMomentDraft';
+import { useMomentFeed } from './lib/useMomentFeed';
+import { LoadMoreMemories } from './components/LoadMoreMemories';
 import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation } from './lib/api';
 import { CollaborationModal, SharedInvitations } from './components/CollaborationModal';
 import { AuthScreen } from './components/AuthScreen';
@@ -32,6 +34,9 @@ export default function App() {
   const [dataReady, setDataReady] = useState(false);
   const [dataLoading, setDataLoading] = useState(false);
   const [dataError, setDataError] = useState('');
+  const [invitationError, setInvitationError] = useState('');
+  const [visitError, setVisitError] = useState('');
+  const [feedRevision, setFeedRevision] = useState(0);
   const [uploadRunning, setUploadRunning] = useState(false);
   const [pendingImageRetry, setPendingImageRetry] = useState<{ momentId: string; ownerId: string; files: { file: File; uploadId: string }[] } | null>(null);
   const [eventTracks, setEventTracks] = useState<EventTrack[]>([]);
@@ -64,10 +69,11 @@ export default function App() {
     setDataLoading(true);
     setDataError('');
     try {
-      const [accountData, invitations] = await Promise.all([loadAccountData(), dataApi.collaborationInvitations()]);
+      const [accountData, invitations] = await Promise.all([loadAccountData(), dataApi.collaborationInvitations().catch(() => { if (generation === authGenerationRef.current) setInvitationError('Invitations unavailable. Retry invitations.'); return []; })]);
       if (generation !== authGenerationRef.current) return;
       setEventTracks(accountData.tracks);
-      setEvents(accountData.moments);
+      setOverview(accountData.overview);
+      setFeedRevision(n => n + 1);
       setApiTags(accountData.tags);
       setCollaborationInvitations(invitations);
       setDataReady(true);
@@ -258,18 +264,7 @@ export default function App() {
     const generation = authGenerationRef.current;
     dataApi.trackVisits()
       .then(list => { if (generation === authGenerationRef.current) setVisits(list); })
-      .catch(() => { if (generation === authGenerationRef.current) setVisits([]); });
-  }, [user, dataReady]);
-
-  // Full-scope counts load with the rest of the caller's own data, fenced by
-  // session generation the same way, because these numbers are account-specific
-  // and a previous account's summary must never appear here.
-  useEffect(() => {
-    if (!user || !dataReady) return;
-    const generation = authGenerationRef.current;
-    dataApi.overview()
-      .then(result => { if (generation === authGenerationRef.current) setOverview(result.overview ?? null); })
-      .catch(() => { if (generation === authGenerationRef.current) setOverview(null); });
+      .catch(() => { if (generation === authGenerationRef.current) { setVisits([]); setVisitError('Visit history unavailable.'); } });
   }, [user, dataReady]);
 
   // Loads alongside the rest of the caller's own data, fenced by session
@@ -320,8 +315,9 @@ export default function App() {
         if (saved) next.add(key); else next.delete(key);
         return next;
       });
-      setSavedCount(previous => Math.max(0, previous + (saved === wasSaved ? 0 : saved ? 1 : -1)));
+      setSavedCount(previous => Math.max(0, previous + (saved === !wasSaved ? 0 : saved ? 1 : -1)));
       setSaveState('idle');
+      if (filters.savedOnly) setFeedRevision(n => n + 1);
     } catch {
       if (generation !== authGenerationRef.current || requestGeneration !== saveGeneration.current) return;
       // Roll back to what the server actually holds.
@@ -333,7 +329,7 @@ export default function App() {
       setSavedCount(count => Math.max(0, count + (wasSaved ? 1 : -1)));
       setSaveState('error');
     }
-  }, [savedKeys]);
+  }, [savedKeys, filters.savedOnly]);
 
   const openDetail = (event: TimelineEvent) => {
     const track = eventTracks.find(item => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
@@ -359,7 +355,9 @@ export default function App() {
   };
 
   /** Suggestion open: exact identity, no unrelated filter may hide its track. */
-  const openSuggested = (event: TimelineEvent) => {
+  const openSuggested = async (event: TimelineEvent) => {
+    const generation = authGenerationRef.current;
+    try { event = await dataApi.moment(event.id, event.resourceOwnerId!); assertSession(generation); } catch { if (generation === authGenerationRef.current) { setFeedRevision(n => n + 1); setDataError("This memory is no longer available. Refresh your timeline."); } return; }
     const track = eventTracks.find(item => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
     setFilters(previous => ({ ...previous, search: '', selectedTags: [], selectedEmotions: [], selectedYear: 'all', dateFrom: '', dateTo: '', milestonesOnly: false, hasImagesOnly: false, savedOnly: false }));
     if (track) handleSelectTrack(track);
@@ -396,20 +394,53 @@ export default function App() {
     await dataApi.deletePerspective(id);
     assertSession(generation);
   };
+  /**
+   * Complete backup: pages through every memory and perspective on the
+   * server, independent of what the list currently has loaded. It fails
+   * closed — if any page, the perspective set or the session itself cannot be
+   * read in full, no file is written and the user is told, because a backup
+   * that looks complete but is not is worse than no backup at all.
+   */
   const exportJsonWithPerspectives = async () => {
     const generation = authGenerationRef.current;
     setPerspectiveError('');
     try {
-      const perspectives = await dataApi.exportPerspectives();
+      const start = await dataApi.exportSnapshot('start', {});
       assertSession(generation);
-      exportTimelineData(eventTracks, events, apiTags.map((tag) => tag.name), perspectives);
+      const collections: Record<string, any[]> = {};
+      for (const kind of ['moments', 'tracks', 'tags', 'perspectives']) {
+        const items: any[] = []; const cursors = new Set<string>(); let cursor: string | null = null;
+        do {
+          const page = await dataApi.exportSnapshot('page', { fingerprint: start.fingerprint, token: start.token, kind, cursor, limit: 100 });
+          assertSession(generation);
+          if (!Array.isArray(page.items) || page.fingerprint !== start.fingerprint || (page.nextCursor !== null && typeof page.nextCursor !== 'string')) throw new Error('Invalid backup page.');
+          items.push(...page.items); cursor = page.nextCursor;
+          if (cursor) { if (cursors.has(cursor)) throw new Error('Backup cursor repeated.'); cursors.add(cursor); }
+        } while (cursor);
+        if (items.length !== start.counts[kind]) throw new Error('Backup component count changed.');
+        const keys = items.map(item => kind === 'moments' || kind === 'tracks' ? `${item.resourceOwnerId}:${item.id}` : kind === 'tags' ? item : item.id);
+        if (new Set(keys).size !== keys.length) throw new Error('Duplicate backup identities.');
+        collections[kind] = items;
+      }
+      const final = await dataApi.exportSnapshot('finalize', { fingerprint: start.fingerprint, token: start.token });
+      assertSession(generation);
+      if (final.complete !== true || final.fingerprint !== start.fingerprint) throw new Error('Backup could not be finalized.');
+      const payload = {
+        version: '4.0', complete: true, exportedAt: new Date().toISOString(),
+        scope: { ownerScope: 'all-authorized', ownerUserId: user.id, capturedUnder: 'server-validated-fingerprint', perspectives: 'owned-moments-only', images: 'references-to-stored-images-only' },
+        counts: start.counts, events: collections.moments, eventTracks: collections.tracks,
+        customTags: collections.tags, perspectives: collections.perspectives,
+      };
+      downloadBackup(payload);
     } catch (error) {
       if (generation !== authGenerationRef.current) return;
       setPerspectiveError(error instanceof Error ? error.message : 'Could not export a complete backup.');
     }
   };
 
-  const openBlindboxMemory = (event: TimelineEvent) => {
+  const openBlindboxMemory = async (event: TimelineEvent) => {
+    const generation = authGenerationRef.current;
+    try { event = await dataApi.moment(event.id, event.resourceOwnerId!); assertSession(generation); } catch { if (generation === authGenerationRef.current) setDataError("This memory is no longer available."); return; }
     setIsBlindboxOpen(false);
     const track = eventTracks.find((item) => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
     handleSelectTrack(track ?? null);
@@ -484,18 +515,15 @@ export default function App() {
 
   const availableYears = useMemo(() => overview?.years ?? [], [overview]);
 
-  // Filter & Sort events
-  const filteredEvents = useMemo(() => {
-    // Track focus is app state; every other predicate lives in one shared
-    // module so the client list, the resurfacing selector and the server
-    // query cannot drift apart.
-    const inSelectedTrack = (evt: TimelineEvent) =>
-      selectedTrackKey === 'all'
-      || (!!selectedTrack && evt.eventId === selectedTrack.id && evt.resourceOwnerId === selectedTrack.resourceOwnerId);
-    return events
-      .filter(evt => inSelectedTrack(evt) && matchesMomentFilters(evt, filterProjection(filters), evt => savedKeys.has(`${evt.resourceOwnerId}:${evt.id}`)))
-      .sort((a, b) => compareMoments(a, b, filters.sortDirection));
-  }, [events, selectedTrackKey, filters, savedKeys]);
+  const feedQuery = useMemo(() => ({ ...filterProjection(filters), sortDirection: filters.sortDirection,
+    trackKey: selectedTrackKey === 'all' ? null : selectedTrackKey, limit: 40 }), [filters, selectedTrackKey]);
+  const fetchFeedPage = useCallback(({ cursor, query, signal }: any) =>
+    dataApi.queryMoments({ ...query, cursor, includeTotal: true }, signal), []);
+  const feed = useMomentFeed({ query: feedQuery, generation: authGenerationRef.current,
+    enabled: !!user && dataReady, fetchPage: fetchFeedPage, maxRetainedPages: 5 });
+  useEffect(() => { feed.refresh(); }, [feedRevision]);
+  useEffect(() => { setEvents(feed.items); }, [feed.items.map(momentIdentity).join('|'), feed.loading]);
+  const filteredEvents = feed.items.map(item => events.find(local => momentIdentity(local) === momentIdentity(item)) ?? item);
 
   // Save a moment server-side first; local state changes only after a confirmed response.
   // expectedVersion is optional: the composer passes the version it displayed,
@@ -518,6 +546,7 @@ export default function App() {
       : await dataApi.createMoment(data, eventOwnerId!);
     assertSession(generation);
     setEvents((prev) => editId ? prev.map((event) => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
+    await loadData();
     if (imageFiles.length) {
       const queue = { momentId: saved.id, ownerId: saved.resourceOwnerId!, files: imageFiles.map((file) => ({ file, uploadId: crypto.randomUUID() })) };
       setPendingImageRetry(queue);
@@ -533,6 +562,7 @@ export default function App() {
     assertSession(generation);
     setEvents((prev) => prev.filter((event) => momentIdentity(event) !== identity));
     setEventToView((prev) => prev && momentIdentity(prev) === identity ? null : prev);
+    await loadData();
   };
 
   const handleToggleReaction = async (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉') => {
@@ -560,7 +590,7 @@ export default function App() {
 
   const handleDeleteUnusedTag = async (id: string) => {
     const tag = apiTags.find((item) => item.id === id);
-    if (!tag || events.some((event) => event.tags?.includes(tag.name))) return;
+    if (!tag || (overview?.tags.find(item => item.name === tag.name)?.count ?? 0) > 0) return;
     const generation = authGenerationRef.current;
     await dataApi.deleteTag(id);
     assertSession(generation);
@@ -606,9 +636,9 @@ export default function App() {
         remaining = remaining.slice(1);
         setPendingImageRetry({ ...queue, files: remaining });
       }
-      const moments = await dataApi.moments();
+      await loadData();
       assertSession(generation);
-      setEvents(moments); setPendingImageRetry(null); setDataError('');
+      setPendingImageRetry(null); setDataError('');
     } catch (error) {
       if (generation !== authGenerationRef.current) return;
       setPendingImageRetry({ ...queue, files: remaining });
@@ -639,6 +669,8 @@ export default function App() {
         <SharedInvitations invitations={collaborationInvitations} onAccept={(id) => runMutation(() => acceptInvitation(id))} />
         {/* Header Ribbon & Global Stats */}
         {perspectiveError && <p role="alert" className="mb-3 text-sm text-rose-700 dark:text-rose-300">Backup failed; no incomplete file was downloaded. {perspectiveError}</p>}
+        {invitationError && <p role="status">{invitationError} <button onClick={() => { setInvitationError(''); void loadData(); }}>Retry invitations</button></p>}
+        {visitError && <p role="status">{visitError} <button onClick={() => { const generation = authGenerationRef.current; void dataApi.trackVisits().then(rows => { if (generation === authGenerationRef.current) { setVisits(rows); setVisitError(''); } }).catch(() => { if (generation === authGenerationRef.current) setVisitError('Visit history unavailable.'); }); }}>Retry visit history</button></p>}
         <TimelineHeader
           overview={overview}
           trackCount={eventTracks.length}
@@ -648,15 +680,16 @@ export default function App() {
             setEventToEdit(null);
             setIsEventModalOpen(true);
           }}
-          onExportJson={() => exportTimelineData(eventTracks, events, apiTags.map((tag) => tag.name))}
-          onExportJsonAsync={exportJsonWithPerspectives}
+          // One export path only: a second, lighter one would be the route a
+          // partial backup escapes through.
+          onExportJson={exportJsonWithPerspectives}
           // Export is owner-only, so the entry point disappears without an owned track.
           onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
           canCreateEntry={canCreateEntry}
         />
         {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
         {selectedTrackKey === 'all' && (
-          <MemoryResurfacing events={events} tracks={eventTracks} visits={visits} onOpen={openSuggested} />
+          <MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} />
         )}
         {/* Event-Based Timeline Navigation & Overview */}
         <EventTrackNav
@@ -710,12 +743,12 @@ export default function App() {
             availableYears={availableYears}
             viewMode={viewMode}
             onViewModeChange={setViewMode}
-            totalFilteredCount={filteredEvents.length}
+            totalFilteredCount={feed.total ?? 0}
             savedCount={savedCount}
             totalCount={
               selectedTrackKey === 'all'
-                ? events.length
-                : events.filter((e) => e.eventId === selectedTrack?.id && e.resourceOwnerId === selectedTrack?.resourceOwnerId).length
+                ? (overview?.total ?? 0)
+                : (overview?.tracks.find(row => `${row.trackOwnerId}:${row.trackId}` === selectedTrackKey)?.count ?? 0)
             }
           />
         </div>
@@ -872,7 +905,10 @@ export default function App() {
         onAccept={acceptInvitation}
       />}
       <button type="button" onClick={() => setIsBlindboxOpen(true)} title="Open a random memory" aria-label="Open a random memory" className="fixed bottom-[max(1.5rem,env(safe-area-inset-bottom))] right-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full bg-amber-600 text-white shadow-lg transition hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-300 sm:right-6"><Dices className="h-5 w-5" /></button>
-      {isBlindboxOpen && <BlindboxMemory open={isBlindboxOpen} events={events} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}
+      <LoadMoreMemories hasMore={feed.hasMore} loading={feed.loading} error={feed.error}
+        windowShifted={feed.windowShifted} loadedCount={feed.items.length} totalCount={feed.total}
+        onLoadMore={feed.loadMore} onNewer={feed.newer} onRefresh={feed.refresh} />
+      {isBlindboxOpen && <BlindboxMemory key={authGenerationRef.current} currentUserId={user.id} open={isBlindboxOpen} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}
       {/* Image Lightbox viewer */}
       {lightboxState.isOpen && <ImageLightbox
         images={lightboxState.images}
@@ -885,7 +921,6 @@ export default function App() {
         key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isPostcardOpen}
         tracks={eventTracks}
-        events={events}
         currentUserId={user.id}
         onClose={() => setIsPostcardOpen(false)}
       />}

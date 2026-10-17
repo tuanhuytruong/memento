@@ -10,3 +10,15 @@ test('image/read/write quotas isolated per authenticated user; same IP independe
  assert.ok(invoke(b.account,{...base,user:{id:'b'}}).passed);
 });
 test('finite keys and expiring windows',()=>{let time=0;const b=createRequestBudgets({now:()=>time,maxKeys:2,windowMs:1000});for(const id of ['a','b'])assert.ok(invoke(b.account,{user:{id},method:'GET',path:'/api/moments'}).passed);assert.equal(invoke(b.account,{user:{id:'c'},method:'GET',path:'/api/moments'}).res.statusCode,429);time=1001;assert.ok(invoke(b.account,{user:{id:'c'},method:'GET',path:'/api/moments'}).passed);assert.equal(b.stats().keys,1);});
+
+test('POST reads and export pacing never consume content mutation allowance',()=>{
+ let time=0;const b=createRequestBudgets({now:()=>time,limits:{export:60,write:1}});const base={user:{id:'a'},method:'POST'};
+ for(let i=0;i<121;i++){
+  const req={...base,path:'/api/export/page'}; let result=invoke(b.account,req);
+  if(!result.passed){assert.equal(result.res.statusCode,429);time+=Number(result.res.headers['Retry-After'])*1000;result=invoke(b.account,req);}
+  assert(result.passed);
+ }
+ for(const path of ['/api/moments/query','/api/moments/facets','/api/moments/resurfacing','/api/discovery/blindbox','/api/discovery/postcard-picker'])assert(invoke(b.account,{...base,path}).passed);
+ assert(invoke(b.account,{...base,path:'/api/moments'}).passed);
+ assert.equal(invoke(b.account,{...base,path:'/api/moments'}).res.statusCode,429);
+});

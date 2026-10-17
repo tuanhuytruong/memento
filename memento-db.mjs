@@ -1,6 +1,7 @@
 import pg from 'pg';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
+import { instrumentPool } from './operational-metrics.mjs';
 
 dotenv.config({ path: process.env.ENV_FILE || '.env.local', quiet: true });
 
@@ -32,6 +33,7 @@ export const pool = new pg.Pool({
   statement_timeout: DB_BUDGETS.statementTimeoutMs,
   idle_in_transaction_session_timeout: DB_BUDGETS.idleTransactionTimeoutMs,
 });
+instrumentPool(pool);
 export const hashInvite = value => crypto.createHash('sha256').update(value).digest('hex');
 export const hashSession = value => crypto.createHmac('sha256', process.env.SESSION_SECRET).update(value).digest('hex');
 export const id = () => crypto.randomUUID();

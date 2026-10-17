@@ -4,6 +4,7 @@ import { pipeline } from 'node:stream/promises';
 import { performance } from 'node:perf_hooks';
 import { imageCache, ImageLoadScheduler, imageError, openImage, checkLength } from './image-cache.mjs';
 import { VARIANT_CACHE_CONTROL } from './image-variants.mjs';
+import { operationalMetrics } from './operational-metrics.mjs';
 
 // AUTHORIZATION BOUNDARY: call ONLY AFTER fresh session auth + imageAccess for
 // this request. Even a conditional 304 or cache hit MUST pass both first.
@@ -32,7 +33,7 @@ function end(res, body) {
     res.end(body);
   });
 }
-export function createImageDelivery({ cache = imageCache, fetchObject, enabled = true, timeoutMs = 30000, onTiming = () => {} } = {}) {
+export function createImageDelivery({ cache = imageCache, fetchObject, enabled = true, timeoutMs = 30000, onTiming = value => operationalMetrics.imageTiming(value) } = {}) {
   if (typeof fetchObject !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new TypeError('Invalid image delivery options');
   // Bounds ALL requests, including uncached originals/oversized objects and slow
   // downstream clients. Queued requests hold metadata, not object bodies.

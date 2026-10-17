@@ -94,6 +94,28 @@ export const timeKey = (alias = 'm') => `CASE WHEN ${alias}.document->>'time' ~ 
 
 import { ApiError } from './mutation-safety.mjs';
 
+/** Gregorian date-only validation, including years 0000–0099 without Date.UTC's offset. */
+export function isCalendarDate(value) {
+  if (typeof value !== 'string' || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1];
+}
+
+/** CASE fences every numeric cast: SQL may reorder AND predicates on legacy text. */
+export function sqlCalendarDate(expression) {
+  const year = `substring(${expression}, 1, 4)::int`;
+  const month = `substring(${expression}, 6, 2)::int`;
+  const day = `substring(${expression}, 9, 2)::int`;
+  return `(CASE WHEN ${expression} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+    ${month} BETWEEN 1 AND 12 AND ${day} BETWEEN 1 AND
+    CASE WHEN ${month} = 2 THEN
+      CASE WHEN ${year} % 4 = 0 AND (${year} % 100 <> 0 OR ${year} % 400 = 0) THEN 29 ELSE 28 END
+      WHEN ${month} IN (4, 6, 9, 11) THEN 30 ELSE 31 END
+    ELSE false END)`;
+}
+
 export const DEFAULT_LIMIT = 40;
 export const MAX_LIMIT = 100;
 
@@ -186,9 +208,7 @@ export function validateQueryRequest(body, userId) {
   for (const [label, value] of [['dateFrom', dateFrom], ['dateTo', dateTo]]) {
     if (value === '') continue;
     if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw invalid(`${label} must be a calendar date`);
-    const [year, month, day] = value.split('-').map(Number);
-    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-    if (month < 1 || month > 12 || day < 1 || day > daysInMonth) throw invalid(`${label} must be a real calendar date`);
+    if (!isCalendarDate(value)) throw invalid(`${label} must be a real calendar date`);
   }
   if (dateFrom && dateTo && dateFrom > dateTo) throw invalid('dateFrom must not be after dateTo');
   // One rule, both directions, mirroring the client: a year replaces a range
@@ -445,8 +465,8 @@ export async function overviewMoments(client, userId, schema) {
         COUNT(DISTINCT COALESCE(NULLIF(q.document->'location'->>'city', ''), NULLIF(q.document->'location'->>'name', '')))
           FILTER (WHERE COALESCE(NULLIF(q.document->'location'->>'city', ''), NULLIF(q.document->'location'->>'name', '')) <> '')::int AS places,
         COALESCE(sum((SELECT COUNT(*) FROM {schema}.images i WHERE i.owner_id = q.owner_id AND i.moment_id = q.id))::int, 0) AS photos,
-        COALESCE(min(NULLIF(left(q.document->>'date', 10), '')), '') AS earliest,
-        COALESCE(max(NULLIF(left(q.document->>'date', 10), '')), '') AS latest
+        COALESCE(min(q.document->>'date') FILTER (WHERE ${sqlCalendarDate("q.document->>'date'")}), '') AS earliest,
+        COALESCE(max(q.document->>'date') FILTER (WHERE ${sqlCalendarDate("q.document->>'date'")}), '') AS latest
       FROM q`.replace(/\{schema\}/g, schema), [userId]),
 
     client.query(`
@@ -456,8 +476,8 @@ export async function overviewMoments(client, userId, schema) {
              COUNT(*)::int AS count,
              COUNT(*) FILTER (WHERE (q.document->'isMilestone')::text = 'true')::int AS milestones,
              COALESCE(sum((SELECT COUNT(*) FROM {schema}.images i WHERE i.owner_id = q.owner_id AND i.moment_id = q.id))::int, 0) AS photos,
-             COALESCE(min(left(q.document->>'date', 10)), '') AS min_date,
-             COALESCE(max(left(q.document->>'date', 10)), '') AS max_date
+             COALESCE(min(q.document->>'date') FILTER (WHERE ${sqlCalendarDate("q.document->>'date'")}), '') AS min_date,
+             COALESCE(max(q.document->>'date') FILTER (WHERE ${sqlCalendarDate("q.document->>'date'")}), '') AS max_date
       FROM q GROUP BY q.owner_id, q.event_id`.replace(/\{schema\}/g, schema), [userId]),
 
     client.query(`
@@ -474,7 +494,7 @@ export async function overviewMoments(client, userId, schema) {
       q AS (SELECT * FROM authorized)
       SELECT DISTINCT left(q.document->>'date', 4) AS year
       FROM q
-      WHERE q.document->>'date' ~ '^\\d{4}-\\d{2}-\\d{2}$'
+      WHERE ${sqlCalendarDate("q.document->>'date'")}
       ORDER BY year DESC`.replace(/\{schema\}/g, schema), [userId]),
   ]);
 
@@ -498,4 +518,86 @@ export async function overviewMoments(client, userId, schema) {
     tags: tags.rows.map(row => ({ name: row.name, count: row.count })),
     years: years.rows.map(row => row.year),
   };
+}
+
+
+/**
+ * Sufficient subset for the canonical selector's maximum of three results.
+ * Keep three earliest candidates per exact owner/track and pattern rank, plus
+ * milestone-first and earliest representatives: at most 8T rows before any
+ * enrichment, irrespective of matching moment count. Rank 2 excludes rank 1,
+ * matching the selector's seenCandidate rule. Its distinct-track pass needs
+ * only the first candidate per track; its fill pass can consume at most three
+ * per rank/track. Representatives retain rank-3/4 behavior for private visits.
+ * C collation matches the selector's code-unit ordering for UUID/text IDs;
+ * owner precedes id in the selector's composite moment identity.
+ */
+export async function resurfacingCandidates(client, userId, todayLocalDate, schema) {
+  if (!isCalendarDate(todayLocalDate)) throw new ApiError(400, 'today must be a local calendar date');
+  const year = todayLocalDate.slice(0, 4);
+  const month = todayLocalDate.slice(5, 7);
+  const day = todayLocalDate.slice(8, 10);
+
+  const { rows } = await client.query(`
+    WITH authorized AS (${AUTHORIZED_SCOPE}),
+    q AS (SELECT * FROM authorized),
+    valid AS (
+      SELECT q.owner_id, q.id, q.event_id, q.document, q.version
+      FROM q
+      WHERE ${sqlCalendarDate("q.document->>'date'")}
+        AND q.document->>'date' <= $2
+    ),
+    -- Per-track representatives. Computed for every track, because whether a
+    -- track is stale is the visiting account's own private history.
+    per_track AS (
+      SELECT DISTINCT ON (owner_id, event_id)
+        owner_id, id, event_id, document, version, 'rep' AS pick
+      FROM valid
+      ORDER BY owner_id, event_id,
+               (COALESCE((document->'isMilestone')::text, 'false') = 'true') DESC,
+               document->>'date' COLLATE "C" ASC, id COLLATE "C" ASC
+    ),
+    earliest AS (
+      SELECT DISTINCT ON (owner_id, event_id)
+        owner_id, id, event_id, document, version, 'first' AS pick
+      FROM valid
+      ORDER BY owner_id, event_id, document->>'date' COLLATE "C" ASC, id COLLATE "C" ASC
+    ),
+    pattern_ranks AS (
+      SELECT *, CASE WHEN left(document->>'date', 4) < $3::text
+                          AND substr(document->>'date', 6, 2) = $4::text
+                          AND substr(document->>'date', 9, 2) = $5::text
+                     THEN 1 ELSE 2 END AS pattern_rank
+      FROM valid
+      WHERE (left(document->>'date', 4) < $3::text
+             AND substr(document->>'date', 6, 2) = $4::text
+             AND substr(document->>'date', 9, 2) = $5::text)
+         OR (left(document->>'date', 4) = lpad(($3::int - 1)::text, 4, '0')
+             AND substr(document->>'date', 6, 2) = $4::text)
+    ),
+    pattern_ordered AS (
+      SELECT *, row_number() OVER (
+        PARTITION BY owner_id, event_id, pattern_rank
+        ORDER BY document->>'date' COLLATE "C", id COLLATE "C"
+      ) AS pattern_position
+      FROM pattern_ranks
+    ),
+    pattern AS (
+      SELECT owner_id, id, event_id, document, version
+      FROM pattern_ordered WHERE pattern_position <= 3
+    ),
+    pool AS (
+      SELECT owner_id, id, event_id, document, version FROM per_track
+      UNION SELECT owner_id, id, event_id, document, version FROM earliest
+      UNION SELECT owner_id, id, event_id, document, version FROM pattern
+    )
+    SELECT p.owner_id, p.id, p.event_id, p.document, p.version
+    FROM pool p
+    ORDER BY p.document->>'date' COLLATE "C" ASC, p.owner_id ASC, p.id COLLATE "C" ASC`.replace(/\{schema\}/g, schema),
+    // $1 caller, $2 local day, $3 year, $4 month, $5 day. The caller goes
+    // first because the authorization CTE owns $1, and getting this order
+    // wrong compares a year against a uuid.
+    [userId, todayLocalDate, year, month, day]);
+
+  return rows;
 }

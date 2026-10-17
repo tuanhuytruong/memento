@@ -86,3 +86,21 @@ test('a failing drain reports through onError and stop still settles', async () 
   const result = await handle.stop({ settleMs: 500 });
   assert.equal(result.settled, true);
 });
+
+
+test('background sampling never overlaps and stop fences future ticks', async () => {
+  const entered = deferred(), released = deferred(); let calls = 0;
+  const deps = fakeDeps();
+  const runtime = createRuntime({ ...deps, backgroundIntervalMs: 5, backgroundTick: async () => { calls++; entered.resolve(); await released.promise; } });
+  const running = runtime.start({ port: 0 });
+  const keepAlive = setInterval(() => {}, 100);
+  try { await bounded(entered.promise); } finally { clearInterval(keepAlive); };
+
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(calls, 1);
+  const stopping = running.stop({ settleMs: 500 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert(!deps.events.includes('pool-end'));
+  released.resolve(); await bounded(stopping);
+  await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(calls, 1);
+});

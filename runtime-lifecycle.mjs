@@ -12,7 +12,7 @@ import { startCleanup } from './object-cleanup.mjs';
 
 export const SHUTDOWN_SETTLE_BOUND_MS = 10_000;
 
-export function createRuntime({ app, pool, cleanup, onCleanupError = () => {}, onListenError = null }) {
+export function createRuntime({ app, pool, cleanup, onCleanupError = () => {}, onListenError = null, backgroundTick = null, backgroundIntervalMs = 60_000 }) {
   if (!app || typeof app.listen !== 'function') throw new Error('runtime requires an express app');
   if (!pool || typeof pool.end !== 'function') throw new Error('runtime requires a database pool');
   if (!cleanup || typeof cleanup.drain !== 'function') throw new Error('runtime requires a cleanup queue');
@@ -23,6 +23,14 @@ export function createRuntime({ app, pool, cleanup, onCleanupError = () => {}, o
     // The cleanup worker starts exactly once, through the entrypoint that
     // actually serves traffic, and stops with the same process.
     const cleanupHandle = startCleanup(cleanup, onCleanupError);
+    let backgroundRunning = null;
+    let backgroundStopped = false;
+    const tick = () => {
+      if (backgroundStopped || backgroundRunning || !backgroundTick) return;
+      backgroundRunning = Promise.resolve().then(backgroundTick).catch(() => onCleanupError()).finally(() => { backgroundRunning = null; });
+    };
+    const timer = backgroundTick ? setInterval(tick, backgroundIntervalMs) : null;
+    timer?.unref();
     const server = app.listen(port, host, () => log(`Memento API listening on ${host}:${port}`));
     if (onListenError) server.on('error', onListenError);
     let stopping = null;
@@ -32,6 +40,8 @@ export function createRuntime({ app, pool, cleanup, onCleanupError = () => {}, o
       stop({ settleMs: bound = settleMs } = {}) {
         stopping ??= (async () => {
           // 1) no new drain passes are admitted from here on.
+          backgroundStopped = true; if (timer) clearInterval(timer);
+          if (backgroundRunning) await Promise.race([backgroundRunning, new Promise(resolve => setTimeout(resolve, bound).unref())]);
           const drain = await cleanupHandle.stop({ settleMs: bound });
           // 2) existing keep-alive connections are drained before the pool closes.
           await new Promise(resolve => server.close(resolve));

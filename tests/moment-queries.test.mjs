@@ -9,6 +9,116 @@ const { foldSearchText, EMPTY_FILTERS, compareMoments } = await import('../src/l
 
 const UUID = () => crypto.randomUUID();
 
+test('calendar validation rejects impossible today before querying and preserves leap centuries', async () => {
+  const { resurfacingCandidates, isCalendarDate } = await import('../moment-queries.mjs');
+  const client = { query() { throw new Error('invalid date reached database'); } };
+  for (const today of ['2026-02-29', '2024-02-30', '1900-02-29', '2026-04-31', '2026-00-01', '2026-13-01', '2026-01-00', 'garbage', null, 20260410]) {
+    assert.equal(isCalendarDate(today), false);
+    await assert.rejects(resurfacingCandidates(client, UUID(), today, 'pg_temp'), error => error.status === 400);
+  }
+  for (const today of ['2024-02-29', '2000-02-29', '0000-02-29', '0096-02-29', '2026-04-30']) {
+    assert.equal(isCalendarDate(today), true, today);
+    assert.equal(validateQueryRequest({ dateFrom: today }, UUID()).filters.dateFrom, today);
+  }
+  assert.throws(() => validateQueryRequest({ dateFrom: '0100-02-29' }, UUID()), /real calendar date/);
+});
+
+test('dense matching patterns stay <=8 per composite track with exact selector and calendar overview parity', { timeout: 180000 }, async t => {
+  if (process.env.RUN_INTEGRATION !== '1') return t.skip('Set RUN_INTEGRATION=1 for dense SQL parity');
+  const pg = (await import('pg')).default;
+  const { resurfacingCandidates, overviewMoments, sqlCalendarDate, isCalendarDate } = await import('../moment-queries.mjs');
+  const { selectResurfacedMemories } = await import('../src/lib/memoryResurfacing.ts');
+  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
+  const client = await pool.connect();
+  const owners = ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002'];
+  const user = owners[0];
+  const tracks = owners.flatMap(resourceOwnerId => ['same-track', 'second-track'].map(id => ({ id, resourceOwnerId })));
+  const documents = [];
+  const push = (owner, eventId, id, date, isMilestone = false) => documents.push({ owner, document: { id, eventId, date, isMilestone, tags: [] } });
+  // Same IDs and track IDs across owners, with mixed case/punctuation to expose
+  // locale ordering. Thousands match BOTH calendar ranks, not off-pattern noise.
+  for (const track of tracks) {
+    push(track.resourceOwnerId, track.id, `${track.id}-first`, '1900-01-01');
+    push(track.resourceOwnerId, track.id, `${track.id}-milestone`, '2000-02-29', true);
+    for (let index = 0; index < 2000; index += 1) {
+      const id = `${track.id}-${['A', 'a', '_', 'Z'][index % 4]}-${String(index).padStart(5, '0')}`;
+      push(track.resourceOwnerId, track.id, `${id}-ann`, index % 2 ? '2025-04-10' : '2020-04-10');
+      push(track.resourceOwnerId, track.id, `${id}-month`, '2025-04-01');
+    }
+  }
+  const invalidDates = ['', 'bad', 'abcd-ef-gh', '0001-00-01', '9999-99-99', '2025-02-29', '1900-02-29', '2026-04-31', '2024-02-30', '2026-04-10T12:00:00Z', null];
+  invalidDates.forEach((date, index) => push(user, 'invalid-only', `invalid-${index}`, date, true));
+  push(user, 'leap-track', 'valid-leap', '2024-02-29');
+  push(user, 'leap-track', 'valid-century', '2000-02-29');
+  push(user, 'leap-track', 'valid-low-year', '0000-02-29');
+  push(user, 'leap-track', 'valid-0096', '0096-02-29');
+  push(user, 'leap-track', 'future', '2099-04-10');
+  const accessibleTracks = [...tracks, { id: 'invalid-only', resourceOwnerId: user }, { id: 'leap-track', resourceOwnerId: user }];
+  try {
+    await client.query('BEGIN');
+    // Transaction-scoped synthetic metadata only. Production tables untouched.
+    await client.query(`CREATE TEMP TABLE moments(owner_id uuid, id text, event_id text, document jsonb, version int DEFAULT 1) ON COMMIT DROP;
+      CREATE TEMP TABLE track_collaborators(owner_id uuid, track_id text, recipient_id uuid, accepted_at timestamptz, revoked_at timestamptz) ON COMMIT DROP;
+      CREATE TEMP TABLE images(owner_id uuid, moment_id text, id text) ON COMMIT DROP`);
+    await client.query(`INSERT INTO pg_temp.track_collaborators VALUES ($1, 'same-track', $2, now(), null), ($1, 'second-track', $2, now(), null)`, [owners[1], user]);
+    await client.query(`INSERT INTO pg_temp.moments(owner_id,id,event_id,document)
+      SELECT (v->>'owner')::uuid, v->'document'->>'id', v->'document'->>'eventId', v->'document'
+      FROM jsonb_array_elements($1::jsonb) v`, [JSON.stringify(documents)]);
+    const all = documents.map(({ owner, document }) => ({ ...document, resourceOwnerId: owner }));
+    let maximumPool = 0;
+    for (const today of ['2026-04-10', '2026-04-11', '2026-01-15', '2024-02-29', '2026-02-28', '0000-02-29', '0096-02-29']) {
+      const rows = await resurfacingCandidates(client, user, today, 'pg_temp');
+      // Four tracks covers distinct-track preference; one and two cover the
+      // fill pass; recent/stale visits exercise rank-3 suppression/reasons.
+      for (const count of [1, 2, 4, accessibleTracks.length]) {
+        const scope = accessibleTracks.slice(0, count);
+        for (const visits of [[], scope.map(track => ({ trackOwnerId: track.resourceOwnerId, trackId: track.id, lastOpenedAt: today })), scope.map(track => ({ trackOwnerId: track.resourceOwnerId, trackId: track.id, lastOpenedAt: '2001-01-01' }))]) {
+          assert.ok(rows.length <= 8 * accessibleTracks.length, `${rows.length} <= 8T`);
+          maximumPool = Math.max(maximumPool, rows.length);
+          const counts = new Map();
+          rows.forEach(row => {
+            const key = `${row.owner_id}:${row.event_id}`;
+            counts.set(key, (counts.get(key) || 0) + 1);
+            assert.ok(isCalendarDate(row.document.date));
+          });
+          assert.ok([...counts.values()].every(count => count <= 8), 'per-track bound, not merely global');
+          const events = rows.map(row => ({ ...row.document, resourceOwnerId: row.owner_id }));
+          for (const limit of [1, 2, 3]) {
+            assert.deepEqual(selectResurfacedMemories({ events, tracks: scope, visits, today, limit }),
+              selectResurfacedMemories({ events: all, tracks: scope, visits, today, limit }), `${today}, ${count} tracks, limit ${limit}`);
+          }
+        }
+      }
+    }
+    const overview = await overviewMoments(client, user, 'pg_temp');
+    const dates = all.map(row => row.date).filter(isCalendarDate).sort();
+    assert.equal(overview.total, all.length, 'malformed dates do not erase countable memories');
+    assert.equal(overview.earliest, dates[0]);
+    assert.equal(overview.latest, dates.at(-1));
+    assert.deepEqual(overview.years, [...new Set(dates.map(date => date.slice(0, 4)))].sort().reverse());
+    for (const track of overview.tracks) {
+      const expected = all.filter(row => row.resourceOwnerId === track.trackOwnerId && row.eventId === track.trackId).map(row => row.date).filter(isCalendarDate).sort();
+      assert.equal(track.minDate, expected[0] || null);
+      assert.equal(track.maxDate, expected.at(-1) || null);
+    }
+    const samples = [...invalidDates, '0000-02-29', '0096-02-29', '0100-02-29', '2000-02-29', '2024-02-29'];
+    const guarded = await client.query(`SELECT v, ${sqlCalendarDate('v')} AS valid FROM unnest($1::text[]) v`, [samples]);
+    guarded.rows.forEach(row => assert.equal(row.valid, isCalendarDate(row.v), `SQL calendar parity: ${row.v}`));
+    // Real reduced database scopes ensure the fill pass cannot accidentally
+    // rely on representatives belonging to excluded tracks.
+    await client.query(`DELETE FROM pg_temp.moments WHERE event_id <> 'same-track' OR owner_id <> $1`, [user]);
+    const reduced = all.filter(row => row.eventId === 'same-track' && row.resourceOwnerId === user);
+    const rows = await resurfacingCandidates(client, user, '2026-04-10', 'pg_temp');
+    assert.ok(rows.length <= 8);
+    assert.deepEqual(selectResurfacedMemories({ events: rows.map(row => ({ ...row.document, resourceOwnerId: row.owner_id })), tracks: accessibleTracks, visits: [], today: '2026-04-10' }), selectResurfacedMemories({ events: reduced, tracks: accessibleTracks, visits: [], today: '2026-04-10' }));
+    t.diagnostic(`${all.length} synthetic rows (16000 calendar matches), maximum candidate rows ${maximumPool}; <=8 per owner/track before enrichment`);
+  } finally {
+    await client.query('ROLLBACK');
+    client.release();
+    await pool.end();
+  }
+});
+
 test('the SQL fold and the client fold agree on Vietnamese, emoji and whitespace', async t => {
   if (process.env.RUN_INTEGRATION !== '1') return t.skip('Set RUN_INTEGRATION=1 for DB-backed fold parity');
   // A dedicated pool: the app's shared pool must not be closed here, or every
@@ -409,6 +519,152 @@ test('overview equals what deriving from the full set would give, across an auth
     assert.equal((await request('/api/moments/overview')).res.status, 401);
   } finally {
     await pool.query(`DELETE FROM ${qschema}.users WHERE id IN ($1,$2)`, [owner.id, viewer.id]).catch(() => {});
+    server.close();
+  }
+});
+
+test('the resurfacing pool reaches exactly the same result as running over everything', { timeout: 240000 }, async t => {
+  if (process.env.RUN_INTEGRATION !== '1') return t.skip('Set RUN_INTEGRATION=1 for DB-backed resurfacing parity');
+  const { app } = await import('../server.mjs');
+  const { pool, createInvite, qschema } = await import('../memento-db.mjs');
+  const { selectResurfacedMemories } = await import('../src/lib/memoryResurfacing.ts');
+  const { resurfacingCandidates } = await import('../moment-queries.mjs');
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  async function request(path, { method = 'GET', token, body } = {}) {
+    const headers = {};
+    if (token) headers.Cookie = `memento_session=${token}`;
+    if (method !== 'GET') { headers.Origin = base; headers['Content-Type'] = 'application/json'; }
+    const res = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const type = res.headers.get('content-type') || '';
+    return { res, data: type.includes('application/json') ? await res.json() : await res.text() };
+  }
+  const uname = `rs_${UUID().replaceAll('-', '').slice(0, 18)}`;
+  const registered = await request('/api/auth/register', { method: 'POST', body: { username: uname, password: 'a-very-long-test-password-1', inviteCode: await createInvite(1) } });
+  assert.equal(registered.res.status, 200);
+  const token = registered.res.headers.get('set-cookie').match(/memento_session=([^;]+)/)[1];
+  const userId = registered.data.user.id;
+  try {
+    // Four tracks, many moments, deliberately including cases the selector
+    // must ignore: future dates and a malformed date.
+    const trackIds = [];
+    for (let index = 0; index < 4; index += 1) {
+      const track = await request('/api/tracks', { method: 'POST', token, body: { title: `Track ${index}`, description: '', color: 'indigo', icon: 'Heart', tags: [] } });
+      assert.equal(track.res.status, 201);
+      trackIds.push(track.data.track.id);
+    }
+    // Fill each track across many months so a "newest page" could never cover
+    // the anniversary cases; the pool has to reach back by pattern.
+    let created = 0;
+    for (const trackId of trackIds) {
+      for (let year = 2019; year <= 2026; year += 1) {
+        for (const [month, day] of [['04', '10'], ['07', '21'], ['12', '01']]) {
+          const id = `r-${trackId.slice(0, 4)}-${year}-${month}${day}`;
+          const moment = await request('/api/moments', {
+            method: 'POST',
+            token,
+            body: { id, eventId: trackId, eventOwnerId: userId, title: `Memory ${year}-${month}-${day}`, date: `${year}-${month}-${day}`, description: 'x', tags: [], images: [], ...(day === '10' && month === '04' ? { isMilestone: true } : {}) },
+          });
+          if (moment.res.status === 201) created += 1;
+        }
+      }
+    }
+    // A future memory and a malformed one: both must be invisible to the
+    // selector whether they arrive via the full set or the pool.
+    const futureTrack = trackIds[0];
+    await request('/api/moments', { method: 'POST', token, body: { id: 'r-future', eventId: futureTrack, eventOwnerId: userId, title: 'Future', date: '2099-04-10', description: 'x', tags: [], images: [] } });
+    await pool.query(
+      `INSERT INTO ${qschema}.moments(owner_id, id, event_id, document) VALUES ($1,$2,$3,$4)`,
+      [userId, 'r-broken', futureTrack, { id: 'r-broken', eventId: futureTrack, title: 'Broken', date: 'legacy-shape', description: 'x', tags: [], images: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+    ).catch(() => {});
+
+    const tracks = await request('/api/tracks', { token });
+    const full = await request('/api/moments', { token });
+    const allMoments = full.data.moments;
+    assert.ok(allMoments.length >= 90, `a large enough corpus to make a newest-page shortcut impossible, got ${allMoments.length}`);
+
+    const visits = (await request('/api/track-visits', { token })).data.visits;
+    // Several injected local dates, including one where an anniversary and a
+    // same-month-last-year candidate both exist.
+    for (const today of ['2026-04-10', '2026-07-21', '2026-12-01', '2026-01-15', '2027-04-10']) {
+      const poolRows = await resurfacingCandidates(pool, userId, today, process.env.DB_SCHEMA);
+      const poolMoments = poolRows.map(row => ({ ...row.document, resourceOwnerId: row.owner_id, version: row.version }));
+      const expected = selectResurfacedMemories({ events: allMoments, tracks: tracks.data.tracks, visits, today: new Date(`${today}T12:00:00Z`), limit: 3 });
+      const actual = selectResurfacedMemories({ events: poolMoments, tracks: tracks.data.tracks, visits, today: new Date(`${today}T12:00:00Z`), limit: 3 });
+      assert.deepEqual(actual, expected, `pool-based selection equals full-set selection for ${today}`);
+      assert.ok(expected.length > 0 || ['2026-01-15'].includes(today), `something is surfaced for ${today}`);
+      // A future and a malformed date never reach a selection.
+      for (const chosen of actual) {
+        assert.ok(!chosen.momentIdentity.endsWith('r-future'), 'a future memory is never surfaced');
+        assert.ok(!chosen.momentIdentity.endsWith('r-broken'), 'a malformed date is never surfaced');
+      }
+    }
+
+    // Bounded, in the way that actually matters: the pool is a function of the
+    // calendar pattern and the track count, not of how many memories exist.
+    // Adding memories that do not match the pattern must leave it untouched —
+    // otherwise a large account would pay for rediscovery on every scroll.
+    const poolBefore = (await resurfacingCandidates(pool, userId, '2026-04-10', process.env.DB_SCHEMA)).length;
+    // Past, off-pattern dates: genuinely inside the visible range, so they are
+    // counted by the account but cannot become an anniversary or a
+    // same-month-last-year hit, are not milestones, and are neither the
+    // earliest entry nor the milestone-first representative of their track.
+    // Inserted straight into the database rather than through the API: this
+    // measures query scope, and doing it over HTTP would trip the abuse
+    // budget that exists to protect the real write path — weakening that
+    // limit for a test would be the wrong trade.
+    const noiseValues = [];
+    const noiseParams = [];
+    for (let index = 0; index < 60; index += 1) {
+      const trackId = trackIds[index % trackIds.length];
+      noiseParams.push(userId, `r-noise-${index}`, trackId, JSON.stringify({
+        id: `r-noise-${index}`, eventId: trackId, title: `Noise ${index}`,
+        date: `2026-03-${String((index % 9) + 1).padStart(2, '0')}`,
+        description: 'x', tags: [], images: [],
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }));
+      // Four params per row, so the row starts one before the last index
+      // pushed: owner, id, track, document.
+      const offset = noiseParams.length - 3;
+      noiseValues.push(`($${offset}, $${offset + 1}, $${offset + 2}, $${offset + 3}::jsonb)`);
+    }
+    const noiseInsert = await pool.query(
+      `INSERT INTO ${qschema}.moments(owner_id, id, event_id, document) VALUES ${noiseValues.join(', ')}`,
+      noiseParams,
+    );
+    assert.equal(noiseInsert.rowCount, 60, 'every off-pattern memory landed');
+    created += noiseInsert.rowCount;
+    const poolAfter = (await resurfacingCandidates(pool, userId, '2026-04-10', process.env.DB_SCHEMA)).length;
+    assert.equal(poolAfter, poolBefore, `60 extra off-pattern memories do not grow the candidate pool (was ${poolBefore}, then ${poolAfter})`);
+
+    const corpusNow = (await request('/api/moments', { token })).data.moments.length;
+    assert.ok(corpusNow > allMoments.length, 'the account really did grow');
+    // And the selection is still the same after the account grew.
+    const tracksAfter = await request('/api/tracks', { token });
+    const visitsAfter = (await request('/api/track-visits', { token })).data.visits;
+    const fullAfter = await request('/api/moments', { token });
+    const grownExpected = selectResurfacedMemories({ events: fullAfter.data.moments, tracks: tracksAfter.data.tracks, visits: visitsAfter, today: new Date('2026-04-10T12:00:00Z'), limit: 3 });
+    const grownPool = (await resurfacingCandidates(pool, userId, '2026-04-10', process.env.DB_SCHEMA))
+      .map(row => ({ ...row.document, resourceOwnerId: row.owner_id, version: row.version }));
+    const grownActual = selectResurfacedMemories({ events: grownPool, tracks: tracksAfter.data.tracks, visits: visitsAfter, today: new Date('2026-04-10T12:00:00Z'), limit: 3 });
+    assert.deepEqual(grownActual, grownExpected, 'parity still holds after the account grew');
+    t.diagnostic(`corpus ${corpusNow} moments across ${trackIds.length} tracks -> pool of ${poolAfter} (${(poolAfter / corpusNow * 100).toFixed(1)}% of the account), unchanged by 60 added memories`);
+
+    // Unauthenticated callers get nothing.
+    assert.equal((await request('/api/moments/resurfacing', { method: 'POST', body: { today: '2026-04-10' } })).res.status, 401);
+    // A malformed date is refused rather than interpreted.
+    const bad = await request('/api/moments/resurfacing', { method: 'POST', token, body: { today: 'not-a-date' } });
+    assert.equal(bad.res.status, 400, `malformed today is refused: ${JSON.stringify(bad.data)}`);
+    // Cross-origin is refused, same as every other POST that changes state.
+    const cross = await fetch(base + '/api/moments/resurfacing', {
+      method: 'POST',
+      headers: { Cookie: `memento_session=${token}`, 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+      body: JSON.stringify({ today: '2026-04-10' }),
+    });
+    assert.equal(cross.status, 403, 'same-origin guard applies to the read body too');
+  } finally {
+    await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`, [userId]).catch(() => {});
     server.close();
   }
 });

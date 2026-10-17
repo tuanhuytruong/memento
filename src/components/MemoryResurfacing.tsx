@@ -4,11 +4,17 @@ import { momentIdentity, trackIdentity } from '../lib/resourceIdentity';
 import { selectResurfacedMemories, type MemoryVisit, type ResurfacingReason } from '../lib/memoryResurfacing';
 import { PrivateImage } from './PrivateImage';
 import { formatDateDisplay } from '../lib/storage';
+import { dataApi } from '../lib/api';
 
 interface Props {
-  events: readonly TimelineEvent[];
   tracks: readonly EventTrack[];
   visits: readonly MemoryVisit[];
+  /**
+   * Session generation, so a response that arrives after an account switch is
+   * discarded instead of surfacing the previous account's memories.
+   */
+  sessionGeneration: number;
+  revision?: number;
   /** Opens the existing moment detail flow with the exact owner+moment identity. */
   onOpen: (event: TimelineEvent) => void;
 }
@@ -29,17 +35,27 @@ function reasonLabel(reason: ResurfacingReason, event: TimelineEvent, today: str
 }
 
 /**
- * Compact, deterministic rediscovery section. Selection is a pure function of data
- * already loaded for the timeline; this component never fetches content of its own.
+ * Compact, deterministic rediscovery section.
+ *
+ * Selection is still the same pure function, run over a candidate pool the
+ * server assembles to be exactly sufficient for it — bounded by track count
+ * and calendar pattern rather than by account size. That matters because the
+ * timeline is paginated now: choosing from "what happens to be loaded" would
+ * silently stop finding anniversaries from years back.
+ *
+ * A failure here simply hides the section. Rediscovery is a pleasure, not a
+ * requirement, and it must never take the timeline down with it.
  */
-export function MemoryResurfacing({ events, tracks, visits, onOpen }: Props) {
+export function MemoryResurfacing({ tracks, visits, sessionGeneration, revision, onOpen }: Props) {
   const [today, setToday] = useState(() => localDayKey(new Date()));
+  const [candidates, setCandidates] = useState<readonly TimelineEvent[]>([]);
   const [expanded, setExpanded] = useState(false);
 
   // Recompute the local calendar day after midnight, a timezone change or tab focus.
   useEffect(() => {
     let timer: number;
     const refresh = () => {
+      window.clearTimeout(timer);
       setToday(previous => {
         const next = localDayKey(new Date());
         return previous === next ? previous : next;
@@ -61,15 +77,35 @@ export function MemoryResurfacing({ events, tracks, visits, onOpen }: Props) {
     };
   }, []);
 
+  // Fetch the bounded candidate pool whenever the local day changes or the
+  // account does. The generation fence matters: without it a slow response
+  // from the previous session could surface that account's memories here.
+  useEffect(() => {
+    const generation = sessionGeneration;
+    let cancelled = false;
+    setCandidates([]);
+    dataApi.resurfacingCandidates(today)
+      .then(result => {
+        if (cancelled || generation !== sessionGeneration) return;
+        setCandidates(Array.isArray(result.moments) ? result.moments : []);
+      })
+      .catch(() => {
+        // Rediscovery is optional: an empty section is correct, an error
+        // banner over a working timeline would not be.
+        if (!cancelled && generation === sessionGeneration) setCandidates([]);
+      });
+    return () => { cancelled = true; };
+  }, [today, sessionGeneration, revision]);
+
   const cards = useMemo(() => {
-    const selection = selectResurfacedMemories({ events, tracks, visits, today, limit: 3 });
+    const selection = selectResurfacedMemories({ events: candidates, tracks, visits, today, limit: 3 });
     return selection.flatMap(selection1 => {
-      const event = events.find(item => momentIdentity(item) === selection1.momentIdentity);
+      const event = candidates.find(item => momentIdentity(item) === selection1.momentIdentity);
       const track = tracks.find(item => trackIdentity(item) === selection1.trackIdentity);
       if (!event || !track) return [];
       return [{ key: selection1.momentIdentity, event, track, reason: selection1.reason }];
     });
-  }, [events, tracks, visits, today]);
+  }, [candidates, tracks, visits, today]);
 
   // No result is preferable to a misleading fallback; ordinary navigation and
   // Blindbox remain available below/alongside this section.
