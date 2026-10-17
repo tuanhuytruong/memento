@@ -19,6 +19,25 @@ test('document validation preserves event fields and rejects invalid dates', () 
   assert.equal(validateDocument({ eventId: 'x', date: '2026-02-30T09:30:00Z', images: [], tags: [] }, 'moment'), null);
 });
 
+// Phase 0 frozen contract: a date-only memory keeps its literal calendar date.
+// The server never reinterprets it in UTC, so a date near local midnight can
+// never shift to a neighbouring calendar day.
+test('frozen contract: date-only moments keep their literal calendar date and tags stay exact', () => {
+  const dateOnly = validateDocument({ eventId: 'x', date: '2026-01-01', images: [], tags: ['Tết', ' gia đình '] }, 'moment');
+  assert.equal(dateOnly.date, '2026-01-01', 'date-only must be stored literally, never ISO-shifted');
+  assert.equal(dateOnly.time, undefined);
+  // The same contract at the other end of the year.
+  assert.equal(validateDocument({ eventId: 'x', date: '2026-12-31', images: [], tags: [] }, 'moment').date, '2026-12-31');
+  // Tag strings are preserved verbatim (trimming happens client-side); the
+  // server enforces only presence and the 64-character bound.
+  assert.deepEqual(dateOnly.tags, ['Tết', ' gia đình ']);
+  assert.equal(validateDocument({ eventId: 'x', date: '2026-01-01', images: [], tags: ['x'.repeat(65)] }, 'moment'), null);
+  assert.equal(validateDocument({ eventId: 'x', date: '2026-01-01', images: [], tags: ['  '] }, 'moment'), null);
+  // Timestamp-form dates must carry an explicit offset or Z.
+  assert.ok(validateDocument({ eventId: 'x', date: '2026-01-01T23:59:59+07:00', images: [], tags: [] }, 'moment'));
+  assert.equal(validateDocument({ eventId: 'x', date: '2026-01-01T23:59:59', images: [], tags: [] }, 'moment'), null);
+});
+
 test('perspective validation trims text and enforces bounds and kind', async () => {
   const { validatePerspective } = await import('../server.mjs');
   assert.deepEqual(validatePerspective({kind:'reflection',body:'  nhớ nhà  '}),{kind:'reflection',body:'nhớ nhà'});
