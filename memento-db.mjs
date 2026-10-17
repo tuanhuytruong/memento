@@ -9,7 +9,29 @@ if (schema !== 'memento' && schema !== 'memento_dev') {
   throw new Error('DB_SCHEMA must be either memento or memento_dev');
 }
 export const qschema = `"${schema}"`;
-export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10, idleTimeoutMillis: 30000 });
+
+// Conservative, configurable budgets. Acquisition is bounded at the pool so a
+// request flood cannot wait forever for a slot; statement and idle-transaction
+// deadlines keep a wedged session from pinning a client. /health stays
+// independent of all of these.
+const intEnv = (name, fallback) => {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+};
+export const DB_BUDGETS = {
+  acquireTimeoutMs: intEnv('DB_ACQUIRE_TIMEOUT_MS', 5000),
+  statementTimeoutMs: intEnv('DB_STATEMENT_TIMEOUT_MS', 20000),
+  idleTransactionTimeoutMs: intEnv('DB_IDLE_TX_TIMEOUT_MS', 20000),
+  lockTimeoutMs: intEnv('DB_LOCK_TIMEOUT_MS', 10000),
+};
+export const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: DB_BUDGETS.acquireTimeoutMs,
+  statement_timeout: DB_BUDGETS.statementTimeoutMs,
+  idle_in_transaction_session_timeout: DB_BUDGETS.idleTransactionTimeoutMs,
+});
 export const hashInvite = value => crypto.createHash('sha256').update(value).digest('hex');
 export const hashSession = value => crypto.createHmac('sha256', process.env.SESSION_SECRET).update(value).digest('hex');
 export const id = () => crypto.randomUUID();
