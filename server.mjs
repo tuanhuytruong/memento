@@ -18,6 +18,7 @@ import { createUploadAdmission } from './upload-admission.mjs';
 import { makeImageVariants, resolveVariant, VARIANT_CACHE_CONTROL } from './image-variants.mjs';
 import { listVisitState, recordVisit } from './track-visits.mjs';
 import { setSaved, listSaved, savedCount, savedIdentities, decodeSavedCursor } from './saved-moments.mjs';
+import { queryMoments, queryFacets, validateQueryRequest } from './moment-queries.mjs';
 import { validatePostcardRequest } from './postcard-layout.mjs';
 import { renderPostcard } from './postcard-renderer.mjs';
 import { resolvePostcardPhotos } from './postcard-sources.mjs';
@@ -371,6 +372,32 @@ app.get('/api/moments', auth, async (req,res,next) => { try {
   const imagesByMoment=new Map(); for(const image of images.rows){const key=`${image.owner_id}:${image.moment_id}`;const list=imagesByMoment.get(key)||[];list.push(image);imagesByMoment.set(key,list);}
   res.json({moments:rows.map(row=>safeMoment(row.document,imagesByMoment.get(`${row.owner_id}:${row.id}`)||[],reactions.get(`${row.owner_id}:${row.id}`)||[],row.version,row.owner_id))});
 } catch(e){next(e);} });
+// Phase 3 Task 3.1: the bounded read. Additive on purpose: GET /api/moments
+// still returns the whole accessible set because header metrics, track counts,
+// facets, resurfacing, Blindbox, postcards and JSON backup all still depend on
+// it. It becomes the default only once every one of those has migrated.
+//
+// This is a read, so it deliberately takes no owner write lock and is not
+// metered as a content mutation: browsing must not queue behind editing.
+app.post('/api/moments/query', auth, asyncHandler(async (req, res) => {
+  const request = validateQueryRequest(req.body, req.user.id);
+  const page = await queryMoments(pool, req.user.id, { ...request, cursor: req.body?.cursor ?? null }, DB_SCHEMA, { reactionSummaries, safeMoment });
+  // Totals and facets cost one extra aggregate query, so they are opt-in; both
+  // come from the same authorized scope and filters as the page itself.
+  const aggregate = request.includeTotal || request.includeFacets
+    ? await queryFacets(pool, req.user.id, request, DB_SCHEMA)
+    : null;
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    moments: page.moments,
+    nextCursor: page.nextCursor,
+    ...(aggregate && request.includeTotal ? { total: aggregate.total } : {}),
+    ...(aggregate && request.includeFacets
+      ? { facets: { milestones: aggregate.milestones, withImages: aggregate.with_images, years: aggregate.years, earliest: aggregate.earliest, latest: aggregate.latest } }
+      : {}),
+  });
+}));
+
 // Exact single-moment read: same authorization boundary as the list, used by
 // the client to compare a local draft against the current server state after a
 // 409. A revoked or unrelated resource answers 404, never stale metadata.

@@ -58,6 +58,20 @@ One implementation (`src/lib/momentFilters.ts`) is shared by the client list, th
 - **Sort.** Canonical memory date, `HH:MM` time fallback, then owner UUID and moment id as tie-breakers. A malformed date sorts last rather than being parsed by the browser. Order is deterministic across machines and on the server.
 - **Privacy.** No search-phrase history, no analytics payload and no private text in query logs. The server read path for search must use a JSON body and must not log search text in the query string.
 
+## Bounded moment query (Phase 3)
+
+`POST /api/moments/query` is the bounded read. It is **additive**: `GET /api/moments` still returns the caller's whole accessible set because header metrics, track counts, facets, resurfacing, Blindbox, postcards and JSON backup all still depend on it. The bounded path becomes the default only once every consumer has migrated — adding `LIMIT` to the old endpoint would silently truncate all of them.
+
+- **Request** (JSON body, same-origin enforced): `limit` (default 40, max 100), `sortDirection` (`newest`|`oldest`), `sortBy` (`date`), `search`, `selectedYear`, `dateFrom`/`dateTo`, `selectedTags`, `selectedEmotions`, `milestonesOnly`, `hasImagesOnly`, `savedOnly`, `trackKey` (composite `owner:track`), `cursor`, `includeTotal`, `includeFacets`. Anything out of range or malformed is `400` with the specific reason.
+- **Response** `{ "moments": [...], "nextCursor": string | null, "total"?: number, "facets"?: { milestones, withImages, years, earliest, latest } }`, `Cache-Control: no-store`. Totals and facets are opt-in because they cost one extra aggregate query, and they are computed over the same authorized scope and filters as the page — so a reported total can never exceed what paging would return.
+- **Authorization is in SQL, before filters and pagination.** A page can never contain a moment the caller may not read. The cursor is **not** an authorization token and is never trusted for access.
+- **Read, not a mutation.** It takes no owner write lock and is not metered as a content mutation: browsing must not queue behind editing.
+- **Keyset pagination, never `OFFSET`.** Ordering is canonical calendar date, `HH:MM` fallback, owner UUID, moment id. A malformed date sorts to a sentinel (last ascending, first descending) rather than being parsed, so order never depends on locale or timezone. The server order is parity-tested against the client's `compareMoments`.
+- **Cursor.** Opaque, encodes the sort tuple, the direction and a hash of the whole filter scope. A cursor replayed against a different filter set or the other direction is `400`, never silently reused.
+- **Search parity.** The SQL fold is `normalize(NFC)` → `lower()` → `translate()` over the precomposed Vietnamese letters → whitespace collapse, mirroring the client's `foldSearchText` exactly (verified by a parity test against real rows). `normalize` matters: Vietnamese typed on macOS arrives decomposed, and without it a memory written on a Mac would silently never be found. No `pg_trgm`/`unaccent` extension is used, which keeps migrations portable.
+- **Live feed, not a snapshot.** There is no database snapshot across requests: a later edit, move or revoke can change page membership. Callers deduplicate by composite identity and offer Refresh rather than assuming an immutable page.
+- **Enrichment is page-scoped and batched.** Images and reaction summaries are fetched once per page, never per card.
+
 ## Authentication
 
 - `POST /api/auth/register` JSON `{ "username": string, "password": string, "inviteCode": string }`; consumes a one-time invite and returns `{ "user": { "id": string, "username": string } }` plus an HttpOnly session cookie.
