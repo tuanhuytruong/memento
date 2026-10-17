@@ -1,4 +1,5 @@
 import { type EmotionKey, type EventTrack, type TimelineEvent } from '../types';
+import { foldSearchText } from './momentFilters';
 
 export type BlindboxIntent = 'surprise' | 'comfort' | 'courage' | 'spark' | 'reflection' | 'celebration';
 
@@ -12,12 +13,14 @@ const INTENT_EMOTIONS: Record<Exclude<BlindboxIntent, 'surprise'>, EmotionKey[]>
 
 export type BlindboxResult = { event: TimelineEvent; fallback: boolean };
 
+// Folding is shared with the main search, so a query typed as "da lat" finds
+// "Đà Lạt" in a Blindbox too instead of quietly behaving differently.
 function words(value: string) {
-  return value.toLocaleLowerCase().trim().split(/\s+/).filter((word) => word.length >= 2).slice(0, 12);
+  return foldSearchText(value).split(/\s+/).filter((word) => word.length >= 2).slice(0, 12);
 }
 
 function corpus(event: TimelineEvent, track?: EventTrack) {
-  return [event.title, event.description, event.idea, event.tags?.join(' '), event.location?.name, event.location?.city, track?.title].filter(Boolean).join(' ').toLocaleLowerCase();
+  return foldSearchText([event.title, event.description, event.idea, event.tags?.join(' '), event.location?.name, event.location?.city, track?.title].filter(Boolean).join(' '));
 }
 
 export function revealMemory(events: TimelineEvent[], tracks: EventTrack[], intent: BlindboxIntent, query: string, random = Math.random): BlindboxResult | null {
