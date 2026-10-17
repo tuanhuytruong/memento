@@ -9,15 +9,18 @@ import bcrypt from 'bcryptjs';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { pool, qschema, hashInvite, hashSession, id } from './memento-db.mjs';
 import { asyncHandler, ApiError, transaction, authorizedMutation, expectedVersion } from './mutation-safety.mjs';
-import { cleanupQueue, imageKeys, startCleanup } from './object-cleanup.mjs';
+import { cleanupQueue, imageKeys } from './object-cleanup.mjs';
+import { createRuntime } from './runtime-lifecycle.mjs';
 import { createImageDelivery } from './image-delivery.mjs';
 import { invalidateImageObject } from './image-cache.mjs';
 import { createRequestBudgets } from './request-budgets.mjs';
+import { createUploadAdmission } from './upload-admission.mjs';
 import { makeImageVariants, resolveVariant, VARIANT_CACHE_CONTROL } from './image-variants.mjs';
 import { listVisitState, recordVisit } from './track-visits.mjs';
 import { validatePostcardRequest } from './postcard-layout.mjs';
 import { renderPostcard } from './postcard-renderer.mjs';
 import { resolvePostcardPhotos } from './postcard-sources.mjs';
+import { createPostcardPipeline } from './postcard-pipeline.mjs';
 
 const app = express();
 // Express 4 does not catch rejected async handlers (including pool acquisition).
@@ -521,10 +524,16 @@ app.delete('/api/moments/:id',auth,async(req,res)=>{
   });res.json({ok:true});
 });
 
-const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:MAX_IMAGE,files:1}});
+// fields/parts/fieldSize bound multipart metadata; file count stays one.
+// Aggregate concurrent buffering is bounded by uploadAdmission, not by these.
+const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:MAX_IMAGE,files:1,fields:8,parts:10,fieldSize:4096}});
 function imageType(buffer){if(buffer.length>=3&&buffer[0]===0xff&&buffer[1]===0xd8&&buffer[2]===0xff)return'image/jpeg';if(buffer.length>=8&&buffer.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))return'image/png';if(buffer.length>=6&&['GIF87a','GIF89a'].includes(buffer.toString('ascii',0,6)))return'image/gif';if(buffer.length>=12&&buffer.toString('ascii',0,4)==='RIFF'&&buffer.toString('ascii',8,12)==='WEBP')return'image/webp';return null;}
-app.post('/api/images',auth,upload.single('file'),async(req,res,next)=>{
+// Admission runs after authentication but BEFORE Multer buffers the body:
+// overload is denied while zero multipart bytes are held in memory.
+export const uploadAdmission = createUploadAdmission();
+app.post('/api/images',auth,uploadAdmission.admit,upload.single('file'),async(req,res,next)=>{
   let jobId;
+  req.uploadHandlerStarted = true;
   try {
     if(!req.file||typeof req.body.momentId!=='string'||!validUuid(req.body.ownerId))throw new ApiError(400,'file, momentId and ownerId are required');
     const momentIdentity={ownerId:req.body.ownerId,id:req.body.momentId};
@@ -568,6 +577,10 @@ app.post('/api/images',auth,upload.single('file'),async(req,res,next)=>{
     // If DB is unavailable, durable staged job remains recoverable after its lease expires.
     if(jobId)await cleanup.abandon(jobId).catch(()=>{});
     next(error);
+  } finally {
+    // The admitted capacity is held until transform/storage work has settled,
+    // including on failure. Release is idempotent.
+    req.releaseUploadSlot?.();
   }
 });
 app.get('/api/images/:id',auth,async(req,res,next)=>{try{
@@ -578,6 +591,9 @@ app.get('/api/images/:id',auth,async(req,res,next)=>{try{
 }catch(e){next(e);}});
 // Postcard export: owner-only, no persistence, no public URL. The rendered PNG
 // is returned once and never stored or shared.
+// Whole-pipeline admission happens BEFORE any source read: overload is
+// rejected with 503 + Retry-After while zero R2 bytes have been fetched.
+export const postcardPipeline = createPostcardPipeline();
 app.post('/api/postcards/render',auth,async(req,res,next)=>{try{
   let spec;
   try { spec = validatePostcardRequest(req.body); }
@@ -586,11 +602,20 @@ app.post('/api/postcards/render',auth,async(req,res,next)=>{try{
   const onClose = () => { if (!res.writableFinished) controller.abort(); };
   res.once('close', onClose);
   try {
-    const photos = await resolvePostcardPhotos(spec, {
-      userId: req.user.id, pool, qschema, s3, bucket: process.env.R2_BUCKET, prefix: R2_PREFIX,
-      resolveVariant, exactMomentAccess, imageAccess,
-    }, controller.signal);
-    const png = await renderPostcard({ spec, photos, signal: controller.signal });
+    const png = await postcardPipeline.run({
+      userId: req.user.id,
+      photoCount: spec.images.filter(Boolean).length,
+      signal: controller.signal,
+      work: async ({ signal, sourceSlot }) => {
+        const photos = await resolvePostcardPhotos(spec, {
+          userId: req.user.id, pool, qschema, s3, bucket: process.env.R2_BUCKET, prefix: R2_PREFIX,
+          resolveVariant, exactMomentAccess, imageAccess, sourceSlot,
+        }, signal);
+        // renderPostcard keeps its slot until native work settles; the pipeline
+        // reservation is released only after that promise finally settles.
+        return renderPostcard({ spec, photos, signal });
+      },
+    });
     if (controller.signal.aborted || res.destroyed) return;
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Content-Length', String(png.length));
@@ -635,8 +660,15 @@ app.delete('/api/tags/:tag',auth,async(req,res)=>{
 });
 
 // Named dependencies support deterministic fault injection without test-only HTTP routes.
+// Runtime wiring is shared by direct execution and the PM2 wrapper so the leased
+// cleanup worker starts exactly once through whichever entrypoint actually serves.
+export const runtime = createRuntime({
+  app, pool, cleanup,
+  onCleanupError: () => process.stderr.write('Cleanup drain unavailable\n'),
+  onListenError: (error) => { console.error('Memento API listen failed:', error?.message || error); process.exit(1); },
+});
 export { app, s3 };
 // Postcard failures are always actionable messages with an explicit status;
 // they must never leak a stack, a storage key or a silent success.
-app.use((err,req,res,next)=>{if(res.headersSent)return next(err);if(err?.postcard===true&&Number.isInteger(err.status)){res.set('Cache-Control','no-store');if(err.retryAfter)res.set('Retry-After',String(err.retryAfter));return res.status(err.status===499?499:err.status).json({error:err.message});}if(['IMAGE_BUSY','IMAGE_TIMEOUT'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');res.set('Retry-After','2');return fail(res,503,'Image delivery temporarily unavailable');}if(['IMAGE_LENGTH_MISMATCH','IMAGE_METADATA_INVALID'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');return fail(res,502,'Image storage temporarily unavailable');}if(['IMAGE_INVALID','IMAGE_TOO_LARGE','IMAGE_TRANSFORM_BUSY','TRANSFORM_BUSY'].includes(err?.code)){const status=err.code==='IMAGE_INVALID'?400:err.code==='IMAGE_TOO_LARGE'?413:503;if(status===503)res.set('Retry-After','2');return fail(res,status,status===400?'Invalid or unsupported image':status===413?'Image is too large':'Image processing temporarily unavailable');}if(err instanceof ApiError)return res.status(err.status).json({error:err.message,...err.details});if(['ECONNREFUSED','ECONNRESET','ETIMEDOUT','EHOSTUNREACH','53300','57P01','57P03','08006'].includes(err?.code)||/connection.*(timeout|terminated|closed)|timeout.*connect/i.test(err?.message||''))return fail(res,503,'Dependency temporarily unavailable');if(err instanceof multer.MulterError)return res.status(err.code==='LIMIT_FILE_SIZE'?413:400).json({error:'Invalid upload'});if(err?.code==='23505')return fail(res,409,'Resource already exists');if(err?.name==='NoSuchKey')return fail(res,404,'Image not found');res.status(500).json({error:'Internal server error'});});
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){const stopCleanup=startCleanup(cleanup,()=>process.stderr.write('Cleanup drain unavailable\n'));const server=app.listen(PORT,'127.0.0.1',()=>console.log(`Memento API listening on 127.0.0.1:${PORT}`));const stop=()=>{stopCleanup();server.close(async()=>{await pool.end();process.exit(0);});};process.on('SIGTERM',stop);process.on('SIGINT',stop);}
+app.use((err,req,res,next)=>{if(res.headersSent)return next(err);if(err?.postcard===true&&Number.isInteger(err.status)){res.set('Cache-Control','no-store');if(err.retryAfter)res.set('Retry-After',String(err.retryAfter));return res.status(err.status===499?499:err.status).json({error:err.message});}if(['IMAGE_BUSY','IMAGE_TIMEOUT'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');res.set('Retry-After','2');return fail(res,503,'Image delivery temporarily unavailable');}if(['IMAGE_LENGTH_MISMATCH','IMAGE_METADATA_INVALID'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');return fail(res,502,'Image storage temporarily unavailable');}if(['IMAGE_INVALID','IMAGE_TOO_LARGE','IMAGE_TRANSFORM_BUSY','TRANSFORM_BUSY'].includes(err?.code)){const status=err.code==='IMAGE_INVALID'?400:err.code==='IMAGE_TOO_LARGE'?413:503;if(status===503)res.set('Retry-After','2');return fail(res,status,status===400?'Invalid or unsupported image':status===413?'Image is too large':'Image processing temporarily unavailable');}if(err instanceof ApiError)return res.status(err.status).json({error:err.message,...err.details});if(err?.retryableTimeout){res.set('Cache-Control','no-store');res.set('Retry-After','1');return fail(res,503,'The database was busy. Your change was not saved; please try again.');}if(err?.ambiguousCommit){res.set('Cache-Control','no-store');return fail(res,503,'The connection dropped while saving. Refresh to check whether your change was saved before trying again.');}if(['ECONNREFUSED','ECONNRESET','ETIMEDOUT','EHOSTUNREACH','53300','57P01','57P03','08006'].includes(err?.code)||/connection.*(timeout|terminated|closed)|timeout.*connect/i.test(err?.message||''))return fail(res,503,'Dependency temporarily unavailable');if(err instanceof multer.MulterError)return res.status(err.code==='LIMIT_FILE_SIZE'?413:400).json({error:'Invalid upload'});if(err?.code==='UPLOAD_BODY_STALLED'){res.set('Cache-Control','no-store');return fail(res,408,'The upload stalled before it finished. Please try again.');}if(err?.code==='23505')return fail(res,409,'Resource already exists');if(err?.name==='NoSuchKey')return fail(res,404,'Image not found');res.status(500).json({error:'Internal server error'});});
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){const started=runtime.start({port:PORT,log:message=>console.log(message)});const stop=()=>{started.stop({settleMs:10_000}).then(()=>process.exit(0),()=>process.exit(0));setTimeout(()=>process.exit(0),15_000).unref();};process.on('SIGTERM',stop);process.on('SIGINT',stop);}

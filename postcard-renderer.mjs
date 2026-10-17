@@ -127,10 +127,14 @@ export async function renderPostcard({ spec, photos, signal }) {
   if (!Array.isArray(photos) || photos.length !== spec.images.length) throw Object.assign(new Error('Each selected photo is missing.'), { status: 400, postcard: true });
   await ensureFontConfig();
   const { release } = await acquireRender(signal);
+  const work = render(spec, photos, signal);
   try {
-    throwIfAborted(signal);
-    return await withTimeout(render(spec, photos), RENDER_TIMEOUT_MS, signal);
+    return await withTimeout(work, RENDER_TIMEOUT_MS, signal);
   } finally {
+    // A raced timeout/abort ends the caller's wait, not Sharp's execution:
+    // the slot stays occupied until the native render actually settles, so a
+    // slow in-flight render cannot overlap the next one beyond the limit.
+    await work.catch(() => {});
     release();
   }
 }
@@ -154,7 +158,7 @@ function withTimeout(work, timeoutMs, signal) {
   return Promise.race([work, timeout, abort]).finally(() => clearTimeout(timer));
 }
 
-async function render(spec, photos) {
+async function render(spec, photos, signal) {
   const cells = spec.images.map((imageId, index) => ({
       imageId,
       caption: spec.captions[index] ?? '',
@@ -179,12 +183,16 @@ async function render(spec, photos) {
 
   const overlays = [];
   for (let index = 0; index < layout.cells.length; index += 1) {
+    // Cooperative cancellation between cells: a disconnect stops further decodes
+    // even though Sharp itself cannot be preempted mid-call.
+    throwIfAborted(signal);
     const box = layout.cells[index];
     const photo = photos[index];
     if (!photo) continue; // deliberate text-only cell
     const decoded = await decodeCell(photo.buffer, Math.round(box.w), Math.round(box.imageHeight));
     overlays.push({ input: decoded, left: Math.round(box.x), top: Math.round(box.y) });
   }
+  throwIfAborted(signal);
 
   // sharp rejects an undefined composite list, so the chain is built in two
   // shapes: text-only, or text plus contained photos.
