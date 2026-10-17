@@ -53,6 +53,40 @@ async function fixture(browser, options={}) {
     if(state.refreshFailure){state.refreshFailure=false;return route.fulfill({status:503,json:{error:'synthetic refresh failure'}});}
     body={moments:state.moments};
   }
+  else if(url.pathname==='/api/moments/overview' && req.method()==='GET') {
+    if(state.overviewOverride)return route.fulfill({json:{overview:state.overviewOverride}});
+    // Full-scope summary. Derived from the fixture's whole set for the same
+    // reason the real one aggregates in SQL: header and track counts must not
+    // shrink to whatever page happens to be loaded.
+    const ms=state.moments;
+    const trackMap=new Map();
+    const tagCounts={};
+    const years=new Set();
+    for(const m of ms){
+      const key=`${m.resourceOwnerId||'legacy'}:${m.eventId}`;
+      const t=trackMap.get(key)||{trackOwnerId:m.resourceOwnerId||'legacy',trackId:m.eventId,count:0,milestones:0,photos:0,minDate:null,maxDate:null};
+      t.count+=1;
+      if(m.isMilestone)t.milestones+=1;
+      t.photos+=(m.images?.length||0);
+      if(m.date){t.minDate=!t.minDate||m.date<t.minDate?m.date:t.minDate;t.maxDate=!t.maxDate||m.date>t.maxDate?m.date:t.maxDate;}
+      trackMap.set(key,t);
+      for(const tag of m.tags||[])tagCounts[tag]=(tagCounts[tag]||0)+1;
+      if(m.date&&m.date.length>=4)years.add(m.date.substring(0,4));
+    }
+    const places=new Set(ms.map(m=>m.location?.city||m.location?.name).filter(Boolean));
+    const dates=ms.map(m=>m.date).filter(Boolean).sort();
+    body={overview:{
+      total:ms.length,
+      milestones:ms.filter(m=>m.isMilestone).length,
+      places:places.size,
+      photos:ms.reduce((acc,m)=>acc+(m.images?.length||0),0),
+      earliest:dates[0]||null,
+      latest:dates[dates.length-1]||null,
+      tracks:[...trackMap.values()],
+      tags:Object.entries(tagCounts).map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name)),
+      years:[...years].sort((a,b)=>b.localeCompare(a)),
+    }};
+  }
   else if(/^\/api\/moments\/[^/]+$/.test(url.pathname) && req.method()==='GET') {
     // Exact single-moment read used by the conflict comparison.
     state.singleMomentRequests=(state.singleMomentRequests||0)+1;
@@ -676,6 +710,27 @@ async function logoutAndLogin(page){
    assert.equal(await page.locator('#filter-saved-only').innerText().then(t=>/\d/.test(t)),true,'the count is rendered');
    assert.deepEqual(errors,[]);
    results.push('saves are per-account identities, never shared or colliding PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser);
+   // Task 3.2: header metrics, track badges, tag options and the year list are
+   // full-scope by contract. Prove it by having the server report a larger
+   // account than the client has loaded — if any of these were derived from the
+   // loaded list they would show the smaller number instead.
+   await page.locator('#event-card-A\\:qa-moment').waitFor();
+   const loadedCards=await page.locator('[id^=event-card-]').count();
+   assert.equal(loadedCards,1,'the fixture has one memory on screen');
+   const realTotal=state.moments.length;
+   // Server says the account is much bigger than what arrived.
+   state.overviewOverride={total:realTotal+11, milestones:7, photos:9, places:3, tracks:state.moments.map(m=>({trackOwnerId:m.resourceOwnerId,trackId:m.eventId,count:5,milestones:2,photos:3,minDate:'2024-01-01',maxDate:'2026-12-31'})),tags:[{name:'đã sống',count:12}],years:['2031','2030','2026']};
+   await page.reload({waitUntil:'networkidle'});
+   await page.locator('#event-card-A\\:qa-moment').waitFor();
+   await page.waitForFunction(()=>document.body.innerText.includes('12')||document.body.innerText.includes('5'));
+   const headerText=await page.locator('header').first().innerText();
+   assert(headerText.includes(String(realTotal+11)),`header reports the server total, not the loaded page; header=${JSON.stringify(headerText.slice(0,200))}`);
+   const navText=await page.locator('#tab-all-events-merged').innerText();
+   assert(navText.includes(String(realTotal+11)),`the merged badge reports the server total too; nav=${JSON.stringify(navText)}`);
+   assert.deepEqual(errors,[]);
+   results.push('header, track badges and tag/year options report full-scope summary numbers, never the loaded page PASS');await context.close();}
 
   // ---- Phase 3: postcard composer (synthetic controlled routes) ----
   {const {page,state,context,errors}=await fixture(browser,{viewerTracks:true});

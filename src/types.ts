@@ -129,3 +129,30 @@ export interface FilterState {
   savedOnly: boolean;
   sortDirection: 'newest' | 'oldest';
 }
+
+
+/**
+ * Full-scope account summary served by `GET /api/moments/overview`.
+ *
+ * Full-scope deliberately: header metrics, track counts, tag counts and the
+ * year list must not shrink to however many pages the client has loaded.
+ */
+export interface AccountOverview {
+  total: number;
+  milestones: number;
+  places: number;
+  photos: number;
+  earliest: string | null;
+  latest: string | null;
+  tracks: {
+    trackOwnerId: string;
+    trackId: string;
+    count: number;
+    milestones: number;
+    photos: number;
+    minDate: string | null;
+    maxDate: string | null;
+  }[];
+  tags: { name: string; count: number }[];
+  years: string[];
+}

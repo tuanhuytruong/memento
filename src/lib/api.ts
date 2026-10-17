@@ -1,4 +1,4 @@
-import type { EventTrack, MemoryReaction, PerspectivesPage, TimelineEvent } from '../types';
+import type { AccountOverview, EventTrack, MemoryReaction, PerspectivesPage, TimelineEvent } from '../types';
 
 const API = '/api';
 
@@ -145,6 +145,9 @@ export const dataApi = {
   },
   // Phase 3: the bounded read. Search text travels in a JSON body, never in a
   // query string, so it cannot end up in a request log.
+  // Full-scope summary: counts that must not depend on how many pages the
+  // client has loaded.
+  overview: () => request<{ overview: AccountOverview }>('/moments/overview'),
   queryMoments: (body: Record<string, unknown>, signal?: AbortSignal) =>
     request<{ moments: TimelineEvent[]; nextCursor: string | null; total?: number; facets?: Record<string, number> }>('/moments/query', { method: 'POST', body: JSON.stringify(body), signal }),
   savedMoments: async ({ limit = 40, cursor }: { limit?: number; cursor?: string } = {}) => {

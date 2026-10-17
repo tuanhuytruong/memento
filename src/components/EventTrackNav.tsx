@@ -12,7 +12,7 @@ import {
   Archive,
   Share2,
 } from 'lucide-react';
-import { EventTrack, TimelineEvent } from '../types';
+import { AccountOverview, EventTrack } from '../types';
 import {
   EVENT_COLORS,
   getEventTheme,
@@ -23,7 +23,12 @@ import { trackIdentity } from '../lib/resourceIdentity';
 
 interface EventTrackNavProps {
   tracks: EventTrack[];
-  events: TimelineEvent[];
+  /**
+   * Full-scope per-track counts from the server. Not the loaded list: with a
+   * paginated feed the nav badge must not report only the page on screen.
+   * Null while the first summary is still in flight.
+   */
+  overview: AccountOverview | null;
   selectedTrackKey: string; // 'all' or composite owner+track identity
   onSelectTrack: (track: EventTrack | null) => void;
   onAddNewTrack: () => void;
@@ -38,7 +43,7 @@ const TRACK_PREVIEW_LIMIT = 8;
 
 export const EventTrackNav: React.FC<EventTrackNavProps> = ({
   tracks,
-  events,
+  overview,
   selectedTrackKey,
   onSelectTrack,
   onAddNewTrack,
@@ -63,24 +68,26 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
     byYou: tracks.filter((track) => track.accessRole === 'owner' && track.sharedByYou).length,
   };
 
-  // Composite-key map: one pass over moments, never tracks.find per event.
+  // Index the server's per-track rows once, keyed the same way as the track
+  // list. Every track still gets a row so an empty track reads as 0 rather
+  // than as missing data.
   const trackStatsMap = React.useMemo(() => {
     const map: Record<string, { count: number; milestones: number; photos: number; minDate?: string; maxDate?: string }> = {};
     tracks.forEach((t) => {
       map[trackIdentity(t)] = { count: 0, milestones: 0, photos: 0 };
     });
-    events.forEach((e) => {
-      const key = `${e.resourceOwnerId ?? 'legacy'}:${e.eventId}`;
+    (overview?.tracks ?? []).forEach((row) => {
+      const key = `${row.trackOwnerId}:${row.trackId}`;
       const stats = map[key];
       if (!stats) return;
-      stats.count += 1;
-      if (e.isMilestone) stats.milestones += 1;
-      stats.photos += (e.images?.length || 0);
-      if (!stats.minDate || e.date < stats.minDate) stats.minDate = e.date;
-      if (!stats.maxDate || e.date > stats.maxDate) stats.maxDate = e.date;
+      stats.count = row.count;
+      stats.milestones = row.milestones;
+      stats.photos = row.photos;
+      if (row.minDate) stats.minDate = row.minDate;
+      if (row.maxDate) stats.maxDate = row.maxDate;
     });
     return map;
-  }, [tracks, events]);
+  }, [tracks, overview]);
 
   const activeTrackStats = activeTrack ? trackStatsMap[trackIdentity(activeTrack)] : null;
 
@@ -132,7 +139,7 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
                 : 'bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-400'
             }`}
           >
-            {events.length}
+            {overview?.total ?? 0}
           </span>
         </button>
 

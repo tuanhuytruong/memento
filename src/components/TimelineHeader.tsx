@@ -10,10 +10,15 @@ import {
   MoreHorizontal,
   ChevronDown,
 } from 'lucide-react';
-import { TimelineEvent } from '../types';
+import { AccountOverview } from '../types';
 
 interface TimelineHeaderProps {
-  events: TimelineEvent[];
+  /**
+   * Full-scope summary from the server. Deliberately not the loaded list:
+   * with a paginated feed these metrics must not shrink to the first page.
+   * Null while the first summary is still in flight.
+   */
+  overview: AccountOverview | null;
   trackCount: number;
   onAddNewEvent: () => void;
   onExportJson: () => void;
@@ -26,7 +31,7 @@ interface TimelineHeaderProps {
 }
 
 export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
-  events,
+  overview,
   trackCount,
   onAddNewEvent,
   onExportJson,
@@ -53,13 +58,11 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
     return () => document.removeEventListener('click', onDocClick);
   }, []);
 
-  // Derive metrics
-  const totalEvents = events.length;
-  const milestonesCount = events.filter((e) => e.isMilestone).length;
-  const totalPhotos = events.reduce((acc, e) => acc + (e.images?.length || 0), 0);
-  const uniquePlaces = new Set(
-    events.map((e) => e.location?.city || e.location?.name).filter(Boolean)
-  ).size;
+  // Read straight from the summary; nothing here is derived from a page.
+  const totalEvents = overview?.total ?? 0;
+  const milestonesCount = overview?.milestones ?? 0;
+  const totalPhotos = overview?.photos ?? 0;
+  const uniquePlaces = overview?.places ?? 0;
 
   return (
     <header className="mb-6 sm:mb-8">

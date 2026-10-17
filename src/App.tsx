@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
+import { AccountOverview, TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
 import { exportTimelineData } from './lib/storage';
 import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
 import { matchesMomentFilters, compareMoments, filterProjection, applyFilterPatch } from './lib/momentFilters';
@@ -41,6 +41,9 @@ export default function App() {
   const [visits, setVisits] = useState<MemoryVisit[]>([]);
   // Phase 2: the caller's own saves. Server-authoritative; the client only
   // reports intent and rolls back when the server disagrees.
+  // Full-scope account summary. Served separately from the list so header
+  // metrics and track counts stay correct once the list is paginated.
+  const [overview, setOverview] = useState<AccountOverview | null>(null);
   const [savedKeys, setSavedKeys] = useState<ReadonlySet<string>>(new Set());
   const [savedCount, setSavedCount] = useState(0);
   const [saveState, setSaveState] = useState<'idle' | 'pending' | 'error'>('idle');
@@ -78,6 +81,7 @@ export default function App() {
         setAuthStatus('anonymous');
         setEventTracks([]);
         setEvents([]);
+        setOverview(null); // never carry one account's counts into another session
         setApiTags([]);
         setCollaborationInvitations([]);
         setDataReady(false);
@@ -131,6 +135,7 @@ export default function App() {
     setDataReady(false);
     setEventTracks([]);
     setEvents([]);
+    setOverview(null); // never carry one account's counts into another session
     setApiTags([]);
     await loadData();
   };
@@ -141,6 +146,7 @@ export default function App() {
     setDataReady(false);
     setEventTracks([]);
     setEvents([]);
+    setOverview(null); // never carry one account's counts into another session
     setApiTags([]);
     setUser(null);
     setAuthStatus('anonymous');
@@ -253,6 +259,17 @@ export default function App() {
     dataApi.trackVisits()
       .then(list => { if (generation === authGenerationRef.current) setVisits(list); })
       .catch(() => { if (generation === authGenerationRef.current) setVisits([]); });
+  }, [user, dataReady]);
+
+  // Full-scope counts load with the rest of the caller's own data, fenced by
+  // session generation the same way, because these numbers are account-specific
+  // and a previous account's summary must never appear here.
+  useEffect(() => {
+    if (!user || !dataReady) return;
+    const generation = authGenerationRef.current;
+    dataApi.overview()
+      .then(result => { if (generation === authGenerationRef.current) setOverview(result.overview ?? null); })
+      .catch(() => { if (generation === authGenerationRef.current) setOverview(null); });
   }, [user, dataReady]);
 
   // Loads alongside the rest of the caller's own data, fenced by session
@@ -450,39 +467,22 @@ export default function App() {
     return map;
   }, [eventTracks]);
 
-  const momentCountByTrack = useMemo(() => {
-    const counts = new Map<string, number>();
-    events.forEach((event) => {
-      const key = `${event.resourceOwnerId ?? 'legacy'}:${event.eventId}`;
-      counts.set(key, (counts.get(key) || 0) + 1);
-    });
-    return counts;
-  }, [events]);
-
-  // Combine server-managed tags with occurrence counts from server-backed moments.
+  // Tag and year options come from the full-scope summary, so the filter bar
+  // offers every option the account has rather than only those present in the
+  // page currently on screen. Server-managed tags with no memories yet still
+  // appear, at zero, because they are a real choice the user can make.
   const availableTags = useMemo(() => {
     const tagCountMap: { [key: string]: number } = {};
-    events.forEach((evt) => evt.tags?.forEach((tag) => {
-      tagCountMap[tag] = (tagCountMap[tag] || 0) + 1;
-    }));
+    (overview?.tags ?? []).forEach(({ name, count }) => { tagCountMap[name] = count; });
     apiTags.forEach((tag) => {
       if (!(tag.name in tagCountMap)) tagCountMap[tag.name] = 0;
     });
     return Object.entries(tagCountMap)
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-  }, [events, apiTags]);
+  }, [overview, apiTags]);
 
-  // Compute available distinct years from events
-  const availableYears = useMemo(() => {
-    const years = new Set<string>();
-    events.forEach((evt) => {
-      if (evt.date && evt.date.length >= 4) {
-        years.add(evt.date.substring(0, 4));
-      }
-    });
-    return Array.from(years).sort((a, b) => b.localeCompare(a));
-  }, [events]);
+  const availableYears = useMemo(() => overview?.years ?? [], [overview]);
 
   // Filter & Sort events
   const filteredEvents = useMemo(() => {
@@ -640,7 +640,7 @@ export default function App() {
         {/* Header Ribbon & Global Stats */}
         {perspectiveError && <p role="alert" className="mb-3 text-sm text-rose-700 dark:text-rose-300">Backup failed; no incomplete file was downloaded. {perspectiveError}</p>}
         <TimelineHeader
-          events={events}
+          overview={overview}
           trackCount={eventTracks.length}
           username={user.username}
           onLogout={() => void handleLogout()}
@@ -661,7 +661,7 @@ export default function App() {
         {/* Event-Based Timeline Navigation & Overview */}
         <EventTrackNav
           tracks={eventTracks}
-          events={events}
+          overview={overview}
           selectedTrackKey={selectedTrackKey}
           onSelectTrack={handleSelectTrack}
           onAddNewTrack={() => {
