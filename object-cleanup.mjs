@@ -51,13 +51,36 @@ export function cleanupQueue({ pool, qschema, prefix, remove }) {
 }
 export function startCleanup(queue, onError = () => {}) {
   let running = false;
+  let stopping = false;
+  let active = null;
   const run = async () => {
-    if (running) return;
+    // After stop() begins, no new drain pass is admitted.
+    if (running || stopping) return;
     running = true;
-    try { await queue.drain(); } catch { onError(); } finally { running = false; }
+    active = (async () => {
+      try { await queue.drain(); } catch { onError(); } finally { running = false; }
+    })();
+    await active;
   };
   void run();
   const timer = setInterval(run, 60_000);
   timer.unref();
-  return () => clearInterval(timer);
+  return {
+    // Stop admitting drains, then let the in-flight pass settle within the
+    // documented bound. `settled:false` means it was still running at the
+    // bound: the durable manifest replays after its worker lease expires.
+    async stop({ settleMs = 10_000 } = {}) {
+      stopping = true;
+      clearInterval(timer);
+      if (!active) return { settled: true, passed: false };
+      let settleTimer;
+      const settled = await Promise.race([
+        active.then(() => true),
+        // Referenced timer: the bound must actually elapse and be reported,
+        // even when nothing else keeps the loop alive. Cap is 10s by default.
+        new Promise(resolve => { settleTimer = setTimeout(() => resolve(false), Math.max(0, settleMs)); }),
+      ]).finally(() => clearTimeout(settleTimer));
+      return { settled, passed: true };
+    },
+  };
 }
