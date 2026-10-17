@@ -19,6 +19,7 @@ import {
   Check,
 } from 'lucide-react';
 import { TimelineEvent, EmotionKey, LocationMetadata, EventTrack } from '../types';
+import { trackIdentity } from '../lib/resourceIdentity';
 import { EMOTIONS, DEFAULT_TAGS } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { compressImage } from '../lib/images';
@@ -27,10 +28,10 @@ interface EventModalProps {
   isOpen: boolean;
   eventToEdit?: TimelineEvent | null;
   tracks: EventTrack[];
-  defaultTrackId?: string;
+  defaultTrackKey?: string;
   existingTags: string[];
   onClose: () => void;
-  onSave: (eventData: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles?: File[]) => Promise<void>;
+  onSave: (eventData: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles?: File[], eventOwnerId?: string) => Promise<void>;
   onAddCustomTag?: (newTag: string) => Promise<void>;
   onCreateNewTrack?: () => void;
 }
@@ -39,7 +40,7 @@ export const EventModal: React.FC<EventModalProps> = ({
   isOpen,
   eventToEdit,
   tracks,
-  defaultTrackId,
+  defaultTrackKey,
   existingTags,
   onClose,
   onSave,
@@ -49,15 +50,16 @@ export const EventModal: React.FC<EventModalProps> = ({
   const alive = useRef(true);
   const initialized = useRef(false);
   const blobs = useRef<string[]>([]);
-  const modal = useModalLifecycle(isOpen, onClose);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isCompressing, setIsCompressing] = useState(false);
+  const closeForm = () => { if (!isSaving && !isCompressing) onClose(); };
+  const modal = useModalLifecycle(isOpen, closeForm);
   useEffect(() => { alive.current = true; return () => { alive.current = false; blobs.current.forEach((url) => URL.revokeObjectURL(url)); }; }, []);
   const todayStr = new Date().toISOString().split('T')[0];
   const currentTimeStr = new Date().toTimeString().slice(0, 5);
 
-  const [eventId, setEventId] = useState<string>(() => {
-    if (defaultTrackId && defaultTrackId !== 'all') return defaultTrackId;
-    return tracks[0]?.id || '';
-  });
+  const [eventTrackKey, setEventTrackKey] = useState<string>(() => defaultTrackKey || (tracks[0] ? trackIdentity(tracks[0]) : ''));
+  const selectedTrack = tracks.find((track) => trackIdentity(track) === eventTrackKey) || null;
   const [title, setTitle] = useState('');
   const [date, setDate] = useState(todayStr);
   const [time, setTime] = useState(currentTimeStr);
@@ -82,8 +84,6 @@ export const EventModal: React.FC<EventModalProps> = ({
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [isAddingUrl, setIsAddingUrl] = useState(false);
   const [saveError, setSaveError] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
-  const [isCompressing, setIsCompressing] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -93,7 +93,8 @@ export const EventModal: React.FC<EventModalProps> = ({
     initialized.current = true;
     setSaveError('');
     if (eventToEdit) {
-      setEventId(eventToEdit.eventId || tracks[0]?.id || '');
+      const editTrack = tracks.find((track) => track.id === eventToEdit.eventId && track.resourceOwnerId === eventToEdit.resourceOwnerId);
+      setEventTrackKey(editTrack ? trackIdentity(editTrack) : '');
       setTitle(eventToEdit.title);
       setDate(eventToEdit.date);
       setTime(eventToEdit.time || '');
@@ -109,9 +110,8 @@ export const EventModal: React.FC<EventModalProps> = ({
       setImages(eventToEdit.images || []);
       setImageFiles([]);
     } else {
-      const fallbackTrackId =
-        defaultTrackId && defaultTrackId !== 'all' ? defaultTrackId : tracks[0]?.id || '';
-      setEventId(fallbackTrackId);
+      const fallbackTrack = tracks.find((track) => trackIdentity(track) === defaultTrackKey) || tracks[0] || null;
+      setEventTrackKey(fallbackTrack ? trackIdentity(fallbackTrack) : '');
       setTitle('');
       setDate(todayStr);
       setTime(currentTimeStr);
@@ -127,7 +127,7 @@ export const EventModal: React.FC<EventModalProps> = ({
       setImages([]);
       setImageFiles([]);
     }
-  }, [eventToEdit, isOpen, defaultTrackId, tracks]);
+  }, [eventToEdit, isOpen, defaultTrackKey, tracks]);
 
   // Handle Tag toggle
   const toggleTag = (tag: string) => {
@@ -250,6 +250,7 @@ export const EventModal: React.FC<EventModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (isSaving || isCompressing || !title.trim() || !date) return;
+    if (!selectedTrack) { setSaveError('Choose an available track before saving this moment.'); return; }
 
     let locationMeta: LocationMetadata | undefined = undefined;
     if (locationName.trim() || locationCity.trim() || locationCountry.trim()) {
@@ -261,7 +262,7 @@ export const EventModal: React.FC<EventModalProps> = ({
     }
 
     const payload: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'> = {
-      eventId: eventId || tracks[0]?.id || 'evt-ai-era',
+      eventId: selectedTrack.id,
       title: title.trim(),
       date,
       time: time.trim() || undefined,
@@ -277,7 +278,7 @@ export const EventModal: React.FC<EventModalProps> = ({
 
     setSaveError('');
     setIsSaving(true);
-    onSave(payload, eventToEdit?.id, imageFiles).then(() => {
+    onSave(payload, eventToEdit?.id, imageFiles, selectedTrack.resourceOwnerId).then(() => {
       if (!alive.current) return;
       images.filter((image) => image.startsWith('blob:')).forEach((image) => URL.revokeObjectURL(image));
       onClose();
@@ -297,7 +298,7 @@ export const EventModal: React.FC<EventModalProps> = ({
       ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Edit memory"
       id="event-modal-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm p-3 sm:p-5 overflow-y-auto"
-      onClick={onClose}
+      onClick={closeForm}
     >
       <div
         id="event-modal-card"
@@ -316,7 +317,8 @@ export const EventModal: React.FC<EventModalProps> = ({
           </div>
           <button
             id="close-event-modal"
-            onClick={onClose}
+            onClick={closeForm}
+            disabled={isSaving || isCompressing}
             className="p-2 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition"
           >
             <X className="w-5 h-5" />
@@ -345,15 +347,15 @@ export const EventModal: React.FC<EventModalProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {tracks.map((t) => {
-                const isSelected = eventId === t.id;
+                const isSelected = eventTrackKey === trackIdentity(t);
                 const theme = getEventTheme(t.color);
                 const IconComp = getEventIconComponent(t.icon);
 
                 return (
                   <button
-                    key={t.id}
+                    key={trackIdentity(t)}
                     type="button"
-                    onClick={() => setEventId(t.id)}
+                    onClick={() => setEventTrackKey(trackIdentity(t))}
                     className={`p-2.5 rounded-xl border text-left transition flex items-center gap-2.5 ${
                       isSelected
                         ? `${theme.bgLight} ${theme.bgDark} ${theme.borderLight} ${theme.borderDark} ring-2 ring-amber-500/20 shadow-xs font-semibold`
@@ -767,7 +769,7 @@ export const EventModal: React.FC<EventModalProps> = ({
             <button
               type="button"
               id="cancel-event-button"
-              onClick={onClose}
+              onClick={closeForm}
               disabled={isSaving || isCompressing}
               className="px-5 py-2.5 text-xs font-semibold rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition disabled:opacity-50"
             >

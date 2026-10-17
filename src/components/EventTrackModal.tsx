@@ -12,8 +12,8 @@ interface EventTrackModalProps {
   isOpen: boolean;
   trackToEdit?: EventTrack | null;
   onClose: () => void;
-  onSave: (trackData: Omit<EventTrack, 'id' | 'createdAt' | 'updatedAt'>, editId?: string) => Promise<void>;
-  onDelete?: (id: string) => Promise<void>;
+  onSave: (trackData: Omit<EventTrack, 'id' | 'createdAt' | 'updatedAt'>, editTrack?: EventTrack) => Promise<void>;
+  onDelete?: (track: EventTrack) => Promise<void>;
 }
 
 export const EventTrackModal: React.FC<EventTrackModalProps> = ({
@@ -23,7 +23,9 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
   onSave,
   onDelete,
 }) => {
-  const modal = useModalLifecycle(isOpen, onClose);
+  const [isSaving, setIsSaving] = useState(false);
+  const closeTrackForm = () => { if (!isSaving) onClose(); };
+  const modal = useModalLifecycle(isOpen, closeTrackForm);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [color, setColor] = useState('indigo');
@@ -32,7 +34,6 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
   const [tagInput, setTagInput] = useState('');
   const [tags, setTags] = useState<string[]>([]);
   const [saveError, setSaveError] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const mountedRef = useRef(true);
@@ -89,7 +90,7 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
         status,
         tags,
       },
-      trackToEdit?.id
+      trackToEdit ?? undefined
     ).then(() => { if (mountedRef.current) onClose(); }).catch((error: unknown) => {
       if (!mountedRef.current) return;
       setSaveError(error instanceof Error ? error.message : 'Could not save this track. Your edits are still here; please retry.');
@@ -105,7 +106,7 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
       ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Edit track"
       id="event-track-modal-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm p-3 sm:p-5 overflow-y-auto"
-      onClick={onClose}
+      onClick={closeTrackForm}
     >
       <div
         id="event-track-modal-card"
@@ -133,7 +134,8 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
           </div>
           <button
             id="close-track-modal"
-            onClick={onClose}
+            onClick={closeTrackForm}
+            disabled={isSaving}
             className="p-1.5 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition"
           >
             <X className="w-5 h-5" />
@@ -308,7 +310,7 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
                   ) {
                     if (isSaving) return;
                     setIsSaving(true);
-                    onDelete(trackToEdit.id).then(() => { if (mountedRef.current) onClose(); }).catch((error: unknown) => {
+                    onDelete(trackToEdit).then(() => { if (mountedRef.current) onClose(); }).catch((error: unknown) => {
                       if (mountedRef.current) setSaveError(error instanceof Error ? error.message : 'Could not delete this track. It has not been removed from your view.');
                     }).finally(() => { if (mountedRef.current) setIsSaving(false); });
                   }
@@ -324,7 +326,8 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={closeTrackForm}
+                disabled={isSaving}
                 className="px-4 py-2 text-xs font-semibold rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
               >
                 Cancel

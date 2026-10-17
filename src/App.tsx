@@ -1,6 +1,7 @@
 import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
 import { exportTimelineData } from './lib/storage';
+import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
 import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation } from './lib/api';
 import { CollaborationModal, SharedInvitations } from './components/CollaborationModal';
 import { AuthScreen } from './components/AuthScreen';
@@ -15,7 +16,11 @@ const EventModal = lazy(() => import('./components/EventModal').then(module => (
 const EventDetailModal = lazy(() => import('./components/EventDetailModal').then(module => ({ default: module.EventDetailModal })));
 const ImageLightbox = lazy(() => import('./components/ImageLightbox').then(module => ({ default: module.ImageLightbox })));
 const BlindboxMemory = lazy(() => import('./components/BlindboxMemory').then(module => ({ default: module.BlindboxMemory })));
+// Postcard rendering is a heavy, rarely-used flow; it never joins the initial bundle.
+const PostcardComposer = lazy(() => import('./components/PostcardComposer').then(module => ({ default: module.PostcardComposer })));
 import { Dices } from 'lucide-react';
+import { MemoryResurfacing } from './components/MemoryResurfacing';
+import type { MemoryVisit } from './lib/memoryResurfacing';
 import { DeferredUiBoundary } from './components/DeferredUiBoundary';
 
 export default function App() {
@@ -26,13 +31,16 @@ export default function App() {
   const [dataLoading, setDataLoading] = useState(false);
   const [dataError, setDataError] = useState('');
   const [uploadRunning, setUploadRunning] = useState(false);
-  const [pendingImageRetry, setPendingImageRetry] = useState<{ momentId: string; files: { file: File; uploadId: string }[] } | null>(null);
+  const [pendingImageRetry, setPendingImageRetry] = useState<{ momentId: string; ownerId: string; files: { file: File; uploadId: string }[] } | null>(null);
   const [eventTracks, setEventTracks] = useState<EventTrack[]>([]);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [apiTags, setApiTags] = useState<ApiTag[]>([]);
   const [collaborationInvitations, setCollaborationInvitations] = useState<CollaborationInvitation[]>([]);
+  const [visits, setVisits] = useState<MemoryVisit[]>([]);
+  const visitWrites = useRef(new Map<string, number>());
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
+  const [perspectiveError, setPerspectiveError] = useState('');
   const authGenerationRef = useRef(0);
   const uploadBusy = useRef(false);
   const reactionPending = useRef(new Set<string>());
@@ -56,6 +64,7 @@ export default function App() {
         authGenerationRef.current += 1;
         resetSnapshots();
         setUser(null);
+        setVisits([]);
         setAuthStatus('anonymous');
         setEventTracks([]);
         setEvents([]);
@@ -125,7 +134,7 @@ export default function App() {
     setApiTags([]);
     setUser(null);
     setAuthStatus('anonymous');
-    setSelectedTrackId('all');
+    setSelectedTrackKey('all');
     try {
       await authApi.logout();
     } catch (error) {
@@ -156,7 +165,7 @@ export default function App() {
   };
 
   // Active track selection: 'all' = Merged Timeline, or specific EventTrack ID (e.g. 'evt-ai-era')
-  const [selectedTrackId, setSelectedTrackId] = useState<string>('all');
+  const [selectedTrackKey, setSelectedTrackKey] = useState<string>('all');
 
   // Filters state
   const [filters, setFilters] = useState<FilterState>({
@@ -177,6 +186,7 @@ export default function App() {
   const [trackToEdit, setTrackToEdit] = useState<EventTrack | null>(null);
 
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
+  const [isPostcardOpen, setIsPostcardOpen] = useState(false);
   const [eventToEdit, setEventToEdit] = useState<TimelineEvent | null>(null);
   const [eventToView, setEventToView] = useState<TimelineEvent | null>(null);
 
@@ -196,16 +206,59 @@ export default function App() {
     setIsEventModalOpen(false); setEventToEdit(null); setEventToView(null);
     setIsEventTrackModalOpen(false); setTrackToEdit(null);
     setLightboxState({ images: [], index: 0, isOpen: false });
-    setPendingImageRetry(null); setDataError(''); setSessionError('');
+    setPendingImageRetry(null); setDataError(''); setSessionError(''); setPerspectiveError('');
     setDataLoading(false); setUploadRunning(false); uploadBusy.current = false; reactionPending.current.clear();
-    setSelectedTrackId('all');
+    setSelectedTrackKey('all'); setVisits([]); visitWrites.current.clear();
+    setIsPostcardOpen(false);
     setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', milestonesOnly: false, hasImagesOnly: false }));
   }
 
+  // Visit history is private to this visitor; a failed write or read never blocks the timeline.
+  const recordVisit = useCallback((track: Pick<EventTrack, 'id' | 'resourceOwnerId'> | null | undefined) => {
+    if (!track?.id || !track.resourceOwnerId) return;
+    const key = `${track.resourceOwnerId}:${track.id}`;
+    const now = Date.now();
+    if ((visitWrites.current.get(key) ?? 0) > now - 60_000) return;
+    visitWrites.current.set(key, now);
+    const generation = authGenerationRef.current;
+    dataApi.recordTrackVisit(track.resourceOwnerId, track.id).then(({ visit }) => {
+      if (generation !== authGenerationRef.current) return;
+      // A malformed response must never corrupt the private visit list.
+      if (!visit?.trackId || !visit.trackOwnerId) return;
+      setVisits(previous => [...previous.filter(item => `${item.trackOwnerId}:${item.trackId}` !== key), visit]);
+    }).catch(() => {
+      if (generation !== authGenerationRef.current) return;
+      visitWrites.current.delete(key);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!user || !dataReady) return;
+    const generation = authGenerationRef.current;
+    dataApi.trackVisits()
+      .then(list => { if (generation === authGenerationRef.current) setVisits(list); })
+      .catch(() => { if (generation === authGenerationRef.current) setVisits([]); });
+  }, [user, dataReady]);
+
+  const openDetail = (event: TimelineEvent) => {
+    const track = eventTracks.find(item => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
+    recordVisit(track);
+    setEventToView(event);
+  };
+
+  /** Suggestion open: exact identity, no unrelated filter may hide its track. */
+  const openSuggested = (event: TimelineEvent) => {
+    const track = eventTracks.find(item => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
+    setFilters(previous => ({ ...previous, search: '', selectedTags: [], selectedEmotions: [], selectedYear: 'all', milestonesOnly: false, hasImagesOnly: false }));
+    if (track) handleSelectTrack(track);
+    openDetail(event);
+  };
+
   // Handle Event Track selection
-  const handleSelectTrack = (trackId: string) => {
-    setSelectedTrackId(trackId);
-    setFilters((prev) => ({ ...prev, selectedEventId: trackId }));
+  const handleSelectTrack = (track: EventTrack | null) => {
+    recordVisit(track);
+    setSelectedTrackKey(track ? trackIdentity(track) : 'all');
+    setFilters((prev) => ({ ...prev, selectedEventId: track?.id ?? 'all' }));
   };
 
   const acceptInvitation = async (id: string) => {
@@ -215,45 +268,77 @@ export default function App() {
     await loadData();
   };
 
+  const handleCreatePerspective = async (event: TimelineEvent, kind: 'perspective' | 'reflection', body: string, clientRequestId: string) => {
+    const generation = authGenerationRef.current;
+    if (!event.resourceOwnerId) throw new Error('Memory owner could not be confirmed. Refresh and try again.');
+    await dataApi.createPerspective(event.id, event.resourceOwnerId, kind, body, clientRequestId);
+    assertSession(generation);
+  };
+  const handleUpdatePerspective = async (id: string, body: string, expectedVersion: number) => {
+    const generation = authGenerationRef.current;
+    await dataApi.updatePerspective(id, body, expectedVersion);
+    assertSession(generation);
+  };
+  const handleDeletePerspective = async (id: string) => {
+    const generation = authGenerationRef.current;
+    await dataApi.deletePerspective(id);
+    assertSession(generation);
+  };
+  const exportJsonWithPerspectives = async () => {
+    const generation = authGenerationRef.current;
+    setPerspectiveError('');
+    try {
+      const perspectives = await dataApi.exportPerspectives();
+      assertSession(generation);
+      exportTimelineData(eventTracks, events, apiTags.map((tag) => tag.name), perspectives);
+    } catch (error) {
+      if (generation !== authGenerationRef.current) return;
+      setPerspectiveError(error instanceof Error ? error.message : 'Could not export a complete backup.');
+    }
+  };
+
   const openBlindboxMemory = (event: TimelineEvent) => {
     setIsBlindboxOpen(false);
-    handleSelectTrack(event.eventId);
+    const track = eventTracks.find((item) => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
+    handleSelectTrack(track ?? null);
     setEventToView(event);
   };
 
-  const selectedTrack = eventTracks.find((track) => track.id === selectedTrackId) || null;
-  const canEditSelectedTrack = selectedTrack?.accessRole !== 'viewer';
+  const selectedTrack = eventTracks.find((track) => trackIdentity(track) === selectedTrackKey) || null;
+  const canEditSelectedTrack = selectedTrack?.accessRole === 'owner' || selectedTrack?.accessRole === 'editor';
 
   // Persist each change before reflecting it in the UI; failed requests leave the prior data intact.
   const handleSaveTrack = async (
     trackData: Omit<EventTrack, 'id' | 'createdAt' | 'updatedAt'>,
-    editId?: string
+    editTrack?: EventTrack
   ) => {
     const generation = authGenerationRef.current;
-    const saved = editId
-      ? await dataApi.updateTrack(editId, trackData)
+    const saved = editTrack
+      ? await dataApi.updateTrack(editTrack.id, trackData)
       : await dataApi.createTrack(trackData);
     assertSession(generation);
-    setEventTracks((prev) => editId
-      ? prev.map((track) => track.id === editId ? saved : track)
+    setEventTracks((prev) => editTrack
+      ? prev.map((track) => trackIdentity(track) === trackIdentity(editTrack) ? saved : track)
       : [...prev, saved]);
-    if (!editId) {
-      setSelectedTrackId(saved.id);
+    if (!editTrack) {
+      setSelectedTrackKey(trackIdentity(saved));
       setFilters((prev) => ({ ...prev, selectedEventId: saved.id }));
     }
     setTrackToEdit(null);
   };
 
   // Delete only after the server confirms; failed requests preserve the local row.
-  const handleDeleteTrack = async (id: string) => {
+  const handleDeleteTrack = async (track: EventTrack) => {
+    const id = track.id;
     const generation = authGenerationRef.current;
     await dataApi.deleteTrack(id);
     assertSession(generation);
-    setEventTracks((prev) => prev.filter((track) => track.id !== id));
-    setEvents((prev) => prev.filter((event) => event.eventId !== id));
-    setEventToView((prev) => prev?.eventId === id ? null : prev);
-    if (selectedTrackId === id) {
-      setSelectedTrackId('all');
+    const identity = trackIdentity(track);
+    setEventTracks((prev) => prev.filter((item) => trackIdentity(item) !== identity));
+    setEvents((prev) => prev.filter((event) => !(event.eventId === id && event.resourceOwnerId === track.resourceOwnerId)));
+    setEventToView((prev) => prev?.eventId === id && prev.resourceOwnerId === track.resourceOwnerId ? null : prev);
+    if (selectedTrack && trackIdentity(selectedTrack) === identity) {
+      setSelectedTrackKey('all');
       setFilters((prev) => ({ ...prev, selectedEventId: 'all' }));
     }
   };
@@ -288,11 +373,7 @@ export default function App() {
     return events
       .filter((evt) => {
         // Event Track Filter (unless 'all' / Merged view is active)
-        if (selectedTrackId !== 'all') {
-          if (evt.eventId !== selectedTrackId) {
-            return false;
-          }
-        }
+        if (selectedTrackKey !== 'all' && (!selectedTrack || evt.eventId !== selectedTrack.id || evt.resourceOwnerId !== selectedTrack.resourceOwnerId)) return false;
 
         // Search term matching
         if (filters.search.trim()) {
@@ -353,51 +434,54 @@ export default function App() {
           return timeA.localeCompare(timeB);
         }
       });
-  }, [events, selectedTrackId, filters]);
+  }, [events, selectedTrackKey, filters]);
 
   // Save a moment server-side first; local state changes only after a confirmed response.
   const handleSaveEvent = async (
     data: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>,
     editId?: string,
-    imageFiles: File[] = []
+    imageFiles: File[] = [],
+    eventOwnerId?: string
   ) => {
     const generation = authGenerationRef.current;
     if (uploadBusy.current || (imageFiles.length && pendingImageRetry)) throw new Error('Finish or retry the previous photo upload before attaching more files. Your draft is preserved.');
     // The loaded edit snapshot, NOT the freshest timeline, defines what this form was based on.
     if (editId && (!eventToEdit || eventToEdit.id !== editId || !Number.isInteger(eventToEdit.version))) throw new Error('This edit has no version. Close and reopen the form before saving. Your draft is unchanged.');
     const saved = editId
-      ? await dataApi.updateMoment(editId, data, eventToEdit!.version!)
-      : await dataApi.createMoment(data);
+      ? await dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, eventToEdit!.version!, eventOwnerId || eventToEdit!.resourceOwnerId!)
+      : await dataApi.createMoment(data, eventOwnerId!);
     assertSession(generation);
-    setEvents((prev) => editId ? prev.map((event) => event.id === editId ? saved : event) : [saved, ...prev]);
+    setEvents((prev) => editId ? prev.map((event) => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
     if (imageFiles.length) {
-      const queue = { momentId: saved.id, files: imageFiles.map((file) => ({ file, uploadId: crypto.randomUUID() })) };
+      const queue = { momentId: saved.id, ownerId: saved.resourceOwnerId!, files: imageFiles.map((file) => ({ file, uploadId: crypto.randomUUID() })) };
       setPendingImageRetry(queue);
       await processImageQueue(queue, generation);
     }
   };
 
   // Delete only after the server confirms; failures do not remove data from the view.
-  const handleDeleteEvent = async (id: string) => {
+  const handleDeleteEvent = async (target: TimelineEvent) => {
     const generation = authGenerationRef.current;
-    await dataApi.deleteMoment(id);
+    const identity = momentIdentity(target);
+    await dataApi.deleteMoment(target.id, target.resourceOwnerId || user.id);
     assertSession(generation);
-    setEvents((prev) => prev.filter((event) => event.id !== id));
-    setEventToView((prev) => prev?.id === id ? null : prev);
+    setEvents((prev) => prev.filter((event) => momentIdentity(event) !== identity));
+    setEventToView((prev) => prev && momentIdentity(prev) === identity ? null : prev);
   };
 
   const handleToggleReaction = async (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉') => {
     const generation = authGenerationRef.current;
-    if (reactionPending.current.has(event.id)) return;
-    reactionPending.current.add(event.id);
+    const identity = momentIdentity(event);
+    if (reactionPending.current.has(identity)) return;
+    reactionPending.current.add(identity);
     try {
       const active = !event.reactions?.find((item) => item.emoji === emoji)?.selected;
-      const response = await dataApi.setReaction(event.id, emoji, active);
+      const response = await dataApi.setReaction(event.id, event.resourceOwnerId || user.id, emoji, active);
       assertSession(generation);
-      const apply = (item: TimelineEvent) => item.id === event.id ? { ...item, reactions: response.reactions } : item;
+      const apply = (item: TimelineEvent) => momentIdentity(item) === identity ? { ...item, reactions: response.reactions } : item;
       setEvents((prev) => prev.map(apply));
-      setEventToView((prev) => prev?.id === event.id ? apply(prev) : prev);
-    } finally { if (generation === authGenerationRef.current) reactionPending.current.delete(event.id); }
+      setEventToView((prev) => prev && momentIdentity(prev) === identity ? apply(prev) : prev);
+    } finally { if (generation === authGenerationRef.current) reactionPending.current.delete(identity); }
   };
 
   const handleAddCustomTag = async (name: string) => {
@@ -451,7 +535,7 @@ export default function App() {
       while (remaining.length) {
         assertSession(generation);
         const { file, uploadId } = remaining[0];
-        await dataApi.uploadImage(file, queue.momentId, uploadId);
+        await dataApi.uploadImage(file, queue.momentId, queue.ownerId, uploadId);
         assertSession(generation);
         remaining = remaining.slice(1);
         setPendingImageRetry({ ...queue, files: remaining });
@@ -488,6 +572,7 @@ export default function App() {
         {dataError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200"><span>{dataError}</span><span className="flex gap-3">{pendingImageRetry && <button disabled={uploadRunning} className="font-semibold underline disabled:opacity-50" onClick={() => void retryImageUploads()}>{uploadRunning ? 'Uploading…' : pendingImageRetry.files.length ? 'Retry image upload' : 'Retry timeline refresh'}</button>}<button className="font-semibold underline" onClick={() => setDataError('')}>Dismiss</button></span></div>}
         <SharedInvitations invitations={collaborationInvitations} onAccept={(id) => runMutation(() => acceptInvitation(id))} />
         {/* Header Ribbon & Global Stats */}
+        {perspectiveError && <p role="alert" className="mb-3 text-sm text-rose-700 dark:text-rose-300">Backup failed; no incomplete file was downloaded. {perspectiveError}</p>}
         <TimelineHeader
           events={events}
           trackCount={eventTracks.length}
@@ -498,20 +583,27 @@ export default function App() {
             setIsEventModalOpen(true);
           }}
           onExportJson={() => exportTimelineData(eventTracks, events, apiTags.map((tag) => tag.name))}
-          canCreateEntry={eventTracks.some((track) => track.accessRole !== 'viewer')}
+          onExportJsonAsync={exportJsonWithPerspectives}
+          // Export is owner-only, so the entry point disappears without an owned track.
+          onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
+          canCreateEntry={eventTracks.some((track) => track.accessRole === 'owner' || track.accessRole === 'editor')}
         />
+        {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
+        {selectedTrackKey === 'all' && (
+          <MemoryResurfacing events={events} tracks={eventTracks} visits={visits} onOpen={openSuggested} />
+        )}
         {/* Event-Based Timeline Navigation & Overview */}
         <EventTrackNav
           tracks={eventTracks}
           events={events}
-          selectedTrackId={selectedTrackId}
+          selectedTrackKey={selectedTrackKey}
           onSelectTrack={handleSelectTrack}
           onAddNewTrack={() => {
             setTrackToEdit(null);
             setIsEventTrackModalOpen(true);
           }}
           onEditTrack={(track) => {
-            if (track.accessRole === 'viewer' || track.accessRole === 'editor') return;
+            if (track.accessRole !== 'owner') return;
             setTrackToEdit(track);
             setIsEventTrackModalOpen(true);
           }}
@@ -521,7 +613,7 @@ export default function App() {
             setIsEventModalOpen(true);
           }}
           onShareTrack={(track) => {
-            if (track.accessRole !== 'viewer' && track.accessRole !== 'editor') setShareTrack(track);
+            if (track.accessRole === 'owner') setShareTrack(track);
           }}
           canEditSelectedTrack={canEditSelectedTrack}
         />
@@ -534,7 +626,7 @@ export default function App() {
             onResetFilters={() =>
               setFilters({
                 search: '',
-                selectedEventId: selectedTrackId,
+                selectedEventId: selectedTrack?.id ?? 'all',
                 selectedTags: [],
                 selectedEmotions: [],
                 selectedYear: 'all',
@@ -549,9 +641,9 @@ export default function App() {
             onViewModeChange={setViewMode}
             totalFilteredCount={filteredEvents.length}
             totalCount={
-              selectedTrackId === 'all'
+              selectedTrackKey === 'all'
                 ? events.length
-                : events.filter((e) => e.eventId === selectedTrackId).length
+                : events.filter((e) => e.eventId === selectedTrack?.id && e.resourceOwnerId === selectedTrack?.resourceOwnerId).length
             }
           />
         </div>
@@ -562,14 +654,14 @@ export default function App() {
             <TimelineView
               events={filteredEvents}
               tracks={eventTracks}
-              currentTrackId={selectedTrackId}
+              currentTrackKey={selectedTrackKey}
               onSelectTrack={handleSelectTrack}
-              onViewDetails={(evt) => setEventToView(evt)}
+              onViewDetails={openDetail}
               onEdit={(evt) => {
                 setEventToEdit(evt);
                 setIsEventModalOpen(true);
               }}
-              onDelete={(id) => runMutation(() => handleDeleteEvent(id))}
+              onDelete={(event) => runMutation(() => handleDeleteEvent(event))}
               onTagClick={handleTagClick}
               onOpenImageLightbox={handleOpenLightbox}
               onAddNewEvent={() => {
@@ -579,7 +671,7 @@ export default function App() {
               onResetFilters={() =>
                 setFilters({
                   search: '',
-                  selectedEventId: selectedTrackId,
+                  selectedEventId: selectedTrackKey,
                   selectedTags: [],
                   selectedEmotions: [],
                   selectedYear: 'all',
@@ -604,12 +696,12 @@ export default function App() {
               events={filteredEvents}
               tracks={eventTracks}
               onSelectTrack={handleSelectTrack}
-              onViewDetails={(evt) => setEventToView(evt)}
+              onViewDetails={openDetail}
               onEdit={(evt) => {
                 setEventToEdit(evt);
                 setIsEventModalOpen(true);
               }}
-              onDelete={(id) => runMutation(() => handleDeleteEvent(id))}
+              onDelete={(event) => runMutation(() => handleDeleteEvent(event))}
               onTagClick={handleTagClick}
             />
           )}
@@ -619,7 +711,7 @@ export default function App() {
               events={filteredEvents}
               tracks={eventTracks}
               onSelectTrack={handleSelectTrack}
-              onViewDetails={(evt) => setEventToView(evt)}
+              onViewDetails={openDetail}
               onTagClick={handleTagClick}
               onOpenImageLightbox={handleOpenLightbox}
             />
@@ -636,7 +728,7 @@ export default function App() {
           setIsEventTrackModalOpen(false);
           setTrackToEdit(null);
         }}
-        onSave={(track, editId) => handleSaveTrack(track, editId)}
+        onSave={(track, editTrack) => handleSaveTrack(track, editTrack)}
         onDelete={handleDeleteTrack}
       />}
 
@@ -645,7 +737,7 @@ export default function App() {
         isOpen={isEventModalOpen}
         eventToEdit={eventToEdit}
         tracks={eventTracks}
-        defaultTrackId={selectedTrackId !== 'all' ? selectedTrackId : eventTracks[0]?.id}
+        defaultTrackKey={selectedTrack ? trackIdentity(selectedTrack) : (() => { const ownTrack = eventTracks.find((track) => track.resourceOwnerId === user.id); return ownTrack ? trackIdentity(ownTrack) : undefined; })()}
         existingTags={availableTags.map((t) => t.name)}
         onClose={() => {
           setIsEventModalOpen(false);
@@ -675,6 +767,11 @@ export default function App() {
         onTagClick={handleTagClick}
         onOpenImageLightbox={handleOpenLightbox}
         onToggleReaction={handleToggleReaction}
+        onCreatePerspective={handleCreatePerspective}
+        onUpdatePerspective={handleUpdatePerspective}
+        onDeletePerspective={handleDeletePerspective}
+        sessionGeneration={authGenerationRef.current}
+        currentUserId={user.id}
       />}
 
       {!!shareTrack && <CollaborationModal key={`${user.id}:${authGenerationRef.current}`}
@@ -697,6 +794,14 @@ export default function App() {
         isOpen={lightboxState.isOpen}
         onClose={() => setLightboxState((prev) => ({ ...prev, isOpen: false }))}
         onNavigate={(newIndex) => setLightboxState((prev) => ({ ...prev, index: newIndex }))}
+      />}
+      {isPostcardOpen && <PostcardComposer
+        key={`${user.id}:${authGenerationRef.current}`}
+        isOpen={isPostcardOpen}
+        tracks={eventTracks}
+        events={events}
+        currentUserId={user.id}
+        onClose={() => setIsPostcardOpen(false)}
       />}
       </Suspense></DeferredUiBoundary>
     </div>

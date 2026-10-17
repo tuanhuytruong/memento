@@ -3,13 +3,14 @@ import { TimelineEvent, EventTrack } from '../types';
 import { getEmotionMeta } from '../data/emotions';
 import { formatDateDisplay } from '../lib/storage';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
+import { trackIdentity, momentIdentity } from '../lib/resourceIdentity';
 import { Calendar, MapPin, Lightbulb, Star, ImageIcon } from 'lucide-react';
 import { PrivateImage } from './PrivateImage';
 
 interface GalleryViewProps {
   events: TimelineEvent[];
   tracks: EventTrack[];
-  onSelectTrack?: (trackId: string) => void;
+  onSelectTrack?: (track: EventTrack) => void;
   onViewDetails: (event: TimelineEvent) => void;
   onTagClick: (tag: string) => void;
   onOpenImageLightbox: (images: string[], index: number) => void;
@@ -32,7 +33,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
   }
 
   const trackMap = new Map<string, EventTrack>();
-  tracks.forEach((t) => trackMap.set(t.id, t));
+  tracks.forEach((t) => trackMap.set(trackIdentity(t), t));
 
   return (
     <div
@@ -42,13 +43,13 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
       {events.map((evt) => {
         const emotionMeta = getEmotionMeta(evt.emotion);
         const hasImages = evt.images && evt.images.length > 0;
-        const track = evt.eventId ? trackMap.get(evt.eventId) : undefined;
+        const track = evt.eventId ? trackMap.get(`${evt.resourceOwnerId ?? 'legacy'}:${evt.eventId}`) : undefined;
         const theme = track ? getEventTheme(track.color) : null;
         const TrackIcon = track ? getEventIconComponent(track.icon) : null;
 
         return (
           <div
-            key={evt.id}
+            key={momentIdentity(evt)}
             onClick={() => onViewDetails(evt)}
             className="group min-w-0 break-words rounded-2xl overflow-hidden bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs hover:shadow-lg transition-all duration-300 flex flex-col cursor-pointer"
           >
@@ -78,7 +79,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (onSelectTrack) onSelectTrack(track.id);
+                      if (onSelectTrack) onSelectTrack(track);
                     }}
                     className={`absolute max-w-[65%] top-2.5 right-2.5 max-w-full min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border backdrop-blur-md shadow-xs transition ${theme.badgeClass}`}
                   >
@@ -99,7 +100,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (onSelectTrack) onSelectTrack(track.id);
+                        if (onSelectTrack) onSelectTrack(track);
                       }}
                       className={`max-w-full min-w-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border transition ${theme.badgeClass}`}
                     >

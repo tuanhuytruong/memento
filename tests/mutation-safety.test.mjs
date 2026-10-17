@@ -23,13 +23,15 @@ test('Phase A PostgreSQL races, dependency failures and durable storage fault re
  let track,privateTrack,moment;
  const req=async(path,{method='GET',as=owner,body,multipart,headers={}}={})=>{
   const h={Origin:base,Cookie:`memento_session=${tokens.get(as)}`,'X-Forwarded-For':'192.0.2.81',...headers};
+  if (/^\/api\/moments\/[^/]+$/.test(path) && ['PUT','DELETE'].includes(method)) body={...(body||{}),ownerId:owner};
+  if (/^\/api\/moments\/[^/]+\/reactions$/.test(path) && body) body={...body,ownerId:owner};
   if(body){h['Content-Type']='application/json';body=JSON.stringify(body);}
   const res=await fetch(base+path,{method,headers:h,body:multipart||body,signal:AbortSignal.timeout(15000)});
   return {status:res.status,data:await res.json()};
  };
  const sql=(q,args)=>rawQuery(q,args);
  const fresh=async()=> (await req('/api/moments')).data.moments.find(x=>x.id===moment);
- const makeMoment=async()=>{const r=await req('/api/moments',{method:'POST',body:{eventId:track,title:'original',description:'retained',date:'2026-10-16',tags:['remove','keep'],images:[]}});assert.equal(r.status,201);moment=r.data.moment.id;return r.data.moment;};
+ const makeMoment=async()=>{const r=await req('/api/moments',{method:'POST',body:{eventId:track,eventOwnerId:owner,title:'original',description:'retained',date:'2026-10-16',tags:['remove','keep'],images:[]}});assert.equal(r.status,201);moment=r.data.moment.id;return r.data.moment;};
  const invite=async(role='editor',user=editor)=>{
   const recipient=await sql(`SELECT username FROM ${qschema}.users WHERE id=$1`,[user]);
   const r=await req(`/api/tracks/${track}/collaborators`,{method:'POST',body:{username:recipient.rows[0].username,role}});assert.equal(r.status,201);
@@ -55,6 +57,24 @@ test('Phase A PostgreSQL races, dependency failures and durable storage fault re
   track=(await req('/api/tracks',{method:'POST',body:{title:'shared',tags:['remove']}})).data.track.id;
   privateTrack=(await req('/api/tracks',{method:'POST',body:{title:'private',tags:[]}})).data.track.id;
   await makeMoment();await invite();await invite('viewer',viewer);
+
+  await t.test('perspective create rechecks current access after queued revoke',async()=>{
+   const reached=deferred(),resume=deferred();let paused=false;
+   pool.query=async(...args)=>{
+    const result=await rawQuery(...args);
+    if(!paused&&typeof args[0]==='string'&&args[0].includes('m.owner_id=$3')&&args[1]?.[0]===editor){paused=true;reached.resolve();await resume.promise;}
+    return result;
+   };
+   const requestId=crypto.randomUUID();
+   const pending=req(`/api/moments/${moment}/perspectives`,{method:'POST',as:editor,body:{ownerId:owner,kind:'perspective',body:'Must not survive a revoke race',clientRequestId:requestId}});
+   try {
+    await bounded(reached.promise);
+    assert.equal((await req(`/api/tracks/${track}/collaborators/${editor}`,{method:'DELETE'})).status,200);
+   } finally {resume.resolve();pool.query=rawQuery;}
+   assert.equal((await pending).status,404);
+   assert.equal((await sql(`SELECT 1 FROM ${qschema}.moment_perspectives WHERE moment_owner_id=$1 AND moment_id=$2 AND author_id=$3 AND client_request_id=$4`,[owner,moment,editor,requestId])).rowCount,0);
+   await invite('editor',editor);
+  });
 
   await t.test('guarded acquisition rejects with bounded 503 and liveness survives',async()=>{
    pool.connect=async()=>{throw Object.assign(new Error('Injected refusal'),{code:'ECONNREFUSED'});};
@@ -130,7 +150,7 @@ test('Phase A PostgreSQL races, dependency failures and durable storage fault re
   await t.test('staged upload rechecks revoke and durable manifest survives storage failure',async()=>{
    const started=deferred(),resume=deferred();let first=true;const deleted=[];
    s3.send=async command=>{if(command.constructor.name==='PutObjectCommand'&&first){first=false;started.resolve();await resume.promise;}return {};};
-   const form=new FormData();form.set('momentId',moment);form.set('file',new Blob([imageBytes],{type:'image/png'}),'x.png');
+   const form=new FormData();form.set('momentId',moment);form.set('ownerId',owner);form.set('file',new Blob([imageBytes],{type:'image/png'}),'x.png');
    const pending=req('/api/images',{method:'POST',as:editor,multipart:form});
    try{await bounded(started.promise);assert.equal((await req(`/api/tracks/${track}/collaborators/${editor}`,{method:'DELETE'})).status,200);}finally{resume.resolve();}
    assert.equal((await pending).status,404);
@@ -146,7 +166,7 @@ test('Phase A PostgreSQL races, dependency failures and durable storage fault re
   await t.test('staged editor upload cannot follow membership move',async()=>{
    await invite();const before=await fresh(),started=deferred(),resume=deferred();let first=true;
    s3.send=async command=>{if(command.constructor.name==='PutObjectCommand'&&first){first=false;started.resolve();await resume.promise;}return {};};
-   const form=new FormData();form.set('momentId',moment);form.set('file',new Blob([imageBytes],{type:'image/png'}),'move.png');
+   const form=new FormData();form.set('momentId',moment);form.set('ownerId',owner);form.set('file',new Blob([imageBytes],{type:'image/png'}),'move.png');
    const pending=req('/api/images',{method:'POST',as:editor,multipart:form});
    try{await bounded(started.promise);assert.equal((await req(`/api/moments/${moment}`,{method:'PUT',body:{eventId:privateTrack,expectedVersion:before.version}})).status,200);}finally{resume.resolve();}
    assert.equal((await pending).status,404);
@@ -165,7 +185,7 @@ test('Phase A PostgreSQL races, dependency failures and durable storage fault re
 
   await t.test('upload replay is authorized, payload-bound, single metadata insert',async()=>{
    s3.send=async()=>({});await invite();const key=crypto.randomUUID();
-   const upload=async(bytes=imageBytes)=>{const form=new FormData();form.set('momentId',moment);form.set('file',new Blob([Buffer.from(bytes)],{type:'image/png'}),'x.png');return req('/api/images',{method:'POST',as:editor,multipart:form,headers:{'Idempotency-Key':key}});};
+   const upload=async(bytes=imageBytes,targetOwner=owner)=>{const form=new FormData();form.set('momentId',moment);form.set('ownerId',targetOwner);form.set('file',new Blob([Buffer.from(bytes)],{type:'image/png'}),'x.png');return req('/api/images',{method:'POST',as:editor,multipart:form,headers:{'Idempotency-Key':key}});};
    const results=await Promise.all([upload(),upload()]);assert.deepEqual(results.map(x=>x.status).sort(),[200,201]);assert.equal(results[0].data.image.id,results[1].data.image.id);
    assert.equal((await upload(Buffer.concat([imageBytes,Buffer.from('different')]))).status,409);
    assert.equal((await sql(`SELECT 1 FROM ${qschema}.images WHERE uploader_id=$1 AND upload_key=$2`,[editor,key])).rowCount,1);
@@ -177,7 +197,7 @@ test('Phase A PostgreSQL races, dependency failures and durable storage fault re
    const invitation=await req(`/api/tracks/${otherTrack}/collaborators`,{method:'POST',as:viewer,body:{username:recipient,role:'editor'}});
    assert.equal(invitation.status,201);assert.equal((await req(`/api/collaboration-invitations/${invitation.data.collaborator.id}/accept`,{method:'POST',as:editor})).status,200);
    let storageCalls=0;s3.send=async()=>{storageCalls++;return {};};
-   const crossed=await upload();assert.equal(crossed.status,409);assert.equal(crossed.data.image,undefined);assert.equal(storageCalls,0);
+   const crossed=await upload(imageBytes,viewer);assert.equal(crossed.status,409,`cross-owner replay: ${crossed.data.error}`);assert.equal(crossed.data.image,undefined);assert.equal(storageCalls,0);
    assert.equal((await sql(`SELECT 1 FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2`,[viewer,moment])).rowCount,0);
    assert.equal((await req(`/api/tracks/${otherTrack}`,{method:'DELETE',as:viewer})).status,200);
 
@@ -206,7 +226,7 @@ test('Phase A PostgreSQL races, dependency failures and durable storage fault re
   await t.test('track deletion wins queued membership move: no survivor references deleted objects',async()=>{
    const source=(await req('/api/tracks',{method:'POST',body:{title:'delete-wins'}})).data.track.id;
    const target=(await req('/api/tracks',{method:'POST',body:{title:'target'}})).data.track.id;
-   const m=(await req('/api/moments',{method:'POST',body:{eventId:source,date:'2026-10-16',images:[],tags:[]}})).data.moment;
+   const m=(await req('/api/moments',{method:'POST',body:{eventId:source,eventOwnerId:owner,date:'2026-10-16',images:[],tags:[]}})).data.moment;
    const key=`${prefix}delete-wins`;
    await sql(`INSERT INTO ${qschema}.images(id,owner_id,moment_id,object_key,content_type,size) VALUES($1,$2,$3,$4,'image/png',1)`,[crypto.randomUUID(),owner,m.id,key]);
    const locked=deferred(),resume=deferred();let interception=true;

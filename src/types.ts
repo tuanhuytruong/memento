@@ -29,6 +29,25 @@ export interface LocationMetadata {
   lng?: number;
 }
 
+/** One postcard selection cell: a moment plus at most one of its own photos. */
+export interface PostcardSelection {
+  event: TimelineEvent;
+  imageId: string | null;
+  caption: string;
+}
+
+export type PostcardTemplateKey = 'journey' | 'ordinary' | 'month';
+
+export interface PostcardRequest {
+  template: PostcardTemplateKey;
+  moments: { ownerId: string; id: string }[];
+  images: (string | null)[];
+  captions: string[];
+  title: string;
+  note: string;
+  showDate: boolean;
+}
+
 export interface EventTrack {
   id: string;
   title: string; // e.g. "AI Era", "New Company"
@@ -42,6 +61,7 @@ export interface EventTrack {
   /** Server-generated permission label; omitted only briefly after creating an owned track. */
   accessRole?: 'owner' | 'viewer' | 'editor';
   sharedByYou?: boolean;
+  resourceOwnerId?: string;
 }
 
 export interface MemoryReaction {
@@ -70,6 +90,25 @@ export interface TimelineEvent {
   reactions?: MemoryReaction[];
   /** Authoritative optimistic concurrency token from the server. */
   version?: number;
+  resourceOwnerId?: string;
+}
+
+export interface MomentPerspective {
+  id: string;
+  momentOwnerId: string;
+  momentId: string;
+  authorId: string;
+  username: string;
+  kind: 'perspective' | 'reflection';
+  body: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface PerspectivesPage {
+  perspectives: MomentPerspective[];
+  nextCursor: string | null;
+  capabilities: { canRead: boolean; canCreate: boolean; canModerate: boolean; role: 'owner' | 'viewer' | 'editor' };
 }
 
 export type ViewMode = 'timeline' | 'compact' | 'gallery';
