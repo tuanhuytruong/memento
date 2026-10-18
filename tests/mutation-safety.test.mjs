@@ -204,6 +204,36 @@ test('Phase A PostgreSQL races, dependency failures and durable storage fault re
    const queue=cleanupQueue({pool,qschema,prefix:'memento_dev/',remove:async()=>{}});await queue.drain({limit:100,retry:true,ids:ownedJobs});s3.send=rawSend;
   });
 
+  await t.test('upload admission denies same-account overload before buffering while other accounts stay available',async()=>{
+   await invite();await fresh();
+   const started=deferred(),resume=deferred();let storageCalls=0;
+   s3.send=async command=>{if(command.constructor.name==='PutObjectCommand'){storageCalls++;started.resolve();await resume.promise;}return {};};
+   const form=(file='admission.png')=>{const f=new FormData();f.set('momentId',moment);f.set('ownerId',owner);f.set('file',new Blob([imageBytes],{type:'image/png'}),file);return f;};
+   // Both admitted slots for this account are held inside the gated storage write.
+   const heldA=req('/api/images',{method:'POST',as:editor,multipart:form('a.png')});
+   const heldB=req('/api/images',{method:'POST',as:editor,multipart:form('b.png')});
+   try{
+    await bounded(started.promise);
+    await bounded((async()=>{while(storageCalls<2)await new Promise(r=>setTimeout(r,10));})());
+    const callsBefore=storageCalls;
+    const rowsBefore=(await sql(`SELECT count(*)::int n FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2`,[owner,moment])).rows[0].n;
+    const denied=await req('/api/images',{method:'POST',as:editor,multipart:form('c.png')});
+    assert.equal(denied.status,503,'a hot account is denied at its cap');
+    assert.ok(denied.data.error);
+    assert.equal(storageCalls,callsBefore,'a denied upload must perform zero storage writes');
+    assert.equal((await sql(`SELECT count(*)::int n FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2`,[owner,moment])).rows[0].n,rowsBefore,'a denied upload must insert no metadata');
+    // A different authorized account is not queued behind the hot one.
+    const ownerUpload=req('/api/images',{method:'POST',as:owner,multipart:form('owner.png')});
+    const early=await Promise.race([ownerUpload.then(()=> 'settled'),new Promise(r=>setTimeout(()=>r('pending'),200))]);
+    assert.equal(early,'pending','another account must still be admitted while one account is at its cap');
+    resume.resolve();
+    assert.equal((await heldA).status,201,'the first admitted upload completes');
+    assert.equal((await heldB).status,201,'the second admitted upload completes');
+    assert.equal((await ownerUpload).status,201,'the other account completes too');
+   }finally{resume.resolve();}
+   const queue=cleanupQueue({pool,qschema,prefix:'memento_dev/',remove:async()=>{}});await queue.drain({limit:100,retry:true,ids:ownedJobs});s3.send=rawSend;
+  });
+
   await t.test('owner advisory lock really blocks writes; move before track delete preserves all objects',async()=>{
    const c=await rawConnect();await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`memento_dev:owner:${owner}`]);
    const before=await fresh();let finished=false;

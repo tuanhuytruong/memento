@@ -1,4 +1,4 @@
-import type { EventTrack, MemoryReaction, PerspectivesPage, TimelineEvent } from '../types';
+import type { AccountOverview, EventTrack, MemoryReaction, PerspectivesPage, TimelineEvent } from '../types';
 
 const API = '/api';
 
@@ -135,6 +135,48 @@ export const dataApi = {
   recordTrackVisit: (ownerId: string, trackId: string) =>
     request<{ visit: { trackOwnerId: string; trackId: string; lastOpenedAt: string } }>(`/tracks/${encodeURIComponent(trackId)}/visit`, { method: 'PUT', body: JSON.stringify({ ownerId }) }),
   moments: async () => unwrapList<TimelineEvent>(await request('/moments'), ['moments']),
+  // Phase 2: a save is the caller's own bookkeeping. The server is always the
+  // authority; the client only reports its intent and rolls back on failure.
+  setSaved: (ownerId: string, id: string, active: boolean) =>
+    request<{ saved: { ownerId: string; id: string; saved: boolean } }>(`/moments/${encodeURIComponent(id)}/saved`, { method: 'PUT', body: JSON.stringify({ ownerId, active }) }),
+  saved: async () => {
+    const result = await request<{ saved: { ownerId: string; id: string }[]; count: number }>('/saved');
+    return { saved: result.saved, count: result.count };
+  },
+  // Phase 3: the bounded read. Search text travels in a JSON body, never in a
+  // query string, so it cannot end up in a request log.
+  // Full-scope summary: counts that must not depend on how many pages the
+  // client has loaded.
+  overview: () => request<{ overview: AccountOverview }>('/moments/overview'),
+  exportSnapshot: async (action: 'start' | 'page' | 'finalize', body: unknown) => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const response = await fetch(`/api/export/${action}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (response.status === 429 && attempt < 3) {
+        const wait = Number(response.headers.get('Retry-After'));
+        await new Promise(resolve => setTimeout(resolve, Math.min(120, Math.max(1, Number.isFinite(wait) ? wait : 60)) * 1000));
+        continue;
+      }
+      const data = await response.json();
+      if (!response.ok) throw new ApiError(data.error || 'Backup unavailable.', response.status);
+      return data;
+    }
+  },
+  // Candidate pool for Ngày ấy. The caller supplies its own local calendar day
+  // so "on this day" means the day the user is looking at, not a UTC one.
+  resurfacingCandidates: (today: string) =>
+    request<{ moments: TimelineEvent[] }>('/moments/resurfacing', { method: 'POST', body: JSON.stringify({ today }) }),
+  queryMoments: (body: Record<string, unknown>, signal?: AbortSignal) =>
+    request<{ moments: TimelineEvent[]; nextCursor: string | null; total?: number; facets?: Record<string, number> }>('/moments/query', { method: 'POST', body: JSON.stringify(body), signal }),
+  savedMoments: async ({ limit = 40, cursor }: { limit?: number; cursor?: string } = {}) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (cursor) params.set('cursor', cursor);
+    const page = await request<{ items: { ownerId: string; id: string; savedAt: string }[]; nextCursor: string | null }>(`/saved/moments?${params}`);
+    return page;
+  },
+  // Exact single-moment read for conflict comparison; same composite identity
+  // and authorization boundary as every other moment route.
+  moment: async (id: string, ownerId: string) =>
+    requireResource<TimelineEvent>(await request(`/moments/${encodeURIComponent(id)}?ownerId=${encodeURIComponent(ownerId)}`), ['moment'], 'moment'),
   perspectives: (momentId: string, ownerId: string, cursor?: string) => {
     const params = new URLSearchParams({ ownerId, limit: '20' });
     if (cursor) params.set('cursor', cursor);
@@ -209,6 +251,6 @@ export const dataApi = {
 };
 
 export async function loadAccountData() {
-  const [tracks, moments, tags] = await Promise.all([dataApi.tracks(), dataApi.moments(), dataApi.tags()]);
-  return { tracks, moments, tags };
+  const [tracks, tags, summary] = await Promise.all([dataApi.tracks(), dataApi.tags(), dataApi.overview()]);
+  return { tracks, tags, overview: summary.overview };
 }

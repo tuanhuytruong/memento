@@ -12,7 +12,7 @@ import {
   Archive,
   Share2,
 } from 'lucide-react';
-import { EventTrack, TimelineEvent } from '../types';
+import { AccountOverview, EventTrack } from '../types';
 import {
   EVENT_COLORS,
   getEventTheme,
@@ -23,7 +23,12 @@ import { trackIdentity } from '../lib/resourceIdentity';
 
 interface EventTrackNavProps {
   tracks: EventTrack[];
-  events: TimelineEvent[];
+  /**
+   * Full-scope per-track counts from the server. Not the loaded list: with a
+   * paginated feed the nav badge must not report only the page on screen.
+   * Null while the first summary is still in flight.
+   */
+  overview: AccountOverview | null;
   selectedTrackKey: string; // 'all' or composite owner+track identity
   onSelectTrack: (track: EventTrack | null) => void;
   onAddNewTrack: () => void;
@@ -33,9 +38,12 @@ interface EventTrackNavProps {
   canEditSelectedTrack: boolean;
 }
 
+/** Above this many tracks the strip collapses behind an explicit Show all. */
+const TRACK_PREVIEW_LIMIT = 8;
+
 export const EventTrackNav: React.FC<EventTrackNavProps> = ({
   tracks,
-  events,
+  overview,
   selectedTrackKey,
   onSelectTrack,
   onAddNewTrack,
@@ -45,6 +53,8 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
   canEditSelectedTrack,
 }) => {
   const [trackGroup, setTrackGroup] = React.useState<'only' | 'withYou' | 'byYou'>('only');
+  const [showAllTracks, setShowAllTracks] = React.useState(false);
+  const [trackQuery, setTrackQuery] = React.useState('');
   const activeTrack = tracks.find((t) => trackIdentity(t) === selectedTrackKey);
   const isMergedView = selectedTrackKey === 'all';
   const groupedTracks = tracks.filter((track) => trackGroup === 'only'
@@ -58,29 +68,47 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
     byYou: tracks.filter((track) => track.accessRole === 'owner' && track.sharedByYou).length,
   };
 
-  // Compute stats per track
+  // Index the server's per-track rows once, keyed the same way as the track
+  // list. Every track still gets a row so an empty track reads as 0 rather
+  // than as missing data.
   const trackStatsMap = React.useMemo(() => {
     const map: Record<string, { count: number; milestones: number; photos: number; minDate?: string; maxDate?: string }> = {};
     tracks.forEach((t) => {
       map[trackIdentity(t)] = { count: 0, milestones: 0, photos: 0 };
     });
-
-    events.forEach((e) => {
-      const track = tracks.find((item) => item.id === e.eventId && item.resourceOwnerId === e.resourceOwnerId);
-      const key = track && trackIdentity(track);
-      if (key && map[key]) {
-        map[key].count += 1;
-        if (e.isMilestone) map[key].milestones += 1;
-        map[key].photos += (e.images?.length || 0);
-
-        if (!map[key].minDate || e.date < map[key].minDate!) map[key].minDate = e.date;
-        if (!map[key].maxDate || e.date > map[key].maxDate!) map[key].maxDate = e.date;
-      }
+    (overview?.tracks ?? []).forEach((row) => {
+      const key = `${row.trackOwnerId}:${row.trackId}`;
+      const stats = map[key];
+      if (!stats) return;
+      stats.count = row.count;
+      stats.milestones = row.milestones;
+      stats.photos = row.photos;
+      if (row.minDate) stats.minDate = row.minDate;
+      if (row.maxDate) stats.maxDate = row.maxDate;
     });
     return map;
-  }, [tracks, events]);
+  }, [tracks, overview]);
 
   const activeTrackStats = activeTrack ? trackStatsMap[trackIdentity(activeTrack)] : null;
+
+  // Bounded preview: the selected track always stays visible even when it
+  // falls outside the preview window, and a search narrows the strip.
+  const query = trackQuery.trim().toLowerCase();
+  const matched = query
+    ? groupedTracks.filter((track) => track.title.toLowerCase().includes(query))
+    : groupedTracks;
+  const needsCollapse = !query && matched.length > TRACK_PREVIEW_LIMIT;
+  const selectedInGroup = groupedTracks.find((track) => trackIdentity(track) === selectedTrackKey);
+  const visibleTracks = needsCollapse && !showAllTracks
+    ? (() => {
+        const preview = matched.slice(0, TRACK_PREVIEW_LIMIT);
+        // Keep the current selection in view even if it is not in the preview.
+        if (selectedInGroup && !preview.some((track) => trackIdentity(track) === trackIdentity(selectedInGroup))) {
+          preview[preview.length - 1] = selectedInGroup;
+        }
+        return preview;
+      })()
+    : matched;
 
   return (
     <div className="min-w-0 space-y-4 mb-6">
@@ -93,8 +121,10 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
         {/* "All Events (Merged Timeline)" Button */}
         <button
           id="tab-all-events-merged"
+          type="button"
+          aria-pressed={isMergedView}
           onClick={() => onSelectTrack(null)}
-          className={`group flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all shrink-0 border whitespace-nowrap ${
+          className={`group flex items-center gap-2 px-3.5 py-2 min-h-11 rounded-xl text-xs sm:text-sm font-semibold transition-all shrink-0 border whitespace-nowrap ${
             isMergedView
               ? 'bg-stone-900 text-white border-stone-900 dark:bg-stone-100 dark:text-stone-900 dark:border-stone-100 shadow-sm'
               : 'bg-white dark:bg-stone-900 text-stone-700 dark:text-stone-300 border-stone-200 dark:border-stone-800 hover:border-stone-400 dark:hover:border-stone-700'
@@ -109,12 +139,12 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
                 : 'bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-400'
             }`}
           >
-            {events.length}
+            {overview?.total ?? 0}
           </span>
         </button>
 
-        {/* Individual Event Track Tabs */}
-        {groupedTracks.map((track) => {
+        {/* Individual Event Track Tabs (bounded preview) */}
+        {visibleTracks.map((track) => {
           const isSelected = selectedTrackKey === trackIdentity(track);
           const IconComp = getEventIconComponent(track.icon);
           const theme = getEventTheme(track.color);
@@ -124,8 +154,10 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
             <button
               key={trackIdentity(track)}
               id={`tab-event-track-${track.resourceOwnerId}-${track.id}`}
+              type="button"
+              aria-pressed={isSelected}
               onClick={() => onSelectTrack(track)}
-              className={`group flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all shrink-0 border whitespace-nowrap ${
+              className={`group flex items-center gap-2 px-3.5 py-2 min-h-11 rounded-xl text-xs sm:text-sm font-semibold transition-all shrink-0 border whitespace-nowrap ${
                 isSelected
                   ? `${theme.bgLight} ${theme.bgDark} ${theme.textLight} ${theme.textDark} ${theme.borderLight} ${theme.borderDark} ring-2 ring-amber-500/20 shadow-xs`
                   : 'bg-white dark:bg-stone-900 text-stone-700 dark:text-stone-300 border-stone-200 dark:border-stone-800 hover:border-stone-300 dark:hover:border-stone-700'
@@ -155,6 +187,7 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
         {/* "+ New Event Track" CTA - directly in the sequence without overlapping */}
         <button
           id="btn-add-event-track"
+          type="button"
           onClick={onAddNewTrack}
           className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold text-stone-700 dark:text-stone-300 bg-white dark:bg-stone-900 border border-dashed border-stone-300 dark:border-stone-700 hover:border-amber-500 dark:hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 transition shrink-0 whitespace-nowrap shadow-2xs active:scale-98"
           title="Create a separated timeline for a new event (e.g. AI era, New company)"
@@ -163,6 +196,33 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
           <span>New Track</span>
         </button>
       </div>
+
+      {/* Bounded strip controls: only shown when the list is long enough to
+          need them, so small accounts keep the quiet single row. */}
+      {(needsCollapse || groupedTracks.length > TRACK_PREVIEW_LIMIT) && (
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="track-nav-search" className="sr-only">Search tracks by name</label>
+          <input
+            id="track-nav-search"
+            type="search"
+            value={trackQuery}
+            onChange={(e) => setTrackQuery(e.target.value)}
+            placeholder="Search tracks…"
+            className="px-3 py-1.5 min-h-11 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-500/30 w-40"
+          />
+          {needsCollapse && (
+            <button
+              type="button"
+              id="toggle-show-all-tracks"
+              aria-expanded={showAllTracks}
+              onClick={() => setShowAllTracks((prev) => !prev)}
+              className="px-3 py-1.5 min-h-11 text-xs font-semibold rounded-lg bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-700 transition"
+            >
+              {showAllTracks ? 'Show fewer' : `Show all ${matched.length} tracks`}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Overview Banner for Selected State */}
       {isMergedView ? (
@@ -181,8 +241,9 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-stone-300 mt-0.5 max-w-xl leading-relaxed">
-                Viewing merged chronological progression across {tracks.length} separated event timelines (
-                {tracks.map((t) => t.title).join(', ')}).
+                {tracks.length === 0
+                  ? 'No tracks yet — create one to start grouping your memories.'
+                  : `Viewing merged chronological progression across ${tracks.length} ${tracks.length === 1 ? 'timeline' : 'timelines'}. Pick a track above to focus on one chapter.`}
               </p>
             </div>
           </div>
@@ -259,9 +320,9 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({
 
                 {/* Track owners manage sharing; shared viewers have no mutation controls. */}
                 <div className="flex items-center gap-2 self-end md:self-auto shrink-0">
-                  {activeTrack.accessRole === 'owner' && <button onClick={() => onShareTrack(activeTrack)} className="px-3 py-2 rounded-xl text-xs font-semibold border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 transition flex items-center gap-1.5 shadow-xs"><Share2 className="w-3.5 h-3.5" /><span>Share</span></button>}
-                  {activeTrack.accessRole === 'owner' && <button onClick={() => onEditTrack(activeTrack)} className="px-3 py-2 rounded-xl text-xs font-semibold border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 transition flex items-center gap-1.5 shadow-xs" title="Edit Event Track title, color, or icon"><Edit2 className="w-3.5 h-3.5" /><span>Edit Track</span></button>}
-                  {canEditSelectedTrack && <button onClick={onAddNewMoment} className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white shadow-xs transition flex items-center gap-1.5 active:scale-98 ${theme.accentBg} hover:opacity-90`}><Plus className="w-4 h-4" /><span>Add to {activeTrack.title}</span></button>}
+                  {activeTrack.accessRole === 'owner' && <button onClick={() => onShareTrack(activeTrack)} className="px-3 py-2 min-h-11 rounded-xl text-xs font-semibold border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 transition flex items-center gap-1.5 shadow-xs"><Share2 className="w-3.5 h-3.5" /><span>Share</span></button>}
+                  {activeTrack.accessRole === 'owner' && <button onClick={() => onEditTrack(activeTrack)} className="px-3 py-2 min-h-11 rounded-xl text-xs font-semibold border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 transition flex items-center gap-1.5 shadow-xs" title="Edit Event Track title, color, or icon"><Edit2 className="w-3.5 h-3.5" /><span>Edit Track</span></button>}
+                  {canEditSelectedTrack && <button onClick={onAddNewMoment} className={`px-4 py-2 min-h-11 rounded-xl text-xs sm:text-sm font-semibold text-white shadow-xs transition flex items-center gap-1.5 active:scale-98 ${theme.accentBg} hover:opacity-90`}><Plus className="w-4 h-4" /><span>Add to {activeTrack.title}</span></button>}
                 </div>
               </div>
             </div>

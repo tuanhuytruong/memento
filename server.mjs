@@ -1,3 +1,7 @@
+import { mountExportSnapshotRoutes } from './export-snapshot.mjs';
+import { mountDiscoveryRoutes } from './discovery-routes.mjs';
+import { operationalMetrics, sampleOperationalState, cleanupExpiredSessions } from './operational-metrics.mjs';
+import { postcardRenderStats } from './postcard-renderer.mjs';
 import dotenv from 'dotenv';
 dotenv.config({ path: process.env.ENV_FILE || '.env.local', quiet: true });
 import express from 'express';
@@ -9,15 +13,20 @@ import bcrypt from 'bcryptjs';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { pool, qschema, hashInvite, hashSession, id } from './memento-db.mjs';
 import { asyncHandler, ApiError, transaction, authorizedMutation, expectedVersion } from './mutation-safety.mjs';
-import { cleanupQueue, imageKeys, startCleanup } from './object-cleanup.mjs';
+import { cleanupQueue, imageKeys } from './object-cleanup.mjs';
+import { createRuntime } from './runtime-lifecycle.mjs';
 import { createImageDelivery } from './image-delivery.mjs';
 import { invalidateImageObject } from './image-cache.mjs';
 import { createRequestBudgets } from './request-budgets.mjs';
+import { createUploadAdmission } from './upload-admission.mjs';
 import { makeImageVariants, resolveVariant, VARIANT_CACHE_CONTROL } from './image-variants.mjs';
 import { listVisitState, recordVisit } from './track-visits.mjs';
+import { setSaved, listSaved, savedCount, savedIdentities, decodeSavedCursor } from './saved-moments.mjs';
+import { queryMoments, queryFacets, overviewMoments, resurfacingCandidates, validateQueryRequest } from './moment-queries.mjs';
 import { validatePostcardRequest } from './postcard-layout.mjs';
 import { renderPostcard } from './postcard-renderer.mjs';
 import { resolvePostcardPhotos } from './postcard-sources.mjs';
+import { createPostcardPipeline } from './postcard-pipeline.mjs';
 
 const app = express();
 // Express 4 does not catch rejected async handlers (including pool acquisition).
@@ -56,6 +65,7 @@ const imageDelivery = createImageDelivery({
 });
 app.disable('x-powered-by');
 app.set('trust proxy', 'loopback');
+app.use(operationalMetrics.middleware);
 // Keep liveness independent of database, authentication and R2 availability.
 app.get('/health', (_req, res) => res.status(200).json({ ok: true, service: 'memento-api' }));
 app.use(express.json({ limit: '1mb', strict: true }));
@@ -367,6 +377,131 @@ app.get('/api/moments', auth, async (req,res,next) => { try {
   const imagesByMoment=new Map(); for(const image of images.rows){const key=`${image.owner_id}:${image.moment_id}`;const list=imagesByMoment.get(key)||[];list.push(image);imagesByMoment.set(key,list);}
   res.json({moments:rows.map(row=>safeMoment(row.document,imagesByMoment.get(`${row.owner_id}:${row.id}`)||[],reactions.get(`${row.owner_id}:${row.id}`)||[],row.version,row.owner_id))});
 } catch(e){next(e);} });
+// Phase 3 Task 3.1: the bounded read. Additive on purpose: GET /api/moments
+// still returns the whole accessible set because header metrics, track counts,
+// facets, resurfacing, Blindbox, postcards and JSON backup all still depend on
+// it. It becomes the default only once every one of those has migrated.
+//
+// This is a read, so it deliberately takes no owner write lock and is not
+// metered as a content mutation: browsing must not queue behind editing.
+app.post('/api/moments/query', auth, asyncHandler(async (req, res) => {
+  const request = validateQueryRequest(req.body, req.user.id);
+  const page = await queryMoments(pool, req.user.id, { ...request, cursor: req.body?.cursor ?? null }, DB_SCHEMA, { reactionSummaries, safeMoment });
+  // Totals and facets cost one extra aggregate query, so they are opt-in; both
+  // come from the same authorized scope and filters as the page itself.
+  const aggregate = request.includeTotal || request.includeFacets
+    ? await queryFacets(pool, req.user.id, request, DB_SCHEMA)
+    : null;
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    moments: page.moments,
+    nextCursor: page.nextCursor,
+    ...(aggregate && request.includeTotal ? { total: aggregate.total } : {}),
+    ...(aggregate && request.includeFacets
+      ? { facets: { milestones: aggregate.milestones, withImages: aggregate.with_images, years: aggregate.years, earliest: aggregate.earliest, latest: aggregate.latest } }
+      : {}),
+  });
+}));
+
+// Phase 3 Task 3.2: full-scope account summary. The header, track counts, tag
+// counts and year list all need every authorized memory, not just the page on
+// screen — deriving them from a paginated list would make the header report
+// only the first 40 memories as the account grew. This is one aggregate read
+// over the same authorization boundary, so it stays correct independently.
+// It must be declared BEFORE /api/moments/:id, which would otherwise match it.
+app.get('/api/moments/overview', auth, asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ overview: await overviewMoments(pool, req.user.id, DB_SCHEMA) });
+}));
+
+// Phase 3 Task 3.2: "Ngày ấy" candidate pool. The client sends its own local
+// calendar date rather than the server inferring one, so the same rule that
+// decides "on this day in a previous year" is the one the user is looking at
+// instead of a UTC conversion that silently shifts it. It is a read and a
+// POST only because the date belongs in a body, not a logged query string.
+app.post('/api/moments/resurfacing', auth, asyncHandler(async (req, res) => {
+  const today = req.body?.today;
+  if (typeof today !== 'string') throw new ApiError(400, 'today is required');
+  const rows = await resurfacingCandidates(pool, req.user.id, today, DB_SCHEMA);
+  // The pool is bounded by track count and calendar pattern, never by account
+  // size, so one batched image read covers it — no per-card query, and no
+  // album-wide original prefetch.
+  const images = rows.length
+    ? await pool.query(
+      `SELECT DISTINCT ON (owner_id,moment_id) owner_id, moment_id, id FROM ${DB_SCHEMA}.images WHERE (owner_id, moment_id) IN (SELECT * FROM unnest($1::uuid[], $2::text[])) ORDER BY owner_id,moment_id,created_at,id`,
+      [rows.map(r => r.owner_id), rows.map(r => r.id)],
+    )
+    : { rows: [] };
+  const imagesByMoment = new Map();
+  for (const image of images.rows) {
+    const key = `${image.owner_id}:${image.moment_id}`;
+    const list = imagesByMoment.get(key) || [];
+    list.push(image);
+    imagesByMoment.set(key, list);
+  }
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    moments: rows.map(row => safeMoment(row.document, imagesByMoment.get(`${row.owner_id}:${row.id}`) || [], [], row.version, row.owner_id)),
+  });
+}));
+
+// Exact single-moment read: same authorization boundary as the list, used by
+// the client to compare a local draft against the current server state after a
+// 409. A revoked or unrelated resource answers 404, never stale metadata.
+app.get('/api/moments/:id',auth,async(req,res,next)=>{try{
+  const ownerId=req.query.ownerId;
+  if(!validUuid(ownerId))throw new ApiError(400,'Exact moment identity (ownerId) is required');
+  const moment=await exactMomentAccess(req.user.id,{ownerId,id:req.params.id});
+  if(!moment)return fail(res,404,'Moment not found');
+  const [images,reactions]=await Promise.all([
+    pool.query(`SELECT id FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2 ORDER BY created_at`,[moment.owner_id,moment.id]),
+    reactionSummaries(req.user.id,[moment]),
+  ]);
+  res.json({moment:safeMoment(moment.document,images.rows,reactions.get(`${moment.owner_id}:${moment.id}`)||[],moment.version,moment.owner_id)});
+}catch(e){next(e);}});
+// Phase 2 Task 2.2: a save is the caller's private bookkeeping. It is
+// serialized with the owner's mutation locks and rechecks exact access under
+// the lock, so a revoke, move or delete racing the save always wins.
+app.put('/api/moments/:id/saved', auth, async (req, res, next) => { try {
+  const ownerId = req.body?.ownerId;
+  if (!validUuid(ownerId)) throw new ApiError(400, 'Invalid moment owner');
+  const active = req.body?.active;
+  if (typeof active !== 'boolean') throw new ApiError(400, 'active must be a boolean');
+  const result = await mutate(req, (userId, identity, client) => exactMomentAccess(userId, identity, client),
+    { ownerId, id: req.params.id },
+    async (client) => setSaved(client, req.user.id, { ownerId, id: req.params.id }, active, DB_SCHEMA));
+  res.json({ saved: result });
+} catch (e) { next(e); } });
+
+// The caller's saved identities, intersected with moments they can currently
+// read. One read renders the pressed state everywhere; a revoked memory leaves
+// both the list and the count without leaking an id or a title.
+app.get('/api/saved', auth, asyncHandler(async (req, res) => {
+  const [saved, count] = await Promise.all([
+    savedIdentities(pool, req.user.id, DB_SCHEMA),
+    savedCount(pool, req.user.id, DB_SCHEMA),
+  ]);
+  res.set('Cache-Control', 'no-store');
+  res.json({ saved: saved.map(key => {
+    const [owner, id] = key.split(':');
+    return { ownerId: owner, id };
+  }), count });
+}));
+
+// Paginated saved view, newest first, for when the caller wants the list
+// itself rather than the pressed state on cards they already have loaded.
+app.get('/api/saved/moments', auth, asyncHandler(async (req, res) => {
+  const raw = req.query.cursor;
+  const cursor = decodeSavedCursor(raw);
+  if (cursor === undefined) throw new ApiError(400, 'Invalid cursor');
+  const limitRaw = req.query.limit ?? '40';
+  const limit = Number(limitRaw);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new ApiError(400, 'Invalid limit');
+  const page = await listSaved(pool, req.user.id, { limit, cursor }, DB_SCHEMA);
+  res.set('Cache-Control', 'no-store');
+  res.json(page);
+}));
+
 app.get('/api/moments/:id/perspectives', auth, async (req,res,next) => { try {
   const ownerId=req.query.ownerId, limitRaw=req.query.limit ?? '20';
   const limit=Number(limitRaw);
@@ -521,10 +656,16 @@ app.delete('/api/moments/:id',auth,async(req,res)=>{
   });res.json({ok:true});
 });
 
-const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:MAX_IMAGE,files:1}});
+// fields/parts/fieldSize bound multipart metadata; file count stays one.
+// Aggregate concurrent buffering is bounded by uploadAdmission, not by these.
+const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:MAX_IMAGE,files:1,fields:8,parts:10,fieldSize:4096}});
 function imageType(buffer){if(buffer.length>=3&&buffer[0]===0xff&&buffer[1]===0xd8&&buffer[2]===0xff)return'image/jpeg';if(buffer.length>=8&&buffer.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))return'image/png';if(buffer.length>=6&&['GIF87a','GIF89a'].includes(buffer.toString('ascii',0,6)))return'image/gif';if(buffer.length>=12&&buffer.toString('ascii',0,4)==='RIFF'&&buffer.toString('ascii',8,12)==='WEBP')return'image/webp';return null;}
-app.post('/api/images',auth,upload.single('file'),async(req,res,next)=>{
+// Admission runs after authentication but BEFORE Multer buffers the body:
+// overload is denied while zero multipart bytes are held in memory.
+export const uploadAdmission = createUploadAdmission();
+app.post('/api/images',auth,uploadAdmission.admit,upload.single('file'),async(req,res,next)=>{
   let jobId;
+  req.uploadHandlerStarted = true;
   try {
     if(!req.file||typeof req.body.momentId!=='string'||!validUuid(req.body.ownerId))throw new ApiError(400,'file, momentId and ownerId are required');
     const momentIdentity={ownerId:req.body.ownerId,id:req.body.momentId};
@@ -568,6 +709,10 @@ app.post('/api/images',auth,upload.single('file'),async(req,res,next)=>{
     // If DB is unavailable, durable staged job remains recoverable after its lease expires.
     if(jobId)await cleanup.abandon(jobId).catch(()=>{});
     next(error);
+  } finally {
+    // The admitted capacity is held until transform/storage work has settled,
+    // including on failure. Release is idempotent.
+    req.releaseUploadSlot?.();
   }
 });
 app.get('/api/images/:id',auth,async(req,res,next)=>{try{
@@ -578,6 +723,9 @@ app.get('/api/images/:id',auth,async(req,res,next)=>{try{
 }catch(e){next(e);}});
 // Postcard export: owner-only, no persistence, no public URL. The rendered PNG
 // is returned once and never stored or shared.
+// Whole-pipeline admission happens BEFORE any source read: overload is
+// rejected with 503 + Retry-After while zero R2 bytes have been fetched.
+export const postcardPipeline = createPostcardPipeline();
 app.post('/api/postcards/render',auth,async(req,res,next)=>{try{
   let spec;
   try { spec = validatePostcardRequest(req.body); }
@@ -586,11 +734,20 @@ app.post('/api/postcards/render',auth,async(req,res,next)=>{try{
   const onClose = () => { if (!res.writableFinished) controller.abort(); };
   res.once('close', onClose);
   try {
-    const photos = await resolvePostcardPhotos(spec, {
-      userId: req.user.id, pool, qschema, s3, bucket: process.env.R2_BUCKET, prefix: R2_PREFIX,
-      resolveVariant, exactMomentAccess, imageAccess,
-    }, controller.signal);
-    const png = await renderPostcard({ spec, photos, signal: controller.signal });
+    const png = await postcardPipeline.run({
+      userId: req.user.id,
+      photoCount: spec.images.filter(Boolean).length,
+      signal: controller.signal,
+      work: async ({ signal, sourceSlot }) => {
+        const photos = await resolvePostcardPhotos(spec, {
+          userId: req.user.id, pool, qschema, s3, bucket: process.env.R2_BUCKET, prefix: R2_PREFIX,
+          resolveVariant, exactMomentAccess, imageAccess, sourceSlot,
+        }, signal);
+        // renderPostcard keeps its slot until native work settles; the pipeline
+        // reservation is released only after that promise finally settles.
+        return renderPostcard({ spec, photos, signal });
+      },
+    });
     if (controller.signal.aborted || res.destroyed) return;
     res.setHeader('Content-Type', 'image/png');
     res.setHeader('Content-Length', String(png.length));
@@ -634,9 +791,26 @@ app.delete('/api/tags/:tag',auth,async(req,res)=>{
   res.json({ok:true});
 });
 
+mountExportSnapshotRoutes(app, { auth, pool, qschema, safeMoment });
+mountDiscoveryRoutes(app, { auth: authenticate, pool, qschema, safeMoment });
+
 // Named dependencies support deterministic fault injection without test-only HTTP routes.
+// Runtime wiring is shared by direct execution and the PM2 wrapper so the leased
+// cleanup worker starts exactly once through whichever entrypoint actually serves.
+export const runtime = createRuntime({
+  app, pool, cleanup,
+  backgroundTick: async () => {
+    await cleanupExpiredSessions(pool, qschema, 100);
+    if (process.env.MEMENTO_OPERATIONAL_LOG === '1') {
+      const snapshot = await sampleOperationalState({ pool, qschema, imageDelivery, renderStats: postcardRenderStats });
+      console.info(JSON.stringify({ type: 'memento-operational', ...snapshot }));
+    }
+  },
+  onCleanupError: () => process.stderr.write('Cleanup drain unavailable\n'),
+  onListenError: (error) => { console.error('Memento API listen failed:', error?.message || error); process.exit(1); },
+});
 export { app, s3 };
 // Postcard failures are always actionable messages with an explicit status;
 // they must never leak a stack, a storage key or a silent success.
-app.use((err,req,res,next)=>{if(res.headersSent)return next(err);if(err?.postcard===true&&Number.isInteger(err.status)){res.set('Cache-Control','no-store');if(err.retryAfter)res.set('Retry-After',String(err.retryAfter));return res.status(err.status===499?499:err.status).json({error:err.message});}if(['IMAGE_BUSY','IMAGE_TIMEOUT'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');res.set('Retry-After','2');return fail(res,503,'Image delivery temporarily unavailable');}if(['IMAGE_LENGTH_MISMATCH','IMAGE_METADATA_INVALID'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');return fail(res,502,'Image storage temporarily unavailable');}if(['IMAGE_INVALID','IMAGE_TOO_LARGE','IMAGE_TRANSFORM_BUSY','TRANSFORM_BUSY'].includes(err?.code)){const status=err.code==='IMAGE_INVALID'?400:err.code==='IMAGE_TOO_LARGE'?413:503;if(status===503)res.set('Retry-After','2');return fail(res,status,status===400?'Invalid or unsupported image':status===413?'Image is too large':'Image processing temporarily unavailable');}if(err instanceof ApiError)return res.status(err.status).json({error:err.message,...err.details});if(['ECONNREFUSED','ECONNRESET','ETIMEDOUT','EHOSTUNREACH','53300','57P01','57P03','08006'].includes(err?.code)||/connection.*(timeout|terminated|closed)|timeout.*connect/i.test(err?.message||''))return fail(res,503,'Dependency temporarily unavailable');if(err instanceof multer.MulterError)return res.status(err.code==='LIMIT_FILE_SIZE'?413:400).json({error:'Invalid upload'});if(err?.code==='23505')return fail(res,409,'Resource already exists');if(err?.name==='NoSuchKey')return fail(res,404,'Image not found');res.status(500).json({error:'Internal server error'});});
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){const stopCleanup=startCleanup(cleanup,()=>process.stderr.write('Cleanup drain unavailable\n'));const server=app.listen(PORT,'127.0.0.1',()=>console.log(`Memento API listening on 127.0.0.1:${PORT}`));const stop=()=>{stopCleanup();server.close(async()=>{await pool.end();process.exit(0);});};process.on('SIGTERM',stop);process.on('SIGINT',stop);}
+app.use((err,req,res,next)=>{if(res.headersSent)return next(err);if(err?.postcard===true&&Number.isInteger(err.status)){res.set('Cache-Control','no-store');if(err.retryAfter)res.set('Retry-After',String(err.retryAfter));return res.status(err.status===499?499:err.status).json({error:err.message});}if(['IMAGE_BUSY','IMAGE_TIMEOUT'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');res.set('Retry-After','2');return fail(res,503,'Image delivery temporarily unavailable');}if(['IMAGE_LENGTH_MISMATCH','IMAGE_METADATA_INVALID'].includes(err?.code)){res.removeHeader('Content-Length');res.removeHeader('ETag');res.set('Cache-Control','no-store');return fail(res,502,'Image storage temporarily unavailable');}if(['IMAGE_INVALID','IMAGE_TOO_LARGE','IMAGE_TRANSFORM_BUSY','TRANSFORM_BUSY'].includes(err?.code)){const status=err.code==='IMAGE_INVALID'?400:err.code==='IMAGE_TOO_LARGE'?413:503;if(status===503)res.set('Retry-After','2');return fail(res,status,status===400?'Invalid or unsupported image':status===413?'Image is too large':'Image processing temporarily unavailable');}if(err instanceof ApiError)return res.status(err.status).json({error:err.message,...err.details});if(err?.retryableTimeout){res.set('Cache-Control','no-store');res.set('Retry-After','1');return fail(res,503,'The database was busy. Your change was not saved; please try again.');}if(err?.ambiguousCommit){res.set('Cache-Control','no-store');return fail(res,503,'The connection dropped while saving. Refresh to check whether your change was saved before trying again.');}if(['ECONNREFUSED','ECONNRESET','ETIMEDOUT','EHOSTUNREACH','53300','57P01','57P03','08006'].includes(err?.code)||/connection.*(timeout|terminated|closed)|timeout.*connect/i.test(err?.message||''))return fail(res,503,'Dependency temporarily unavailable');if(err instanceof multer.MulterError)return res.status(err.code==='LIMIT_FILE_SIZE'?413:400).json({error:'Invalid upload'});if(err?.code==='UPLOAD_BODY_STALLED'){res.set('Cache-Control','no-store');return fail(res,408,'The upload stalled before it finished. Please try again.');}if(err?.code==='23505')return fail(res,409,'Resource already exists');if(err?.name==='NoSuchKey')return fail(res,404,'Image not found');res.status(500).json({error:'Internal server error'});});
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){const started=runtime.start({port:PORT,log:message=>console.log(message)});const stop=()=>{started.stop({settleMs:10_000}).then(()=>process.exit(0),()=>process.exit(0));setTimeout(()=>process.exit(0),15_000).unref();};process.on('SIGTERM',stop);process.on('SIGINT',stop);}

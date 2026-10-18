@@ -7,7 +7,10 @@ import {
   Image as ImageIcon,
   ArrowUpDown,
   Calendar,
+  CalendarRange,
   Sparkles,
+  Bookmark,
+  BookmarkCheck,
   Tag,
   LayoutList,
   Columns,
@@ -15,6 +18,7 @@ import {
 } from 'lucide-react';
 import { FilterState, ViewMode, EmotionKey } from '../types';
 import { EMOTIONS } from '../data/emotions';
+import { validateDateRange } from '../lib/momentFilters';
 
 interface FilterBarProps {
   filters: FilterState;
@@ -24,8 +28,14 @@ interface FilterBarProps {
   availableYears: string[];
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
+  searchPending?: boolean;
+  onSearchEnter?: () => void;
+  onSearchCompositionStart?: () => void;
+  onSearchCompositionEnd?: () => void;
   totalFilteredCount: number;
   totalCount: number;
+  /** The caller's own saved count, from the server. */
+  savedCount: number;
 }
 
 export const FilterBar: React.FC<FilterBarProps> = ({
@@ -38,6 +48,8 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   onViewModeChange,
   totalFilteredCount,
   totalCount,
+  savedCount,
+  searchPending, onSearchEnter, onSearchCompositionStart, onSearchCompositionEnd,
 }) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -46,8 +58,12 @@ export const FilterBar: React.FC<FilterBarProps> = ({
     filters.selectedTags.length +
     filters.selectedEmotions.length +
     (filters.selectedYear !== 'all' ? 1 : 0) +
+    (filters.dateFrom || filters.dateTo ? 1 : 0) +
     (filters.milestonesOnly ? 1 : 0) +
-    (filters.hasImagesOnly ? 1 : 0);
+    (filters.hasImagesOnly ? 1 : 0) +
+    (filters.savedOnly ? 1 : 0);
+  // Shared with the server query: the same message for the same bad range.
+  const rangeError = validateDateRange(filters.dateFrom, filters.dateTo);
 
   const toggleTag = (tag: string) => {
     if (filters.selectedTags.includes(tag)) {
@@ -84,13 +100,18 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             id="timeline-search-input"
             value={filters.search}
             onChange={(e) => onFilterChange({ search: e.target.value })}
+            onKeyDown={(e) => { if(e.key === 'Enter' && !e.nativeEvent.isComposing) onSearchEnter?.(); }}
+            onCompositionStart={onSearchCompositionStart}
+            onCompositionEnd={onSearchCompositionEnd}
             placeholder="Search events, ideas, emotions, cities, or stories..."
             className="w-full pl-9 pr-8 py-2 rounded-xl text-xs sm:text-sm border border-stone-200 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition"
           />
           {filters.search && (
             <button
+              type="button"
+              aria-label="Clear search"
               onClick={() => onFilterChange({ search: '' })}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-stone-400 hover:text-stone-600"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 min-h-11 min-w-11 flex items-center justify-center text-stone-400 hover:text-stone-600"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -98,13 +119,16 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         </div>
 
         {/* View Mode Switcher + Sort + Advanced Toggle */}
-        <div className="flex items-center gap-2 justify-between sm:justify-end">
+        <div className="flex flex-wrap items-center gap-2 justify-between sm:justify-end">
           {/* View toggle tabs */}
           <div className="flex items-center p-1 rounded-xl bg-stone-100 dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700">
             <button
               id="view-timeline-btn"
+              type="button"
+              aria-pressed={viewMode === 'timeline'}
+              aria-label="Timeline view"
               onClick={() => onViewModeChange('timeline')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
                 viewMode === 'timeline'
                   ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
@@ -117,8 +141,11 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
             <button
               id="view-compact-btn"
+              type="button"
+              aria-pressed={viewMode === 'compact'}
+              aria-label="Compact list view"
               onClick={() => onViewModeChange('compact')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
                 viewMode === 'compact'
                   ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
@@ -131,8 +158,11 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
             <button
               id="view-gallery-btn"
+              type="button"
+              aria-pressed={viewMode === 'gallery'}
+              aria-label="Gallery view"
               onClick={() => onViewModeChange('gallery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
                 viewMode === 'gallery'
                   ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
@@ -147,12 +177,14 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           {/* Sort Direction Toggle */}
           <button
             id="toggle-sort-direction"
+            type="button"
+            aria-label={filters.sortDirection === 'newest' ? 'Sorted newest first. Activate to sort oldest first' : 'Sorted oldest first. Activate to sort newest first'}
             onClick={() =>
               onFilterChange({
                 sortDirection: filters.sortDirection === 'newest' ? 'oldest' : 'newest',
               })
             }
-            className="flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-medium border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:border-stone-300"
+            className="flex items-center gap-1 px-3 py-2 min-h-11 rounded-xl text-xs font-medium border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:border-stone-300"
             title="Sort direction"
           >
             <ArrowUpDown className="w-3.5 h-3.5 text-stone-500" />
@@ -164,8 +196,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           {/* More Filters Toggle */}
           <button
             id="toggle-advanced-filters"
+            type="button"
+            aria-expanded={showAdvanced}
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className={`flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-medium transition ${
+            className={`flex items-center gap-1 px-3 py-2 min-h-11 rounded-xl text-xs font-medium transition ${
               showAdvanced || activeFiltersCount > 0
                 ? 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-800'
                 : 'border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:border-stone-300'
@@ -188,8 +222,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           <Calendar className="w-3 h-3" /> Year:
         </span>
         <button
+          type="button"
+          aria-pressed={filters.selectedYear === 'all'}
           onClick={() => onFilterChange({ selectedYear: 'all' })}
-          className={`px-3 py-1 rounded-full font-medium transition shrink-0 ${
+          className={`px-3 py-1 min-h-11 rounded-full font-medium transition shrink-0 ${
             filters.selectedYear === 'all'
               ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900'
               : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -200,8 +236,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         {availableYears.map((yr) => (
           <button
             key={yr}
+            type="button"
+            aria-pressed={filters.selectedYear === yr}
             onClick={() => onFilterChange({ selectedYear: yr })}
-            className={`px-3 py-1 rounded-full font-medium transition shrink-0 ${
+            className={`px-3 py-1 min-h-11 rounded-full font-medium transition shrink-0 ${
               filters.selectedYear === yr
                 ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900'
                 : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -211,12 +249,51 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           </button>
         ))}
 
+        {/* Date range: an optional inclusive local-calendar window. Picking a
+            year clears it and vice versa, through one shared rule. */}
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+          <span className="text-stone-400 font-medium flex items-center gap-1 shrink-0">
+            <CalendarRange className="w-3 h-3" /> Dates
+          </span>
+          <label className="sr-only" htmlFor="filter-date-from">From date</label>
+          <input
+            id="filter-date-from"
+            type="date"
+            value={filters.dateFrom}
+            max={filters.dateTo || undefined}
+            onChange={(e) => onFilterChange({ dateFrom: e.target.value })}
+            className="px-2 py-1.5 min-h-11 min-w-0 flex-1 sm:flex-none basis-24 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+          />
+          <span className="text-stone-400 shrink-0" aria-hidden="true">→</span>
+          <label className="sr-only" htmlFor="filter-date-to">To date</label>
+          <input
+            id="filter-date-to"
+            type="date"
+            value={filters.dateTo}
+            min={filters.dateFrom || undefined}
+            onChange={(e) => onFilterChange({ dateTo: e.target.value })}
+            className="px-2 py-1.5 min-h-11 min-w-0 flex-1 sm:flex-none basis-24 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+          />
+          {(filters.dateFrom || filters.dateTo) && (
+            <button
+              type="button"
+              aria-label="Clear date range"
+              onClick={() => onFilterChange({ dateFrom: '', dateTo: '' })}
+              className="min-h-11 min-w-11 flex items-center justify-center text-stone-400 hover:text-stone-600"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
         {/* Quick toggle chips */}
         <div className="h-4 w-px bg-stone-200 dark:bg-stone-700 mx-1 shrink-0" />
 
         <button
+          type="button"
+          aria-pressed={filters.milestonesOnly}
           onClick={() => onFilterChange({ milestonesOnly: !filters.milestonesOnly })}
-          className={`px-3 py-1 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
+          className={`px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
             filters.milestonesOnly
               ? 'bg-amber-500 text-white shadow-xs'
               : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -225,9 +302,28 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           <Star className="w-3 h-3 fill-current" /> Milestones
         </button>
 
+        {/* Saved is the caller's own list: a chip beside the other filters,
+            never a new global tab and never a milestone or a reaction. */}
         <button
+          type="button"
+          id="filter-saved-only"
+          aria-pressed={filters.savedOnly}
+          onClick={() => onFilterChange({ savedOnly: !filters.savedOnly })}
+          className={`px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
+            filters.savedOnly
+              ? 'bg-amber-500 text-white shadow-xs'
+              : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
+          }`}
+        >
+          {filters.savedOnly ? <BookmarkCheck className="w-3 h-3" /> : <Bookmark className="w-3 h-3" />} Saved
+          <span className="ml-0.5 text-[11px] font-bold opacity-80">{savedCount}</span>
+        </button>
+
+        <button
+          type="button"
+          aria-pressed={filters.hasImagesOnly}
           onClick={() => onFilterChange({ hasImagesOnly: !filters.hasImagesOnly })}
-          className={`px-3 py-1 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
+          className={`px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
             filters.hasImagesOnly
               ? 'bg-sky-600 text-white shadow-xs'
               : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -238,13 +334,21 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
         {activeFiltersCount > 0 && (
           <button
+            type="button"
+            aria-label="Reset all filters"
             onClick={onResetFilters}
-            className="text-stone-500 hover:text-rose-600 text-xs ml-auto shrink-0 flex items-center gap-1 hover:underline"
+            className="text-stone-500 hover:text-rose-600 text-xs ml-auto shrink-0 flex items-center gap-1 hover:underline px-2 min-h-11"
           >
             <X className="w-3 h-3" /> Reset all
           </button>
         )}
       </div>
+
+      {rangeError && (
+        <p role="alert" id="filter-range-error" className="text-xs text-rose-700 dark:text-rose-300">
+          {rangeError}
+        </p>
+      )}
 
       {/* Advanced Tag & Emotion Filters drawer */}
       {showAdvanced && (
@@ -335,9 +439,8 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
       {/* Filter status summary */}
       <div className="flex items-center justify-between text-xs text-stone-500 dark:text-stone-400 pt-1">
-        <span>
-          Showing <strong className="text-stone-900 dark:text-stone-100">{totalFilteredCount}</strong> of{' '}
-          {totalCount} events
+        <span role="status" aria-live="polite" aria-busy={searchPending}>
+          {searchPending ? 'Updating memories…' : <>Showing <strong className="text-stone-900 dark:text-stone-100">{totalFilteredCount}</strong> of{' '}{totalCount} events</>}
         </span>
         {activeFiltersCount > 0 && (
           <span className="text-amber-700 dark:text-amber-400 font-medium">

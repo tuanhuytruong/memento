@@ -1,7 +1,12 @@
 import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
-import { exportTimelineData } from './lib/storage';
+import { AccountOverview, TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
+import { buildCompleteBackup, downloadBackup } from './lib/exportBackup';
 import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
+import { matchesMomentFilters, compareMoments, filterProjection, applyFilterPatch } from './lib/momentFilters';
+import { releaseAllMomentDrafts } from './lib/useMomentDraft';
+import { useMomentFeed } from './lib/useMomentFeed';
+import { useDebouncedSearch } from './lib/useDebouncedSearch';
+import { LoadMoreMemories } from './components/LoadMoreMemories';
 import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation } from './lib/api';
 import { CollaborationModal, SharedInvitations } from './components/CollaborationModal';
 import { AuthScreen } from './components/AuthScreen';
@@ -30,6 +35,9 @@ export default function App() {
   const [dataReady, setDataReady] = useState(false);
   const [dataLoading, setDataLoading] = useState(false);
   const [dataError, setDataError] = useState('');
+  const [invitationError, setInvitationError] = useState('');
+  const [visitError, setVisitError] = useState('');
+  const [feedRevision, setFeedRevision] = useState(0);
   const [uploadRunning, setUploadRunning] = useState(false);
   const [pendingImageRetry, setPendingImageRetry] = useState<{ momentId: string; ownerId: string; files: { file: File; uploadId: string }[] } | null>(null);
   const [eventTracks, setEventTracks] = useState<EventTrack[]>([]);
@@ -37,11 +45,22 @@ export default function App() {
   const [apiTags, setApiTags] = useState<ApiTag[]>([]);
   const [collaborationInvitations, setCollaborationInvitations] = useState<CollaborationInvitation[]>([]);
   const [visits, setVisits] = useState<MemoryVisit[]>([]);
+  // Phase 2: the caller's own saves. Server-authoritative; the client only
+  // reports intent and rolls back when the server disagrees.
+  // Full-scope account summary. Served separately from the list so header
+  // metrics and track counts stay correct once the list is paginated.
+  const [overview, setOverview] = useState<AccountOverview | null>(null);
+  const [savedKeys, setSavedKeys] = useState<ReadonlySet<string>>(new Set());
+  const [savedCount, setSavedCount] = useState(0);
+  const [saveState, setSaveState] = useState<'idle' | 'pending' | 'error'>('idle');
+  const saveGeneration = useRef(0);
   const visitWrites = useRef(new Map<string, number>());
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const [perspectiveError, setPerspectiveError] = useState('');
   const authGenerationRef = useRef(0);
+  // Which card opened the detail view, so closing can return focus and scroll.
+  const detailOpenerKey = useRef<string | null>(null);
   const uploadBusy = useRef(false);
   const reactionPending = useRef(new Set<string>());
   const assertSession = (generation: number) => { if (generation !== authGenerationRef.current) throw new Error('Session changed. Request result discarded.'); };
@@ -51,10 +70,11 @@ export default function App() {
     setDataLoading(true);
     setDataError('');
     try {
-      const [accountData, invitations] = await Promise.all([loadAccountData(), dataApi.collaborationInvitations()]);
+      const [accountData, invitations] = await Promise.all([loadAccountData(), dataApi.collaborationInvitations().catch(() => { if (generation === authGenerationRef.current) setInvitationError('Invitations unavailable. Retry invitations.'); return []; })]);
       if (generation !== authGenerationRef.current) return;
       setEventTracks(accountData.tracks);
-      setEvents(accountData.moments);
+      setOverview(accountData.overview);
+      setFeedRevision(n => n + 1);
       setApiTags(accountData.tags);
       setCollaborationInvitations(invitations);
       setDataReady(true);
@@ -68,6 +88,7 @@ export default function App() {
         setAuthStatus('anonymous');
         setEventTracks([]);
         setEvents([]);
+        setOverview(null); // never carry one account's counts into another session
         setApiTags([]);
         setCollaborationInvitations([]);
         setDataReady(false);
@@ -121,6 +142,7 @@ export default function App() {
     setDataReady(false);
     setEventTracks([]);
     setEvents([]);
+    setOverview(null); // never carry one account's counts into another session
     setApiTags([]);
     await loadData();
   };
@@ -131,6 +153,7 @@ export default function App() {
     setDataReady(false);
     setEventTracks([]);
     setEvents([]);
+    setOverview(null); // never carry one account's counts into another session
     setApiTags([]);
     setUser(null);
     setAuthStatus('anonymous');
@@ -174,8 +197,11 @@ export default function App() {
     selectedTags: [],
     selectedEmotions: [],
     selectedYear: 'all',
+    dateFrom: '',
+    dateTo: '',
     milestonesOnly: false,
     hasImagesOnly: false,
+    savedOnly: false,
     sortDirection: 'newest',
   });
 
@@ -210,7 +236,9 @@ export default function App() {
     setDataLoading(false); setUploadRunning(false); uploadBusy.current = false; reactionPending.current.clear();
     setSelectedTrackKey('all'); setVisits([]); visitWrites.current.clear();
     setIsPostcardOpen(false);
-    setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', milestonesOnly: false, hasImagesOnly: false }));
+    // No private draft crosses an account or session boundary.
+    releaseAllMomentDrafts().forEach((url) => { try { URL.revokeObjectURL(url); } catch { /* already revoked */ } });
+    setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', dateFrom: '', dateTo: '', milestonesOnly: false, hasImagesOnly: false, savedOnly: false }));
   }
 
   // Visit history is private to this visitor; a failed write or read never blocks the timeline.
@@ -237,19 +265,102 @@ export default function App() {
     const generation = authGenerationRef.current;
     dataApi.trackVisits()
       .then(list => { if (generation === authGenerationRef.current) setVisits(list); })
-      .catch(() => { if (generation === authGenerationRef.current) setVisits([]); });
+      .catch(() => { if (generation === authGenerationRef.current) { setVisits([]); setVisitError('Visit history unavailable.'); } });
   }, [user, dataReady]);
+
+  // Loads alongside the rest of the caller's own data, fenced by session
+  // generation so a previous account's saves can never populate this one.
+  useEffect(() => {
+    if (!user || !dataReady) return;
+    const generation = authGenerationRef.current;
+    dataApi.saved()
+      .then(result => {
+        if (generation !== authGenerationRef.current) return;
+        setSavedKeys(new Set(result.saved.map(item => `${item.ownerId}:${item.id}`)));
+        setSavedCount(result.count);
+      })
+      .catch(() => {
+        if (generation !== authGenerationRef.current) return;
+        setSavedKeys(new Set());
+        setSavedCount(0);
+      });
+  }, [user, dataReady]);
+
+  /**
+   * Toggle the caller's own save. The server is the authority: the list is
+   * updated optimistically so the control feels immediate, then corrected from
+   * the response, and rolled back entirely on any failure. A generation bump
+   * mid-flight discards the result rather than writing into the next session.
+   */
+  const handleToggleSave = useCallback(async (event: TimelineEvent) => {
+    const ownerId = event.resourceOwnerId;
+    const key = `${ownerId}:${event.id}`;
+    if (!ownerId) return;
+    const generation = authGenerationRef.current;
+    const requestGeneration = ++saveGeneration.current;
+    const wasSaved = savedKeys.has(key);
+    setSaveState('pending');
+    // Flip locally first; a revoke or a slow network must not feel stuck.
+    setSavedKeys(previous => {
+      const next = new Set(previous);
+      if (wasSaved) next.delete(key); else next.add(key);
+      return next;
+    });
+    setSavedCount(count => Math.max(0, count + (wasSaved ? -1 : 1)));
+    try {
+      const result = await dataApi.setSaved(ownerId, event.id, !wasSaved);
+      if (generation !== authGenerationRef.current || requestGeneration !== saveGeneration.current) return;
+      const saved = Boolean(result.saved?.saved);
+      setSavedKeys(previous => {
+        const next = new Set(previous);
+        if (saved) next.add(key); else next.delete(key);
+        return next;
+      });
+      setSavedCount(previous => Math.max(0, previous + (saved === !wasSaved ? 0 : saved ? 1 : -1)));
+      setSaveState('idle');
+      if (filters.savedOnly) setFeedRevision(n => n + 1);
+    } catch {
+      if (generation !== authGenerationRef.current || requestGeneration !== saveGeneration.current) return;
+      // Roll back to what the server actually holds.
+      setSavedKeys(previous => {
+        const next = new Set(previous);
+        if (wasSaved) next.add(key); else next.delete(key);
+        return next;
+      });
+      setSavedCount(count => Math.max(0, count + (wasSaved ? 1 : -1)));
+      setSaveState('error');
+    }
+  }, [savedKeys, filters.savedOnly]);
 
   const openDetail = (event: TimelineEvent) => {
     const track = eventTracks.find(item => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
+    // Remember where the user came from so closing returns focus and scroll to
+    // that card instead of dropping them at the top of the page.
+    detailOpenerKey.current = momentIdentity(event);
     recordVisit(track);
     setEventToView(event);
   };
 
+  /** Close the detail and put the user back where they were in the list. */
+  const closeDetail = () => {
+    const key = detailOpenerKey.current;
+    detailOpenerKey.current = null;
+    setEventToView(null);
+    if (!key) return;
+    window.requestAnimationFrame(() => {
+      const card = document.getElementById(`event-card-${key}`);
+      if (!card) return;
+      card.focus({ preventScroll: true });
+      card.scrollIntoView({ block: 'nearest' });
+    });
+  };
+
   /** Suggestion open: exact identity, no unrelated filter may hide its track. */
-  const openSuggested = (event: TimelineEvent) => {
+  const openSuggested = async (event: TimelineEvent) => {
+    const generation = authGenerationRef.current;
+    try { event = await dataApi.moment(event.id, event.resourceOwnerId!); assertSession(generation); } catch { if (generation === authGenerationRef.current) { setFeedRevision(n => n + 1); setDataError("This memory is no longer available. Refresh your timeline."); } return; }
     const track = eventTracks.find(item => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
-    setFilters(previous => ({ ...previous, search: '', selectedTags: [], selectedEmotions: [], selectedYear: 'all', milestonesOnly: false, hasImagesOnly: false }));
+    setFilters(previous => ({ ...previous, search: '', selectedTags: [], selectedEmotions: [], selectedYear: 'all', dateFrom: '', dateTo: '', milestonesOnly: false, hasImagesOnly: false, savedOnly: false }));
     if (track) handleSelectTrack(track);
     openDetail(event);
   };
@@ -284,20 +395,53 @@ export default function App() {
     await dataApi.deletePerspective(id);
     assertSession(generation);
   };
+  /**
+   * Complete backup: pages through every memory and perspective on the
+   * server, independent of what the list currently has loaded. It fails
+   * closed — if any page, the perspective set or the session itself cannot be
+   * read in full, no file is written and the user is told, because a backup
+   * that looks complete but is not is worse than no backup at all.
+   */
   const exportJsonWithPerspectives = async () => {
     const generation = authGenerationRef.current;
     setPerspectiveError('');
     try {
-      const perspectives = await dataApi.exportPerspectives();
+      const start = await dataApi.exportSnapshot('start', {});
       assertSession(generation);
-      exportTimelineData(eventTracks, events, apiTags.map((tag) => tag.name), perspectives);
+      const collections: Record<string, any[]> = {};
+      for (const kind of ['moments', 'tracks', 'tags', 'perspectives']) {
+        const items: any[] = []; const cursors = new Set<string>(); let cursor: string | null = null;
+        do {
+          const page = await dataApi.exportSnapshot('page', { fingerprint: start.fingerprint, token: start.token, kind, cursor, limit: 100 });
+          assertSession(generation);
+          if (!Array.isArray(page.items) || page.fingerprint !== start.fingerprint || (page.nextCursor !== null && typeof page.nextCursor !== 'string')) throw new Error('Invalid backup page.');
+          items.push(...page.items); cursor = page.nextCursor;
+          if (cursor) { if (cursors.has(cursor)) throw new Error('Backup cursor repeated.'); cursors.add(cursor); }
+        } while (cursor);
+        if (items.length !== start.counts[kind]) throw new Error('Backup component count changed.');
+        const keys = items.map(item => kind === 'moments' || kind === 'tracks' ? `${item.resourceOwnerId}:${item.id}` : kind === 'tags' ? item : item.id);
+        if (new Set(keys).size !== keys.length) throw new Error('Duplicate backup identities.');
+        collections[kind] = items;
+      }
+      const final = await dataApi.exportSnapshot('finalize', { fingerprint: start.fingerprint, token: start.token });
+      assertSession(generation);
+      if (final.complete !== true || final.fingerprint !== start.fingerprint) throw new Error('Backup could not be finalized.');
+      const payload = {
+        version: '4.0', complete: true, exportedAt: new Date().toISOString(),
+        scope: { ownerScope: 'all-authorized', ownerUserId: user.id, capturedUnder: 'server-validated-fingerprint', perspectives: 'owned-moments-only', images: 'references-to-stored-images-only' },
+        counts: start.counts, events: collections.moments, eventTracks: collections.tracks,
+        customTags: collections.tags, perspectives: collections.perspectives,
+      };
+      downloadBackup(payload);
     } catch (error) {
       if (generation !== authGenerationRef.current) return;
       setPerspectiveError(error instanceof Error ? error.message : 'Could not export a complete backup.');
     }
   };
 
-  const openBlindboxMemory = (event: TimelineEvent) => {
+  const openBlindboxMemory = async (event: TimelineEvent) => {
+    const generation = authGenerationRef.current;
+    try { event = await dataApi.moment(event.id, event.resourceOwnerId!); assertSession(generation); } catch { if (generation === authGenerationRef.current) setDataError("This memory is no longer available."); return; }
     setIsBlindboxOpen(false);
     const track = eventTracks.find((item) => item.id === event.eventId && item.resourceOwnerId === event.resourceOwnerId);
     handleSelectTrack(track ?? null);
@@ -306,6 +450,9 @@ export default function App() {
 
   const selectedTrack = eventTracks.find((track) => trackIdentity(track) === selectedTrackKey) || null;
   const canEditSelectedTrack = selectedTrack?.accessRole === 'owner' || selectedTrack?.accessRole === 'editor';
+  // Account-level write capability: one source for every create entry point,
+  // derived from server-authoritative roles rather than local UI state.
+  const canCreateEntry = eventTracks.some((track) => track.accessRole === 'owner' || track.accessRole === 'editor');
 
   // Persist each change before reflecting it in the UI; failed requests leave the prior data intact.
   const handleSaveTrack = async (
@@ -344,114 +491,64 @@ export default function App() {
   };
 
   // Combine server-managed tags with occurrence counts from server-backed moments.
+  // Composite-key maps: one pass over moments and one over tracks, never a
+  // repeated tracks.find inside the event iteration.
+  const trackByComposite = useMemo(() => {
+    const map = new Map<string, EventTrack>();
+    eventTracks.forEach((track) => map.set(trackIdentity(track), track));
+    return map;
+  }, [eventTracks]);
+
+  // Tag and year options come from the full-scope summary, so the filter bar
+  // offers every option the account has rather than only those present in the
+  // page currently on screen. Server-managed tags with no memories yet still
+  // appear, at zero, because they are a real choice the user can make.
   const availableTags = useMemo(() => {
     const tagCountMap: { [key: string]: number } = {};
-    events.forEach((evt) => evt.tags?.forEach((tag) => {
-      tagCountMap[tag] = (tagCountMap[tag] || 0) + 1;
-    }));
+    (overview?.tags ?? []).forEach(({ name, count }) => { tagCountMap[name] = count; });
     apiTags.forEach((tag) => {
       if (!(tag.name in tagCountMap)) tagCountMap[tag.name] = 0;
     });
     return Object.entries(tagCountMap)
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-  }, [events, apiTags]);
+  }, [overview, apiTags]);
 
-  // Compute available distinct years from events
-  const availableYears = useMemo(() => {
-    const years = new Set<string>();
-    events.forEach((evt) => {
-      if (evt.date && evt.date.length >= 4) {
-        years.add(evt.date.substring(0, 4));
-      }
-    });
-    return Array.from(years).sort((a, b) => b.localeCompare(a));
-  }, [events]);
+  const availableYears = useMemo(() => overview?.years ?? [], [overview]);
 
-  // Filter & Sort events
-  const filteredEvents = useMemo(() => {
-    return events
-      .filter((evt) => {
-        // Event Track Filter (unless 'all' / Merged view is active)
-        if (selectedTrackKey !== 'all' && (!selectedTrack || evt.eventId !== selectedTrack.id || evt.resourceOwnerId !== selectedTrack.resourceOwnerId)) return false;
-
-        // Search term matching
-        if (filters.search.trim()) {
-          const q = filters.search.toLowerCase().trim();
-          const matchTitle = evt.title.toLowerCase().includes(q);
-          const matchDesc = evt.description?.toLowerCase().includes(q);
-          const matchIdea = evt.idea?.toLowerCase().includes(q);
-          const matchLocation =
-            evt.location?.name?.toLowerCase().includes(q) ||
-            evt.location?.city?.toLowerCase().includes(q) ||
-            evt.location?.country?.toLowerCase().includes(q);
-          const matchTags = evt.tags?.some((t) => t.toLowerCase().includes(q));
-          const matchEmotion = evt.emotion?.toLowerCase().includes(q);
-
-          if (!matchTitle && !matchDesc && !matchIdea && !matchLocation && !matchTags && !matchEmotion) {
-            return false;
-          }
-        }
-
-        // Year filter
-        if (filters.selectedYear !== 'all') {
-          if (!evt.date.startsWith(filters.selectedYear)) {
-            return false;
-          }
-        }
-
-        // Tag filter (match any selected tag)
-        if (filters.selectedTags.length > 0) {
-          const hasMatchingTag = evt.tags?.some((t) => filters.selectedTags.includes(t));
-          if (!hasMatchingTag) return false;
-        }
-
-        // Emotion filter
-        if (filters.selectedEmotions.length > 0) {
-          if (!evt.emotion || !filters.selectedEmotions.includes(evt.emotion)) {
-            return false;
-          }
-        }
-
-        // Milestones only
-        if (filters.milestonesOnly && !evt.isMilestone) {
-          return false;
-        }
-
-        // Has photos only
-        if (filters.hasImagesOnly && (!evt.images || evt.images.length === 0)) {
-          return false;
-        }
-
-        return true;
-      })
-      .sort((a, b) => {
-        const timeA = `${a.date} ${a.time || '00:00'}`;
-        const timeB = `${b.date} ${b.time || '00:00'}`;
-        if (filters.sortDirection === 'newest') {
-          return timeB.localeCompare(timeA);
-        } else {
-          return timeA.localeCompare(timeB);
-        }
-      });
-  }, [events, selectedTrackKey, filters]);
+  const search = useDebouncedSearch(filters.search, authGenerationRef.current);
+  const feedQuery = useMemo(() => ({ ...filterProjection(filters), search: search.value, sortDirection: filters.sortDirection,
+    trackKey: selectedTrackKey === 'all' ? null : selectedTrackKey, limit: 40 }), [filters, selectedTrackKey, search.value]);
+  const fetchFeedPage = useCallback(({ cursor, query, signal }: any) =>
+    dataApi.queryMoments({ ...query, cursor, includeTotal: cursor === null }, signal), []);
+  const feed = useMomentFeed({ query: feedQuery, generation: authGenerationRef.current,
+    enabled: !!user && dataReady && !search.pending, fetchPage: fetchFeedPage, maxRetainedPages: 5 });
+  useEffect(() => { feed.refresh(); }, [feedRevision]);
+  useEffect(() => { setEvents(feed.items); }, [feed.items.map(momentIdentity).join('|'), feed.loading]);
+  const filteredEvents = feed.items.map(item => events.find(local => momentIdentity(local) === momentIdentity(item)) ?? item);
 
   // Save a moment server-side first; local state changes only after a confirmed response.
+  // expectedVersion is optional: the composer passes the version it displayed,
+  // or the freshly reviewed one after a conflict rebase.
   const handleSaveEvent = async (
     data: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>,
     editId?: string,
     imageFiles: File[] = [],
-    eventOwnerId?: string
+    eventOwnerId?: string,
+    expectedVersion?: number
   ) => {
     const generation = authGenerationRef.current;
     if (uploadBusy.current || (imageFiles.length && pendingImageRetry)) throw new Error('Finish or retry the previous photo upload before attaching more files. Your draft is preserved.');
     // The loaded edit snapshot, NOT the freshest timeline, defines what this form was based on.
-    if (editId && (!eventToEdit || eventToEdit.id !== editId || !Number.isInteger(eventToEdit.version))) throw new Error('This edit has no version. Close and reopen the form before saving. Your draft is unchanged.');
+    if (editId && (!eventToEdit || eventToEdit.id !== editId)) throw new Error('This edit is no longer open. Close and reopen the form before saving. Your draft is unchanged.');
+    const version = expectedVersion ?? eventToEdit?.version;
+    if (editId && !Number.isInteger(version)) throw new Error('This edit has no version. Close and reopen the form before saving. Your draft is unchanged.');
     const saved = editId
-      ? await dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, eventToEdit!.version!, eventOwnerId || eventToEdit!.resourceOwnerId!)
+      ? await dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!)
       : await dataApi.createMoment(data, eventOwnerId!);
     assertSession(generation);
     setEvents((prev) => editId ? prev.map((event) => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
+    await loadData();
     if (imageFiles.length) {
       const queue = { momentId: saved.id, ownerId: saved.resourceOwnerId!, files: imageFiles.map((file) => ({ file, uploadId: crypto.randomUUID() })) };
       setPendingImageRetry(queue);
@@ -467,6 +564,7 @@ export default function App() {
     assertSession(generation);
     setEvents((prev) => prev.filter((event) => momentIdentity(event) !== identity));
     setEventToView((prev) => prev && momentIdentity(prev) === identity ? null : prev);
+    await loadData();
   };
 
   const handleToggleReaction = async (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉') => {
@@ -494,7 +592,7 @@ export default function App() {
 
   const handleDeleteUnusedTag = async (id: string) => {
     const tag = apiTags.find((item) => item.id === id);
-    if (!tag || events.some((event) => event.tags?.includes(tag.name))) return;
+    if (!tag || (overview?.tags.find(item => item.name === tag.name)?.count ?? 0) > 0) return;
     const generation = authGenerationRef.current;
     await dataApi.deleteTag(id);
     assertSession(generation);
@@ -540,9 +638,9 @@ export default function App() {
         remaining = remaining.slice(1);
         setPendingImageRetry({ ...queue, files: remaining });
       }
-      const moments = await dataApi.moments();
+      await loadData();
       assertSession(generation);
-      setEvents(moments); setPendingImageRetry(null); setDataError('');
+      setPendingImageRetry(null); setDataError('');
     } catch (error) {
       if (generation !== authGenerationRef.current) return;
       setPendingImageRetry({ ...queue, files: remaining });
@@ -573,8 +671,10 @@ export default function App() {
         <SharedInvitations invitations={collaborationInvitations} onAccept={(id) => runMutation(() => acceptInvitation(id))} />
         {/* Header Ribbon & Global Stats */}
         {perspectiveError && <p role="alert" className="mb-3 text-sm text-rose-700 dark:text-rose-300">Backup failed; no incomplete file was downloaded. {perspectiveError}</p>}
+        {invitationError && <p role="status">{invitationError} <button onClick={() => { setInvitationError(''); void loadData(); }}>Retry invitations</button></p>}
+        {visitError && <p role="status">{visitError} <button onClick={() => { const generation = authGenerationRef.current; void dataApi.trackVisits().then(rows => { if (generation === authGenerationRef.current) { setVisits(rows); setVisitError(''); } }).catch(() => { if (generation === authGenerationRef.current) setVisitError('Visit history unavailable.'); }); }}>Retry visit history</button></p>}
         <TimelineHeader
-          events={events}
+          overview={overview}
           trackCount={eventTracks.length}
           username={user.username}
           onLogout={() => void handleLogout()}
@@ -582,20 +682,23 @@ export default function App() {
             setEventToEdit(null);
             setIsEventModalOpen(true);
           }}
-          onExportJson={() => exportTimelineData(eventTracks, events, apiTags.map((tag) => tag.name))}
-          onExportJsonAsync={exportJsonWithPerspectives}
+          // One export path only: a second, lighter one would be the route a
+          // partial backup escapes through.
+          onExportJson={exportJsonWithPerspectives}
           // Export is owner-only, so the entry point disappears without an owned track.
           onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
-          canCreateEntry={eventTracks.some((track) => track.accessRole === 'owner' || track.accessRole === 'editor')}
+          canCreateEntry={canCreateEntry}
         />
+        {/* Keep rediscovery in flow: a floating action can obstruct narrow search controls. */}
+        <div className="flex justify-end mb-4"><button type="button" onClick={() => setIsBlindboxOpen(true)} title="Open a random memory" aria-label="Open a random memory" className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-amber-600 text-white shadow-lg transition hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-300"><Dices className="h-5 w-5" /></button></div>
         {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
         {selectedTrackKey === 'all' && (
-          <MemoryResurfacing events={events} tracks={eventTracks} visits={visits} onOpen={openSuggested} />
+          <MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} />
         )}
         {/* Event-Based Timeline Navigation & Overview */}
         <EventTrackNav
           tracks={eventTracks}
-          events={events}
+          overview={overview}
           selectedTrackKey={selectedTrackKey}
           onSelectTrack={handleSelectTrack}
           onAddNewTrack={() => {
@@ -608,21 +711,23 @@ export default function App() {
             setIsEventTrackModalOpen(true);
           }}
           onAddNewMoment={() => {
-            if (!canEditSelectedTrack) return;
+            // Role decides the CTA, including in the merged overview where no
+            // single track is selected.
+            if (!canCreateEntry) return;
             setEventToEdit(null);
             setIsEventModalOpen(true);
           }}
           onShareTrack={(track) => {
             if (track.accessRole === 'owner') setShareTrack(track);
           }}
-          canEditSelectedTrack={canEditSelectedTrack}
+          canEditSelectedTrack={canCreateEntry}
         />
 
         {/* Filter and Control Toolbar */}
         <div className="mb-8">
           <FilterBar
             filters={filters}
-            onFilterChange={(updated) => setFilters((prev) => ({ ...prev, ...updated }))}
+            onFilterChange={(updated) => setFilters((prev) => applyFilterPatch(prev, updated))}
             onResetFilters={() =>
               setFilters({
                 search: '',
@@ -630,8 +735,11 @@ export default function App() {
                 selectedTags: [],
                 selectedEmotions: [],
                 selectedYear: 'all',
+                dateFrom: '',
+                dateTo: '',
                 milestonesOnly: false,
                 hasImagesOnly: false,
+                savedOnly: false,
                 sortDirection: 'newest',
               })
             }
@@ -639,22 +747,31 @@ export default function App() {
             availableYears={availableYears}
             viewMode={viewMode}
             onViewModeChange={setViewMode}
-            totalFilteredCount={filteredEvents.length}
+            searchPending={search.pending || feed.loading}
+            onSearchEnter={search.flush}
+            onSearchCompositionStart={search.compositionStart}
+            onSearchCompositionEnd={search.compositionEnd}
+            totalFilteredCount={feed.total ?? 0}
+            savedCount={savedCount}
             totalCount={
               selectedTrackKey === 'all'
-                ? events.length
-                : events.filter((e) => e.eventId === selectedTrack?.id && e.resourceOwnerId === selectedTrack?.resourceOwnerId).length
+                ? (overview?.total ?? 0)
+                : (overview?.tracks.find(row => `${row.trackOwnerId}:${row.trackId}` === selectedTrackKey)?.count ?? 0)
             }
           />
         </div>
 
         {/* View Switcher: Timeline, Compact List, or Gallery */}
-        <main>
-          {viewMode === 'timeline' && (
+        <main aria-busy={search.pending || feed.loading}>
+          {(search.pending || (feed.loading && !feed.appendLoading)) && <div role="status" className="min-h-48 py-16 text-center">Updating memories…</div>}
+          {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'timeline' && (
             <TimelineView
               events={filteredEvents}
               tracks={eventTracks}
               currentTrackKey={selectedTrackKey}
+              canCreateEntry={selectedTrack ? canEditSelectedTrack : canCreateEntry}
+              hasAnyTrack={eventTracks.length > 0}
+              savedOnly={filters.savedOnly}
               onSelectTrack={handleSelectTrack}
               onViewDetails={openDetail}
               onEdit={(evt) => {
@@ -668,6 +785,10 @@ export default function App() {
                 setEventToEdit(null);
                 setIsEventModalOpen(true);
               }}
+              onAddNewTrack={() => {
+                setTrackToEdit(null);
+                setIsEventTrackModalOpen(true);
+              }}
               onResetFilters={() =>
                 setFilters({
                   search: '',
@@ -675,8 +796,11 @@ export default function App() {
                   selectedTags: [],
                   selectedEmotions: [],
                   selectedYear: 'all',
+                  dateFrom: '',
+                  dateTo: '',
                   milestonesOnly: false,
                   hasImagesOnly: false,
+                  savedOnly: false,
                   sortDirection: 'newest',
                 })
               }
@@ -691,7 +815,7 @@ export default function App() {
             />
           )}
 
-          {viewMode === 'compact' && (
+          {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'compact' && (
             <CompactListView
               events={filteredEvents}
               tracks={eventTracks}
@@ -706,7 +830,7 @@ export default function App() {
             />
           )}
 
-          {viewMode === 'gallery' && (
+          {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'gallery' && (
             <GalleryView
               events={filteredEvents}
               tracks={eventTracks}
@@ -737,8 +861,9 @@ export default function App() {
         isOpen={isEventModalOpen}
         eventToEdit={eventToEdit}
         tracks={eventTracks}
-        defaultTrackKey={selectedTrack ? trackIdentity(selectedTrack) : (() => { const ownTrack = eventTracks.find((track) => track.resourceOwnerId === user.id); return ownTrack ? trackIdentity(ownTrack) : undefined; })()}
+        defaultTrackKey={selectedTrack ? trackIdentity(selectedTrack) : undefined}
         existingTags={availableTags.map((t) => t.name)}
+        sessionGeneration={authGenerationRef.current}
         onClose={() => {
           setIsEventModalOpen(false);
           setEventToEdit(null);
@@ -758,7 +883,7 @@ export default function App() {
         tracks={eventTracks}
         onSelectTrack={handleSelectTrack}
         isOpen={!!eventToView}
-        onClose={() => setEventToView(null)}
+        onClose={closeDetail}
         onEdit={(evt) => {
           setEventToEdit(evt);
           setIsEventModalOpen(true);
@@ -772,6 +897,9 @@ export default function App() {
         onDeletePerspective={handleDeletePerspective}
         sessionGeneration={authGenerationRef.current}
         currentUserId={user.id}
+        isSaved={eventToView ? savedKeys.has(`${eventToView.resourceOwnerId}:${eventToView.id}`) : false}
+        saveState={saveState}
+        onToggleSave={handleToggleSave}
       />}
 
       {!!shareTrack && <CollaborationModal key={`${user.id}:${authGenerationRef.current}`}
@@ -785,8 +913,10 @@ export default function App() {
         invitations={collaborationInvitations}
         onAccept={acceptInvitation}
       />}
-      <button type="button" onClick={() => setIsBlindboxOpen(true)} title="Open a random memory" aria-label="Open a random memory" className="fixed bottom-[max(1.5rem,env(safe-area-inset-bottom))] right-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full bg-amber-600 text-white shadow-lg transition hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-300 sm:right-6"><Dices className="h-5 w-5" /></button>
-      {isBlindboxOpen && <BlindboxMemory open={isBlindboxOpen} events={events} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}
+      <LoadMoreMemories hasMore={feed.hasMore && !search.pending} loading={feed.loading || search.pending} error={feed.error}
+        windowShifted={feed.windowShifted} loadedCount={feed.items.length} totalCount={feed.total}
+        onLoadMore={feed.loadMore} onNewer={feed.newer} onRefresh={feed.refresh} />
+      {isBlindboxOpen && <BlindboxMemory key={authGenerationRef.current} currentUserId={user.id} open={isBlindboxOpen} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}
       {/* Image Lightbox viewer */}
       {lightboxState.isOpen && <ImageLightbox
         images={lightboxState.images}
@@ -799,7 +929,6 @@ export default function App() {
         key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isPostcardOpen}
         tracks={eventTracks}
-        events={events}
         currentUserId={user.id}
         onClose={() => setIsPostcardOpen(false)}
       />}

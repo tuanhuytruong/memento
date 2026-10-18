@@ -13,6 +13,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Maximize2,
+  Bookmark,
+  BookmarkCheck,
 } from 'lucide-react';
 import { TimelineEvent, EventTrack } from '../types';
 import { MomentPerspectives } from './MomentPerspectives';
@@ -39,6 +41,11 @@ interface EventDetailModalProps {
   onDeletePerspective: (id: string) => Promise<void>;
   sessionGeneration: number;
   currentUserId: string;
+  /** Caller's own save state for this memory, from the server. */
+  isSaved: boolean;
+  /** 'idle' while settled, 'pending' during the request, 'error' if it failed. */
+  saveState: 'idle' | 'pending' | 'error';
+  onToggleSave: (event: TimelineEvent) => Promise<void>;
 }
 
 export const EventDetailModal: React.FC<EventDetailModalProps> = (props) => props.isOpen && props.event ? <DetailBody key={`${props.event.resourceOwnerId || ''}:${props.event.id}`} {...props} /> : null;
@@ -54,6 +61,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
   onOpenImageLightbox,
   onToggleReaction,
   onCreatePerspective, onUpdatePerspective, onDeletePerspective, sessionGeneration, currentUserId,
+  isSaved, saveState, onToggleSave,
 }) => {
   const [imageIndex, setActiveImageIndex] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -142,6 +150,36 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
           </div>
 
           <div className="flex shrink-0 items-center justify-end gap-2">
+            {/* One save control for the caller's own list. It is personal
+                bookkeeping: it grants no edit or export right and is invisible
+                to the memory's owner and other collaborators. */}
+            <button
+              type="button"
+              id="toggle-save-memory"
+              aria-pressed={isSaved}
+              aria-label={isSaved ? 'Saved. Activate to remove from Saved' : 'Save for me'}
+              aria-busy={saveState === 'pending'}
+              disabled={busy || saveState === 'pending'}
+              onClick={() => void mutate(() => onToggleSave(event))}
+              className={`min-h-11 inline-flex items-center gap-1.5 px-3 rounded-xl text-xs font-semibold border transition disabled:opacity-60 ${
+                isSaved
+                  ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200'
+                  : 'border-stone-200 text-stone-600 hover:bg-stone-100 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800'
+              }`}
+            >
+              {isSaved ? <BookmarkCheck className="w-4 h-4" /> : <Bookmark className="w-4 h-4" />}
+              {saveState === 'pending' ? 'Saving…' : isSaved ? 'Saved' : 'Save'}
+            </button>
+            {/* Announced state: a screen-reader user hears the pending and the
+                failure without the button having to change size or move. */}
+            <span className="sr-only" role="status" aria-live="polite" id="save-memory-status">
+              {saveState === 'pending' ? 'Saving your memory' : saveState === 'error' ? 'Could not save. Please retry.' : isSaved ? 'Saved' : ''}
+            </span>
+            {saveState === 'error' && (
+              <p role="alert" className="text-xs text-rose-700 dark:text-rose-300 max-w-[12rem]">
+                Could not update Saved. Nothing else changed.
+              </p>
+            )}
             {canEdit && <>
               <button
                 onClick={() => {

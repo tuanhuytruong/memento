@@ -19,6 +19,25 @@ test('document validation preserves event fields and rejects invalid dates', () 
   assert.equal(validateDocument({ eventId: 'x', date: '2026-02-30T09:30:00Z', images: [], tags: [] }, 'moment'), null);
 });
 
+// Phase 0 frozen contract: a date-only memory keeps its literal calendar date.
+// The server never reinterprets it in UTC, so a date near local midnight can
+// never shift to a neighbouring calendar day.
+test('frozen contract: date-only moments keep their literal calendar date and tags stay exact', () => {
+  const dateOnly = validateDocument({ eventId: 'x', date: '2026-01-01', images: [], tags: ['Tết', ' gia đình '] }, 'moment');
+  assert.equal(dateOnly.date, '2026-01-01', 'date-only must be stored literally, never ISO-shifted');
+  assert.equal(dateOnly.time, undefined);
+  // The same contract at the other end of the year.
+  assert.equal(validateDocument({ eventId: 'x', date: '2026-12-31', images: [], tags: [] }, 'moment').date, '2026-12-31');
+  // Tag strings are preserved verbatim (trimming happens client-side); the
+  // server enforces only presence and the 64-character bound.
+  assert.deepEqual(dateOnly.tags, ['Tết', ' gia đình ']);
+  assert.equal(validateDocument({ eventId: 'x', date: '2026-01-01', images: [], tags: ['x'.repeat(65)] }, 'moment'), null);
+  assert.equal(validateDocument({ eventId: 'x', date: '2026-01-01', images: [], tags: ['  '] }, 'moment'), null);
+  // Timestamp-form dates must carry an explicit offset or Z.
+  assert.ok(validateDocument({ eventId: 'x', date: '2026-01-01T23:59:59+07:00', images: [], tags: [] }, 'moment'));
+  assert.equal(validateDocument({ eventId: 'x', date: '2026-01-01T23:59:59', images: [], tags: [] }, 'moment'), null);
+});
+
 test('perspective validation trims text and enforces bounds and kind', async () => {
   const { validatePerspective } = await import('../server.mjs');
   assert.deepEqual(validatePerspective({kind:'reflection',body:'  nhớ nhà  '}),{kind:'reflection',body:'nhớ nhà'});
@@ -110,8 +129,17 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
      const ownerPerspective=await request(`/api/moments/${momentId}/perspectives`,{method:'POST',token,body:{ownerId:userId,kind:'perspective',body:'Original owner perspective',clientRequestId:ownerRequestId}});assert.equal(ownerPerspective.res.status,201);const ownerPerspectiveId=ownerPerspective.data.perspective.id;
      const ownerPerspectiveReplay=await request(`/api/moments/${momentId}/perspectives`,{method:'POST',token,body:{ownerId:userId,kind:'perspective',body:'Original owner perspective',clientRequestId:ownerRequestId}});assert.equal(ownerPerspectiveReplay.res.status,201);assert.equal(ownerPerspectiveReplay.data.perspective.id,ownerPerspectiveId);
      assert.equal((await request(`/api/moments/${momentId}/perspectives?ownerId=${userId}`,{token})).data.perspectives.length,1);
+      // Phase 1 Task 1.4: the exact (ownerId, id) read is the only path the conflict
+      // comparison uses, so its authorization behaviour is a frozen contract.
+      const exactOwnerRead=await request(`/api/moments/${momentId}?ownerId=${userId}`,{token});
+      assert.equal(exactOwnerRead.res.status,200);
+      assert.equal(exactOwnerRead.data.moment.id,momentId);
+      assert.equal(exactOwnerRead.data.moment.resourceOwnerId,userId);
+      assert.equal((await request(`/api/moments/${momentId}?ownerId=${userId}`)).res.status,401,'unauthenticated exact read denied');
+      assert.equal((await request(`/api/moments/${momentId}?ownerId=${userId2}`,{token})).res.status,404,'an unrelated owner id yields 404, not content');
       // Revoke the viewer temporarily so this is truly an unauthorized exact-resource read.
       assert.equal((await request(`/api/tracks/${trackId}/collaborators/${userId2}`,{method:'DELETE',token})).res.status,200);
+      assert.equal((await request(`/api/moments/${momentId}?ownerId=${userId}`,{token:token2})).res.status,404,'revoked access yields 404 on the exact read, never cached metadata');
       assert.equal((await pool.query(`SELECT 1 FROM ${qschema}.moments WHERE owner_id=$1 AND id=$2`,[userId,momentId])).rowCount,1);
       // Hold the actual target owner's exclusive mutation lock while the former viewer requests that target.
       let releaseOwnerLock;const ownerLockGate=new Promise(resolve=>{releaseOwnerLock=resolve;});let signalOwnerLock;const ownerLockStarted=new Promise(resolve=>{signalOwnerLock=resolve;});

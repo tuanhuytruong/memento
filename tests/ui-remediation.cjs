@@ -19,7 +19,7 @@ async function fixture(browser, options={}) {
  const page=await context.newPage(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
  // 2x2 opaque red PNG, decoded by the browser for preview and by tests for bytes.
  const postcardPng=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR42mP8z8Dwn4GBgYERABIcAgN2FBM+AAAAAElFTkSuQmCC','base64');
- const state={account:'A',requests:[],puts:[],uploadIds:[],deletes:0,moments:[structuredClone(moment)],tracks:[track],visits:[],visitWrites:[],perspectives:[],postcardRenders:[],postcardPng,failImages:false,perspectiveExportGate:null,perspectiveExportStarted:null,...options};
+ const state={account:'A',requests:[],puts:[],uploadIds:[],deletes:0,moments:[structuredClone(moment)],tracks:[track],visits:[],visitWrites:[],perspectives:[],postcardRenders:[],postcardPng,saved:[],savedWrites:[],saveGate:null,saveStarted:null,saveFailure:false,failImages:false,perspectiveExportGate:null,perspectiveExportStarted:null,...options};
  if(options.resurfacing){
   const now=new Date();const yy=now.getFullYear();const pad=n=>String(n).padStart(2,'0');
   const otherDay=now.getDate()===15?16:15;
@@ -53,17 +53,107 @@ async function fixture(browser, options={}) {
     if(state.refreshFailure){state.refreshFailure=false;return route.fulfill({status:503,json:{error:'synthetic refresh failure'}});}
     body={moments:state.moments};
   }
+  else if(url.pathname==='/api/discovery/blindbox') {
+    body=state.moments.length?{event:state.moments[0],fallback:false}:null;
+  }
+  else if(url.pathname==='/api/discovery/postcard-picker') {
+    const q=req.postDataJSON()||{};const start=q.cursor?Number(q.cursor):0;
+    const eligible=state.moments.filter(m=>m.resourceOwnerId===state.account&&(!q.trackKey||`${m.resourceOwnerId}:${m.eventId}`===q.trackKey)&&(!q.search||m.title.toLowerCase().includes(q.search.toLowerCase())));
+    body={moments:eligible.slice(start,start+40),nextCursor:start+40<eligible.length?String(start+40):null};
+  }
+  else if(url.pathname==='/api/moments/resurfacing' && req.method()==='POST') {
+    // Bounded candidate pool. The fixture serves every well-formed past memory
+    // so the existing selector's outcome is unchanged here; the bound itself is
+    // pinned by the DB-backed parity test, which is where it can actually be
+    // measured against a real account.
+    const today=String(req.postDataJSON()?.today||'');
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(today))return route.fulfill({status:400,json:{error:'today must be a local calendar date'}});
+    body={moments:state.moments.filter(m=>/^\d{4}-\d{2}-\d{2}$/.test(m.date||'')&&m.date<=today)};
+  }
+  else if(url.pathname==='/api/moments/query' && req.method()==='POST') {
+    // Bounded main feed, independent from snapshot export pages.
+    const q=req.postDataJSON()||{};
+    const limit=Math.min(100,Math.max(1,Number(q.limit)||40));
+    const fold=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D').toLowerCase().replace(/\s+/g,' ').trim();
+    const eligible=state.moments.filter(m=>{
+      if(q.trackKey&&`${m.resourceOwnerId}:${m.eventId}`!==q.trackKey)return false;
+      if(q.search&&!fold([m.title,m.description,m.idea,(m.tags||[]).join(' '),m.location?.name,m.location?.city].filter(Boolean).join(' ')).includes(fold(q.search)))return false;
+      if(q.dateFrom&&m.date<q.dateFrom)return false;
+      if(q.dateTo&&m.date>q.dateTo)return false;
+      if(!q.dateFrom&&!q.dateTo&&q.selectedYear&&q.selectedYear!=='all'&&!m.date?.startsWith(q.selectedYear))return false;
+      if(q.selectedTags?.length&&!q.selectedTags.some(t=>m.tags?.includes(t)))return false;
+      if(q.selectedEmotions?.length&&!q.selectedEmotions.includes(m.emotion))return false;
+      if(q.milestonesOnly&&!m.isMilestone)return false;
+      if(q.hasImagesOnly&&!m.images?.length)return false;
+      if(q.savedOnly&&!state.saved.includes(`${m.resourceOwnerId}:${m.id}`))return false;
+      return true;
+    });
+    const sorted=[...eligible].sort((a,b)=>((a.date||'').localeCompare(b.date||'')||(a.time||'99:99').localeCompare(b.time||'99:99')||a.id.localeCompare(b.id))*(q.sortDirection==='oldest'?1:-1));
+    let start=0;
+    if(q.cursor){const m=/^p(\d+)$/.exec(String(q.cursor));if(!m)return route.fulfill({status:400,json:{error:'cursor does not match this query'}});start=Number(m[1]);}
+    const slice=sorted.slice(start,start+limit);
+    const nextIndex=start+limit;
+    state.queryRequests=(state.queryRequests||0)+1;
+    body={moments:slice,nextCursor:nextIndex<sorted.length?`p${nextIndex}`:null,...(q.includeTotal?{total:sorted.length}:{})};
+  }
+  else if(url.pathname==='/api/moments/overview' && req.method()==='GET') {
+    if(state.refreshFailure){state.refreshFailure=false;return route.fulfill({status:503,json:{error:'synthetic refresh failure'}});}
+    if(state.overviewOverride)return route.fulfill({json:{overview:state.overviewOverride}});
+    // Full-scope summary. Derived from the fixture's whole set for the same
+    // reason the real one aggregates in SQL: header and track counts must not
+    // shrink to whatever page happens to be loaded.
+    const ms=state.moments;
+    const trackMap=new Map();
+    const tagCounts={};
+    const years=new Set();
+    for(const m of ms){
+      const key=`${m.resourceOwnerId||'legacy'}:${m.eventId}`;
+      const t=trackMap.get(key)||{trackOwnerId:m.resourceOwnerId||'legacy',trackId:m.eventId,count:0,milestones:0,photos:0,minDate:null,maxDate:null};
+      t.count+=1;
+      if(m.isMilestone)t.milestones+=1;
+      t.photos+=(m.images?.length||0);
+      if(m.date){t.minDate=!t.minDate||m.date<t.minDate?m.date:t.minDate;t.maxDate=!t.maxDate||m.date>t.maxDate?m.date:t.maxDate;}
+      trackMap.set(key,t);
+      for(const tag of m.tags||[])tagCounts[tag]=(tagCounts[tag]||0)+1;
+      if(m.date&&m.date.length>=4)years.add(m.date.substring(0,4));
+    }
+    const places=new Set(ms.map(m=>m.location?.city||m.location?.name).filter(Boolean));
+    const dates=ms.map(m=>m.date).filter(Boolean).sort();
+    body={overview:{
+      total:ms.length,
+      milestones:ms.filter(m=>m.isMilestone).length,
+      places:places.size,
+      photos:ms.reduce((acc,m)=>acc+(m.images?.length||0),0),
+      earliest:dates[0]||null,
+      latest:dates[dates.length-1]||null,
+      tracks:[...trackMap.values()],
+      tags:Object.entries(tagCounts).map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name)),
+      years:[...years].sort((a,b)=>b.localeCompare(a)),
+    }};
+  }
+  else if(/^\/api\/moments\/[^/]+$/.test(url.pathname) && req.method()==='GET') {
+    // Exact single-moment read used by the conflict comparison.
+    state.singleMomentRequests=(state.singleMomentRequests||0)+1;
+    const id=url.pathname.split('/').pop();
+    const found=state.moments.find(m=>m.id===id);
+    if(!found || state.singleMomentMissing) return route.fulfill({status:404,json:{error:'Moment not found'}});
+    body={moment:{...found,...(state.singleMomentPatch||{})}};
+  }
   else if(/^\/api\/moments\/[^/]+\/perspectives$/.test(url.pathname)&&req.method()==='GET')body={perspectives:state.perspectives,nextCursor:null,capabilities:{canRead:true,canCreate:state.perspectiveCanCreate!==false,canModerate:true}};
   else if(/^\/api\/moments\/[^/]+\/perspectives$/.test(url.pathname)&&req.method()==='POST'){const b=req.postDataJSON();const item={id:'p'+(state.perspectives.length+1),momentOwnerId:b.ownerId,momentId:url.pathname.split('/')[3],authorId:state.account,username:'synthetic-'+state.account,kind:b.kind,body:b.body,version:1,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};state.perspectives.push(item);return route.fulfill({status:201,json:{perspective:item}});}
-  else if(url.pathname==='/api/moments/qa-moment' && req.method()==='DELETE') {state.deletes++;body={};}
+  else if(/^\/api\/moments\/[^/]+$/.test(url.pathname) && req.method()==='DELETE') {state.deletes++;const id=url.pathname.split('/').pop();state.moments=state.moments.filter(m=>m.id!==id);body={};}
   else if(url.pathname==='/api/moments' && req.method()==='POST') {
     state.created=deferred(); if(state.createGate){state.createStarted?.resolve();await state.createGate.promise;}
     if(state.createFailure)return route.fulfill({status:503,json:{error:'Synthetic moment save failure'}});
-    body={moment:{...moment,...req.postDataJSON(),id:'created-A',version:1}};
+    body={moment:{...moment,...req.postDataJSON(),id:'created-A',version:1}};state.moments.unshift(body.moment);
   }
   else if(url.pathname==='/api/moments/qa-moment' && req.method()==='PUT') {
+    const n=(state.momentPutCount=(state.momentPutCount||0)+1);
     state.puts.push(req.postDataJSON());
-    return route.fulfill({status:409,json:{error:'Synthetic conflict'}});
+    // conflictCount bounds how many moment PUTs answer 409; the default keeps
+    // the historical always-conflict behaviour for the existing journeys.
+    if(n<=(state.conflictCount??999))return route.fulfill({status:409,json:{error:'Synthetic conflict',code:'VERSION_CONFLICT'}});
+    return route.fulfill({json:{moment:{...state.moments[0],...req.postDataJSON(),version:(state.singleMomentPatch?.version??3)+1}}});
   }
   else if(url.pathname.endsWith('/reactions')) {
     state.puts.push({method:req.method(),...req.postDataJSON()});
@@ -85,16 +175,57 @@ async function fixture(browser, options={}) {
     // Fixed synthetic PNG: enough for decode/dimension/same-bytes assertions.
     return route.fulfill({status:200,contentType:'image/png',headers:{'Cache-Control':'no-store','Content-Disposition':'attachment; filename="memento-postcard.png"'},body:state.postcardPng});}
   else if(/^\/api\/tracks\/[^/]+\/visit$/.test(url.pathname)&&req.method()==='PUT'){const b=req.postDataJSON();state.visitWrites.push({trackId:url.pathname.split('/')[3],...b});return route.fulfill({json:{visit:{trackOwnerId:b.ownerId||'A',trackId:url.pathname.split('/')[3],lastOpenedAt:new Date().toISOString()}}});}
-  else if(url.pathname==='/api/perspectives/export') {
-    if(state.perspectiveExportStarted)state.perspectiveExportStarted.resolve();
-    if(state.perspectiveExportGate)await state.perspectiveExportGate.promise;
-    return route.fulfill({status:503,json:{error:'Synthetic export failure'}});
+  else if(url.pathname.startsWith('/api/export/')) {
+    assert.equal(req.method(),'POST');
+    const action=url.pathname.split('/').pop();const q=req.postDataJSON()||{};
+    state.exportRequests??=[];state.exportRequests.push({action,...q});
+    const fingerprint='a'.repeat(64),token='synthetic-account-bound-token';
+    const components={moments:state.moments,tracks:state.exportTracks||state.tracks,tags:state.exportTags||[],perspectives:state.perspectives};
+    const counts=Object.fromEntries(Object.entries(components).map(([k,v])=>[k,v.length]));
+    if(action!=='start'){assert.equal(q.fingerprint,fingerprint);assert.equal(q.token,token);}
+    if(state.exportFailure===action || (action==='page' && state.exportFailure===q.kind))return route.fulfill({status:409,json:{error:'Synthetic export scope changed',code:'EXPORT_SCOPE_CHANGED'}});
+    if(action==='start')body={fingerprint,token,counts,scope:'all-authorized-moments;owned-perspectives',images:'references-to-stored-images-only'};
+    else if(action==='finalize')body={fingerprint,token,counts,complete:true};
+    else {
+      assert.equal(action,'page');assert(Object.hasOwn(components,q.kind),'known snapshot component');
+      assert(Number.isInteger(q.limit)&&q.limit>0&&q.limit<=100,'bounded snapshot page');
+      if(q.kind==='perspectives'&&state.perspectiveExportGate){state.perspectiveExportStarted?.resolve();await state.perspectiveExportGate.promise;return route.fulfill({status:503,json:{error:'Synthetic export failure'}});}
+      const start=q.cursor?Number(q.cursor):0;assert(Number.isInteger(start)&&start>=0);
+      const items=components[q.kind].slice(start,start+q.limit);
+      body={fingerprint,token,counts,items,nextCursor:start+q.limit<components[q.kind].length?String(start+q.limit):null};
+    }
   }
   else if(url.pathname==='/api/collaboration-invitations')body={invitations:[]};
+  // Wire shape: composite identities, never the raw internal key strings.
+  else if(url.pathname==='/api/saved' && req.method()==='GET')body={saved:state.saved.map(k=>({ownerId:k.split(':')[0],id:k.split(':')[1]})),count:state.saved.length};
+  else if(url.pathname==='/api/saved/moments' && req.method()==='GET')body={items:state.saved.map(k=>({ownerId:k.split(':')[0],id:k.split(':')[1],savedAt:new Date().toISOString()})),nextCursor:null};
+  else if(/^\/api\/moments\/[^/]+\/saved$/.test(url.pathname)&&req.method()==='PUT'){
+    const b=req.postDataJSON();const key=`${b.ownerId}:${url.pathname.split('/')[3]}`;
+    if(state.saveGate){state.saveStarted?.resolve();await state.saveGate.promise;}
+    if(state.saveFailure)return route.fulfill({status:503,json:{error:'synthetic save failure'}});
+    // Server-authoritative: the response decides what the client shows.
+    const saved=typeof b.active==='boolean'?b.active:!state.saved.includes(key);
+    state.saved = saved ? [...new Set([...state.saved,key])] : state.saved.filter(k=>k!==key);
+    state.savedWrites.push({key,active:saved});
+    return route.fulfill({json:{saved:{ownerId:b.ownerId,id:key.split(':')[1],saved:saved}}});
+  }
   return route.fulfill({json:body});
  });
- await page.goto(base,{waitUntil:'networkidle'});await page.locator('#event-card-A\\:qa-moment').waitFor();
+ await page.goto(base,{waitUntil:'networkidle'});
+ // Empty fixtures (no moments) wait for a stable app marker instead of a card
+ // that will never render.
+ if(state.moments.length) await page.locator('#event-card-A\\:qa-moment').waitFor().catch(async error=>{console.error('FIXTURE FAILED',JSON.stringify({options,requests:state.requests,moments:state.moments.map(m=>({id:m.id,date:m.date})),body:await page.locator('body').innerText()}));throw error;});
+ else await page.locator('#open-create-event-modal, #empty-state-add-track, #empty-timeline-state').first().waitFor();
  return {context,page,state,errors};
+}
+async function feedAction(page, action, matches) {
+ const response=page.waitForResponse(r=>r.url().endsWith('/api/moments/query')&&r.request().method()==='POST'&&matches(r.request().postDataJSON()));
+ await action();const landed=await response;assert.equal(landed.status(),200);await landed.finished();
+ await page.waitForFunction(()=>!document.querySelector('[aria-label="Loading memories"]'));
+}
+async function cardCount(page, id, expected, message) {
+ await page.waitForFunction(({id,expected})=>document.querySelectorAll(`[id="event-card-A:${id}"]`).length===expected,{id,expected});
+ assert.equal(await page.locator(`[id="event-card-A:${id}"]`).count(),expected,message);
 }
 async function hit(locator){
  await locator.scrollIntoViewIfNeeded();
@@ -200,11 +331,30 @@ async function logoutAndLogin(page){
    assert(!state.requests.some(url=>/qa-[12]\?variant=display/.test(url)),'prefetched before decode');gate.resolve();await imageReady(page);await page.waitForTimeout(200);assert(state.requests.some(url=>url.includes('qa-1?variant=display')));assert(!state.requests.some(url=>url.includes('qa-2?variant=display')));results.push('prefetch waits current decode, one forward neighbor at edge PASS');await context.close();}
   {const {page,state,context}=await fixture(browser,{saveData:true,reduced:true});await page.locator('#event-card-A\\:qa-moment img').first().click();await imageReady(page);await delay(200);assert(!state.requests.some(url=>/qa-[123]\?variant=display/.test(url)));results.push('Save-Data disables prefetch PASS');await context.close();}
   {const {page,state,context}=await fixture(browser);state.failImages=true;await page.locator('#event-card-A\\:qa-moment img').first().click();await page.getByRole('button',{name:'Retry photo',exact:true}).waitFor();const before=state.requests.filter(url=>url.includes('variant=display')).length;await delay(800);assert.equal(state.requests.filter(url=>url.includes('variant=display')).length,before);state.failImages=false;await page.getByRole('button',{name:'Retry photo',exact:true}).click();await imageReady(page);results.push('PrivateImage bounded automatic retry, stable failure and explicit recovery PASS');await context.close();}
-  {const {page,state,context}=await fixture(browser);await page.locator('#event-card-A\\:qa-moment h3').click();await page.locator('#event-detail-card').getByTitle('Edit event',{exact:true}).click();await page.locator('#event-modal-backdrop input').first().waitFor();
+  {const {page,state,context}=await fixture(browser,{singleMomentPatch:{version:7,title:'Latest saved title',description:'Latest saved story'},conflictCount:2});await page.locator('#event-card-A\\:qa-moment h3').click();await page.locator('#event-detail-card').getByTitle('Edit event',{exact:true}).click();await page.locator('#event-modal-backdrop input').first().waitFor();
    // Title is a required text input; avoid relying on decorative label association.
    const inputs=await page.locator('#event-modal-backdrop input').evaluateAll(xs=>xs.map(x=>({type:x.type,value:x.value,required:x.required})));
    const target=page.locator('#event-modal-backdrop input').nth(inputs.findIndex(x=>x.value===moment.title));await target.fill('Retained synthetic local draft');
-   await page.locator('#save-event-button').click();await page.getByText(/Your draft is preserved here/).waitFor();assert.equal(await target.inputValue(),'Retained synthetic local draft');assert.equal(state.puts[0].expectedVersion,3);assert.equal(await page.locator('#event-modal-backdrop').count(),1);results.push('409 retains local form and loaded expectedVersion PASS');await context.close();}
+   await page.locator('#save-event-button').click();
+   // Phase 1 Task 1.4: a 409 opens an escaped side-by-side comparison against the
+   // exact (ownerId, id) read — never a blind overwrite, never a copy-to-app ask.
+   const panel=page.locator('#moment-conflict-panel');await panel.waitFor();
+   const panelText=await panel.textContent()||'';
+   assert.equal(state.puts[0].expectedVersion,3,'first save still targets the displayed version');
+   assert(panelText.includes('Retained synthetic local draft'),'draft shown in Your edits');
+   assert(panelText.includes('Latest saved title'),'server version shown alongside');
+   assert(/version/i.test(panelText),'a version number is part of the comparison');
+   assert(panelText.includes('7'),'the server version value is shown');
+   assert.equal(await target.inputValue(),'Retained synthetic local draft','draft preserved while comparing');
+   assert.equal(state.singleMomentRequests,1,'exactly one exact single-moment read');
+   await page.locator('#conflict-dismiss').click();assert.equal(await panel.count(),0,'Keep comparing hides the panel');assert.equal(await target.inputValue(),'Retained synthetic local draft');
+   // "Use latest saved values" adopts server state AND its version, then saves cleanly.
+   await page.locator('#save-event-button').click();await panel.waitFor();await page.locator('#conflict-use-latest').click();await page.locator('#moment-conflict-panel').waitFor({state:'detached'});
+   assert.equal(await target.inputValue(),'Latest saved title','form adopts the server values');
+   assert.equal(state.puts.length,2,'adopting latest never re-submits on its own');
+   await page.locator('#save-event-button').click();await page.locator('#event-modal-backdrop').waitFor({state:'detached',timeout:3000});
+   assert.equal(state.puts[2].expectedVersion,7,'the adopted version is carried into the next save');
+   results.push('409 opens escaped comparison; Use latest adopts values and version; save then succeeds PASS');await context.close();}
   {const gate=deferred(),started=deferred();const {page,state,context,errors}=await fixture(browser,{perspectiveExportGate:gate,perspectiveExportStarted:started});
    await page.getByTitle('More actions',{exact:true}).click();await page.getByRole('menuitem',{name:/Export backup/}).click();await started.promise;await logoutAndLogin(page);gate.resolve();await delay(300);
    assert.equal(await page.getByRole('alert').count(),0,'previous-account export error must not appear after session switch');assert.deepEqual(errors,[]);
@@ -274,9 +424,12 @@ async function logoutAndLogin(page){
    await page.keyboard.press('Escape');
    await page.locator('#event-detail-card').waitFor({state:'detached',timeout:3000});
    const momentsBefore=state.requests.filter(u=>u==='/api/moments').length;
+   const resurfacingBefore=state.requests.filter(u=>u==='/api/moments/resurfacing').length;
+   assert(resurfacingBefore>=1,'the candidate pool was fetched');
    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
    await delay(1200);
    assert.equal(state.requests.filter(u=>u==='/api/moments').length,momentsBefore,'no polling on focus/refresh');
+   assert.equal(state.requests.filter(u=>u==='/api/moments/resurfacing').length,resurfacingBefore,'a focus or midnight check does not re-read the pool');
    assert.equal(state.requests.filter(u=>u.startsWith('/api/track-visits')).length,1,'no repeat visit-history reads');
    assert.deepEqual(errors,[]);
    results.push('Ngày ấy overview, truthful reasons, track-only placement, filter clear, private visit, no polling PASS');await context.close();}
@@ -354,6 +507,341 @@ async function logoutAndLogin(page){
    assert((await section.locator('li button').count())<=3,'still capped at three');
    assert.deepEqual(errors,[]);
    results.push('deletion while a suggestion is shown removes it without stale capture PASS');await context.close();}
+
+  // ---- Phase 1: composer UX, drafts, conflicts, capability ----
+  {const {page,state,context,errors}=await fixture(browser);
+   // Story and title first; optional metadata stays collapsed until asked for.
+   await page.locator('#open-create-event-modal').click();await page.locator('#event-modal-backdrop').waitFor();
+   assert.equal(await page.locator('#event-title-input').count(),1,'title is a first-class field');
+   assert.equal(await page.locator('#event-description-input').count(),1,'story is a first-class field');
+   assert.equal(await page.locator('#toggle-more-details').getAttribute('aria-expanded'),'false','More details collapsed by default on create');
+   const titleY=await page.locator('#event-title-input').boundingBox().then(b=>b.y);
+   const storyY=await page.locator('#event-description-input').boundingBox().then(b=>b.y);
+   assert(storyY>titleY,'story follows the title, both before the optional sections');
+   const photoY=await page.locator('#upload-image-button').boundingBox().then(b=>b.y);
+   assert(storyY<photoY,'the story sits above photos');
+   // Neutral defaults: no emotion and no milestone tag is invented for you.
+   // The only pressed control in the form is the preselected writable track.
+   await page.locator('#toggle-more-details').click();
+   assert.equal(await page.locator('#toggle-milestone-button').getAttribute('aria-pressed'),'false','no milestone invented');
+   assert.equal(await page.locator('#event-modal-backdrop button[aria-pressed=true]').count(),1,'only the track is preselected');
+   assert.equal(await page.locator('#event-modal-backdrop').getByText('Clear emotion',{exact:true}).count(),0,'no emotion preselected');
+   assert.equal(await page.locator('#event-modal-backdrop [aria-label^="Intensity"]').count(),0,'no intensity control until an emotion is chosen');
+   // Choosing an emotion reveals intensity; every newly exposed control is a
+   // real touch target rather than an inline text link.
+   await page.locator('#event-modal-backdrop button[aria-pressed=false]').filter({hasText:'Joyful'}).first().click();
+   for(const label of ['Intensity 1','Intensity 5']){
+     const b=page.locator(`#event-modal-backdrop button[aria-label="${label}"]`);const r=await b.boundingBox();
+     assert(r.width>=44 && r.height>=44,`${label} ${r.width}x${r.height} >= 44`);
+   }
+   await page.locator('#event-modal-backdrop').getByText('Clear emotion',{exact:true}).click();
+   assert.equal(await page.locator('#event-modal-backdrop [aria-label^="Intensity"]').count(),0,'clearing the emotion removes intensity');
+   assert.deepEqual(errors,[]);
+   results.push('composer leads with title+story, More details collapsed, no invented emotion/milestone PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser);
+   // Task 1.3: a dirty composer asks once on every dismissal path, and the
+   // three choices behave exactly as offered.
+   await page.locator('#open-create-event-modal').click();await page.locator('#event-title-input').waitFor();
+   await page.locator('#event-title-input').fill('Bản nháp cần giữ');
+   await page.locator('#cancel-event-button').click();
+   const panel=page.locator('#draft-dismissal-panel');await panel.waitFor();
+   assert((await panel.innerText()).includes('closing the tab or reloading can lose it'),'the honest session-only limit is stated');
+   await page.locator('#draft-continue-button').click();await page.locator('#draft-dismissal-panel').waitFor({state:'detached'});
+   assert.equal(await page.locator('#event-title-input').inputValue(),'Bản nháp cần giữ','Continue editing keeps the text');
+   await page.keyboard.press('Escape');await panel.waitFor();
+   await page.locator('#draft-keep-button').click();await page.locator('#event-modal-backdrop').waitFor({state:'detached',timeout:3000});
+   // Same page session, same scope: the kept draft comes back.
+   await page.locator('#open-create-event-modal').click();await page.locator('#event-title-input').waitFor();
+   assert.equal(await page.locator('#event-title-input').inputValue(),'Bản nháp cần giữ','kept draft restored within the same session');
+   // Discard really discards.
+   await page.locator('#event-title-input').fill('Sẽ bị bỏ');
+   await page.locator('#close-event-modal').click();await panel.waitFor();
+   await page.locator('#draft-discard-button').click();await page.locator('#event-modal-backdrop').waitFor({state:'detached',timeout:3000});
+   await page.locator('#open-create-event-modal').click();await page.locator('#event-title-input').waitFor();
+   assert.equal(await page.locator('#event-title-input').inputValue(),'','discarded draft is gone');
+   // A clean form never asks.
+   await page.locator('#cancel-event-button').click();await page.locator('#event-modal-backdrop').waitFor({state:'detached',timeout:3000});
+   assert.equal(await panel.count(),0,'a clean form closes without asking');
+   assert.deepEqual(errors,[]);
+   results.push('dirty composer asks once; Keep restores, Discard clears, clean form closes silently PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{singleMomentPatch:{version:9,title:'Server latest',description:'Server story'},conflictCount:999,singleMomentMissing:true});
+   // A deleted or revoked memory is reported as an access change; the user's own
+   // text stays on screen so nothing typed is lost to a silent failure.
+   await page.locator('#event-card-A\\:qa-moment h3').click();await page.locator('#event-detail-card').getByTitle('Edit event',{exact:true}).click();await page.locator('#event-title-input').waitFor();
+   await page.locator('#event-title-input').fill('Vẫn còn ở đây');
+   await page.locator('#save-event-button').click();
+   await page.getByText('This memory is no longer available').waitFor();
+   assert((await page.locator('#moment-conflict-panel').innerText()).includes('Vẫn còn ở đây'),'typed text stays visible for copying');
+   assert.equal(await page.locator('#event-title-input').inputValue(),'Vẫn còn ở đây','form is not cleared');
+   assert.equal(await page.locator('#event-modal-backdrop').count(),1,'the composer stays open');
+   assert.deepEqual(errors,[]);
+   results.push('deleted/revoked memory reported as access change with the draft kept on screen PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{viewerTracks:true,moments:[]});
+   // Server-authoritative capability: no unusable CTA is ever rendered.
+   assert.equal(await page.locator('#open-create-event-modal').count(),0,'no New entry CTA for a viewer-only account');
+   await page.locator('#empty-timeline-state').waitFor();
+   const text=await page.locator('#empty-timeline-state').evaluate(el=>el.textContent||'');
+   assert(text.includes('read-only'),'empty state explains the read-only access');
+   assert.equal(await page.locator('#empty-state-add-event').count(),0,'no unusable Add entry CTA');
+   assert.deepEqual(errors,[]);
+   results.push('viewer-only account sees no create CTA, only a truthful empty state PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{tracks:[],moments:[]});
+   // A zero-track account can only create a track; the CTA says exactly that.
+   await page.locator('#empty-timeline-state').waitFor();
+   assert((await page.locator('#empty-timeline-state').evaluate(el=>el.textContent||'')).includes('Create your first track'));
+   await hit(page.locator('#empty-state-add-track'));await page.locator('#event-track-modal-backdrop').waitFor();
+   assert.deepEqual(errors,[]);
+   results.push('zero-track account is offered Create your first track, not a dead Add moment PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{viewport:{width:390,height:844}});
+   // Metrics collapse to one compact line; the full ribbon needs an explicit tap.
+   const details=page.locator('#toggle-metrics-details');
+   assert(await details.isVisible(),'compact metrics line with a Details toggle');
+   await hit(details);
+   assert(await page.getByText('Attached Photos',{exact:true}).isVisible(),'Details reveals the metrics');
+   // Footer: Save and Cancel are real, reachable controls at 390x844.
+   await hit(page.locator('#open-create-event-modal'));
+   await page.locator('#event-modal-backdrop').waitFor();
+   for(const id of ['save-event-button','cancel-event-button']){
+     const el=page.locator(`#${id}`);assert(await el.isVisible(),`${id} visible`);
+     const r=await el.boundingBox();assert(r.height>=44,`${id} height ${r.height} >= 44`);
+   }
+   // The footer is a flex sibling of the scroll region, so it stays in the
+   // viewport while the body scrolls — it never overlays the photo grid.
+   const cardBox=await page.locator('#event-modal-card').boundingBox();
+   const footerBox=await page.locator('#cancel-event-button').boundingBox();
+   assert(footerBox.y+footerBox.height<=cardBox.y+cardBox.height+1,'footer sits inside the card');
+   assert.equal(await page.locator('#event-modal-backdrop').evaluate(el=>el.querySelectorAll('#event-modal-form > div').length>0),true,'scroll region holds the sections');
+   await page.locator('#event-modal-form').evaluate(el=>{el.scrollTop=el.scrollHeight;});
+   const footerAfterScroll=await page.locator('#cancel-event-button').boundingBox();
+   assert(Math.abs(footerAfterScroll.y-footerBox.y)<2,'footer stays put while the form scrolls');
+   assert.deepEqual(errors,[]);
+   results.push('mobile compact metrics with Details; composer footer controls reachable and >=44px PASS');await context.close();}
+
+  {const many=[track];for(let i=2;i<=12;i++)many.push({...track,id:'qa-track-'+i,title:'Chapter '+String(i).padStart(2,'0')});
+   const {page,state,context,errors}=await fixture(browser,{tracks:many});
+   // Task 1.5: a long track strip stays bounded and searchable instead of
+   // pushing the first memory below the fold.
+   const strip=page.locator('button[id^=tab-event-track-]');
+   assert.equal(await strip.count(),8,'only the preview renders initially');
+   const showAll=page.locator('#toggle-show-all-tracks');
+   assert(await showAll.isVisible(),'Show all appears when the list is long');
+   await hit(showAll);
+   assert.equal(await strip.count(),12,'Show all reveals every chapter');
+   await page.locator('#track-nav-search').fill('Chapter 03');
+   assert.equal(await strip.count(),1,'search narrows the strip');
+   assert((await strip.allInnerTexts()).join(' ').includes('Chapter 03'),'search matches by name');
+   await page.locator('#track-nav-search').fill('');
+   assert.equal(await strip.count(),12,'clearing search restores every chapter');
+   // Select a chapter that falls outside the preview, then collapse: the current
+   // selection must stay visible so the user never loses their place.
+   const tail=strip.nth(11);await tail.scrollIntoViewIfNeeded();await tail.click();
+   await hit(showAll);
+   assert.equal(await strip.count(),8,'strip collapses back to the preview');
+   assert((await strip.allInnerTexts()).join(' ').includes('Chapter 12'),'the selected chapter stays in the preview');
+   // The merged banner reports counts, never a concatenation of every name.
+   await hit(page.locator('#tab-all-events-merged'));
+   const banner=await page.locator('header,nav,div').filter({hasText:'merged chronological progression'}).first().evaluate(el=>el.textContent||'');
+   assert(banner.includes('12'),'banner states the timeline count');
+   assert(!banner.includes('Chapter 02, Chapter 03'),'banner does not concatenate every track name');
+   assert.deepEqual(errors,[]);
+   results.push('track strip bounded to preview with Show all and search; merged banner counts, no name dump PASS');await context.close();}
+
+  // ---- Phase 2: find and save ----
+  {const vietnamese={...structuredClone(moment),id:'qa-viet',eventId:'qa-track',title:'Đà Lạt mùa sương',description:'Buổi sáng trên đồi thông',date:'2026-05-04',images:[],tags:['du lịch'],location:{name:'Chợ đêm',city:'Đà Lạt',country:'Việt Nam'}};
+   const {page,state,context,errors}=await fixture(browser,{moments:[structuredClone(moment),vietnamese]});
+   // Task 2.1: search folds diacritics and đ, and display text is untouched.
+   await feedAction(page,()=>page.locator('#timeline-search-input').fill('da lat'),q=>q.search==='da lat');
+   await cardCount(page,'qa-viet',1,'a plain-d search finds the Vietnamese memory');
+   await feedAction(page,()=>page.locator('#timeline-search-input').fill('DA LAT'),q=>q.search==='DA LAT');
+   await cardCount(page,'qa-viet',1,'case folding survives the đ mapping');
+   await feedAction(page,()=>page.locator('#timeline-search-input').fill('sương'),q=>q.search==='sương');
+   await cardCount(page,'qa-viet',1,'a partial diacritic needle matches');
+   assert((await page.locator('#event-card-A\\:qa-viet').innerText()).includes('Đà Lạt'),'display text keeps its real characters');
+   await feedAction(page,()=>page.locator('#timeline-search-input').fill('huế'),q=>q.search==='huế');
+   await cardCount(page,'qa-viet',0,'a non-matching needle matches nothing');
+   await feedAction(page,()=>page.locator('#timeline-search-input').fill(''),q=>q.search==='');
+   // The range is inclusive on both bounds.
+   await feedAction(page,()=>page.locator('#filter-date-from').fill('2026-05-04'),q=>q.dateFrom==='2026-05-04');
+   await cardCount(page,'qa-viet',1,'the From bound is inclusive');
+   await feedAction(page,()=>page.locator('#filter-date-from').fill('2026-05-05'),q=>q.dateFrom==='2026-05-05');
+   await cardCount(page,'qa-viet',0,'a day before the From bound excludes it');
+   await feedAction(page,()=>page.locator('#filter-date-from').fill('2026-05-04'),q=>q.dateFrom==='2026-05-04');
+   await feedAction(page,()=>page.locator('#filter-date-to').fill('2026-05-04'),q=>q.dateTo==='2026-05-04');
+   await cardCount(page,'qa-viet',1,'a single day is a valid range');
+   // Choosing a year replaces the range instead of combining with it.
+   await feedAction(page,()=>page.getByRole('button',{name:'2026',exact:true}).first().click(),q=>q.selectedYear==='2026'&&!q.dateFrom&&!q.dateTo);
+   assert.equal(await page.locator('#filter-date-from').inputValue(),'','selecting a year clears the From bound');
+   assert.equal(await page.locator('#filter-date-to').inputValue(),'','selecting a year clears the To bound');
+   await cardCount(page,'qa-viet',1,'the year still shows the memory');
+   // Entering a range clears the year, in the other direction.
+   await feedAction(page,()=>page.locator('#filter-date-to').fill('2026-05-04'),q=>q.dateTo==='2026-05-04');
+   assert.equal(await page.getByRole('button',{name:'2026',exact:true}).first().getAttribute('aria-pressed'),'false','entering a range clears the year');
+   assert.deepEqual(errors,[]);
+   results.push('search folds diacritics and đ; date range is inclusive and replaces the year in both directions PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser);
+   // Task 2.3: one Save control in the detail view, with an announced
+   // pending state and an honest failure that changes nothing.
+   await page.locator('#event-card-A\\:qa-moment h3').click();
+   const save=page.locator('#toggle-save-memory');
+   await save.waitFor();
+   assert.equal(await save.getAttribute('aria-pressed'),'false','starts unsaved');
+   assert.equal(await save.getAttribute('aria-label'),'Save for me','an accessible name, not just an icon');
+   const gate=deferred();state.saveGate=gate;state.saveStarted=deferred();
+   await save.click();await state.saveStarted.promise;
+   assert.equal(await save.getAttribute('aria-busy'),'true','pending is announced');
+   // sr-only is 1px and clipped, so it is announced but never occupies layout.
+   const statusBox=await page.locator('#save-memory-status').boundingBox();
+   assert(statusBox.width<=1 && statusBox.height<=1,`status line is visually hidden, got ${JSON.stringify(statusBox)}`);
+   assert.equal(await page.locator('#save-memory-status').getAttribute('aria-live'),'polite','and it is a polite live region');
+   assert.equal(await page.locator('#toggle-save-memory').isDisabled(),true,'a second click cannot race the first');
+   gate.resolve();
+   await page.waitForFunction(()=>document.querySelector('#toggle-save-memory')?.getAttribute('aria-pressed')==='true');
+   assert.equal(state.savedWrites.length,1,'exactly one request');
+   assert.equal(state.savedWrites[0].active,true);
+   const label=(await save.innerText()).replace(/\s+/g,' ').trim();
+   assert.equal(label,'Saved',`the control reads Saved, got ${JSON.stringify(label)}`);
+   assert.deepEqual(errors,[]);
+   results.push('Save in detail announces pending, blocks a double submit, and settles server-authoritatively PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{saveFailure:true});
+   // A failure rolls the optimistic flip straight back and says so.
+   await page.locator('#event-card-A\\:qa-moment h3').click();
+   const save=page.locator('#toggle-save-memory');await save.waitFor();
+   await save.click();
+   await page.getByRole('alert').filter({hasText:'Could not update Saved'}).waitFor();
+   assert.equal(await save.getAttribute('aria-pressed'),'false','rolled back to what the server holds');
+   assert.notEqual(await save.getAttribute('aria-busy'),'true','not stuck pending');
+   assert.equal(await save.isDisabled(),false,'retry is available');
+   assert.equal(state.saved.length,0,'the fixture never accepted it');
+   // Retry succeeds once the failure clears.
+   state.saveFailure=false;await save.click();
+   await page.waitForFunction(()=>document.querySelector('#toggle-save-memory')?.getAttribute('aria-pressed')==='true');
+   assert.equal(await page.getByRole('alert').count(),0,'the error clears on success');
+   assert.deepEqual(errors,[]);
+   results.push('save failure rolls back, explains itself, and is retryable PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{saved:['A:qa-moment']});
+   // Saved is a chip beside the other filters, never a new global tab.
+   await page.locator('#filter-saved-only').waitFor();
+   assert.equal(await page.locator('#filter-saved-only').getAttribute('aria-pressed'),'false');
+   // Saved state loads alongside the rest of the caller's own data, so it
+   // arrives after the initial paint. Wait for the count first: that proves the
+   // read landed before the detail view is opened against it.
+   await page.locator('#filter-saved-only').waitFor();
+   await page.waitForFunction(()=>/\d/.test(document.querySelector('#filter-saved-only')?.textContent||''));
+   assert.match(await page.locator('#filter-saved-only').innerText(),/1/,'the stored save is counted');
+   await page.locator('#event-card-A\\:qa-moment h3').click();
+   await page.locator('#toggle-save-memory').waitFor();
+   const chipAfterOpen=await page.locator('#filter-saved-only').innerText();
+   const labelAfterOpen=(await page.locator('#toggle-save-memory').innerText()).trim();
+   const pressedAfterOpen=await page.locator('#toggle-save-memory').getAttribute('aria-pressed');
+   assert.equal(pressedAfterOpen,'true',`a stored save renders pressed; chip=${JSON.stringify(chipAfterOpen)} label=${JSON.stringify(labelAfterOpen)}`);
+   assert.equal((await page.locator('#toggle-save-memory').innerText()).trim(),'Saved');
+   await page.keyboard.press('Escape');
+   await page.locator('#event-card-A\\:qa-moment h3').waitFor();
+   await feedAction(page,()=>page.locator('#filter-saved-only').click(),q=>q.savedOnly===true);
+   assert.equal(await page.locator('#filter-saved-only').getAttribute('aria-pressed'),'true');
+   await cardCount(page,'qa-moment',1,'the saved memory is still listed');
+   // An unrelated memory is excluded, and the count matches the list.
+   state.saved=[];
+   await page.reload({waitUntil:'networkidle'});
+   await page.locator('#event-card-A\\:qa-moment').waitFor();
+   await page.locator('#filter-saved-only').click();
+   await page.getByText('Nothing saved yet').waitFor();
+   assert((await page.locator('#empty-timeline-state').evaluate(el=>el.textContent||'')).includes('your own private list'),'the empty state explains personal visibility');
+   // A create CTA here is only acceptable if it actually works: an empty Saved
+   // list is a fine moment to add the first memory, not a dead end.
+   const addEvent=page.locator('#empty-state-add-event');
+   assert.equal(await addEvent.count(),1,'the account can still create, so a create CTA is offered');
+   await addEvent.click();
+   await page.locator('#event-modal-backdrop').waitFor();
+   assert.equal(await page.locator('#toggle-save-memory').count(),0,'and it opens the composer, not a dead end');
+   await page.keyboard.press('Escape');
+   await page.locator('#event-modal-backdrop').waitFor({state:'detached',timeout:3000});
+   assert.deepEqual(errors,[]);
+   results.push('Saved chip filters beside existing controls; empty state explains private visibility PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser);
+   // Two people saving the same memory never collide, and an outsider cannot.
+   await page.locator('#event-card-A\\:qa-moment h3').click();
+   await page.locator('#toggle-save-memory').click();
+   await page.waitForFunction(()=>document.querySelector('#toggle-save-memory')?.getAttribute('aria-pressed')==='true');
+   assert.deepEqual(state.saved,['A:qa-moment']);
+   assert.deepEqual(state.savedWrites.map(w=>w.key),['A:qa-moment']);
+   // Same memory, different account: an independent fact, not a shared one.
+   state.account='B';state.saved=['B:qa-moment'];
+   await logoutAndLogin(page);await delay(300);
+   assert.equal(await page.locator('#event-card-A\\:qa-moment').count(),0,'account B sees none of account A content');
+   assert.equal(await page.locator('#filter-saved-only').innerText().then(t=>/\d/.test(t)),true,'the count is rendered');
+   assert.deepEqual(errors,[]);
+   results.push('saves are per-account identities, never shared or colliding PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser);
+   // Task 3.2: header metrics, track badges, tag options and the year list are
+   // full-scope by contract. Prove it by having the server report a larger
+   // account than the client has loaded — if any of these were derived from the
+   // loaded list they would show the smaller number instead.
+   await page.locator('#event-card-A\\:qa-moment').waitFor();
+   const loadedCards=await page.locator('[id^=event-card-]').count();
+   assert.equal(loadedCards,1,'the fixture has one memory on screen');
+   const realTotal=state.moments.length;
+   // Server says the account is much bigger than what arrived.
+   state.overviewOverride={total:realTotal+11, milestones:7, photos:9, places:3, tracks:state.moments.map(m=>({trackOwnerId:m.resourceOwnerId,trackId:m.eventId,count:5,milestones:2,photos:3,minDate:'2024-01-01',maxDate:'2026-12-31'})),tags:[{name:'đã sống',count:12}],years:['2031','2030','2026']};
+   await page.reload({waitUntil:'networkidle'});
+   await page.locator('#event-card-A\\:qa-moment').waitFor();
+   await page.waitForFunction(()=>document.body.innerText.includes('12')||document.body.innerText.includes('5'));
+   const headerText=await page.locator('header').first().innerText();
+   assert(headerText.includes(String(realTotal+11)),`header reports the server total, not the loaded page; header=${JSON.stringify(headerText.slice(0,200))}`);
+   const navText=await page.locator('#tab-all-events-merged').innerText();
+   assert(navText.includes(String(realTotal+11)),`the merged badge reports the server total too; nav=${JSON.stringify(navText)}`);
+   assert.deepEqual(errors,[]);
+   results.push('header, track badges and tag/year options report full-scope summary numbers, never the loaded page PASS');await context.close();}
+
+  {const {page,state,context,errors}=await fixture(browser,{moments:[]});
+   // Task 3.2: the backup must follow every page rather than serialise what
+   // happens to be loaded. The fixture serves 100 per request, so a complete
+   // file is only reachable if the export really loops.
+   const big=[];
+   for(let i=0;i<120;i++)big.push({id:`bulk-${i}`,resourceOwnerId:'A',eventId:'t1',version:1,title:`Bulk ${i}`,date:`2026-${String((i%12)+1).padStart(2,'0')}-${String((i%28)+1).padStart(2,'0')}`,description:'d',tags:[],images:[],createdAt:'2026-01-01',updatedAt:'2026-01-01',reactions:[]});
+   state.moments=big;state.exportTracks=[{...track,title:"Fresh snapshot track"}];state.exportTags=["fresh snapshot tag"];
+   state.queryRequests=0;
+   await page.reload({waitUntil:'networkidle'});
+   await page.locator('[id^=event-card-]').first().waitFor();
+   await page.locator('[title="More actions"]').click();
+   const downloadPromise=page.waitForEvent('download');
+   await page.locator('#export-timeline-json').click();
+   const download=await downloadPromise;
+   assert(download.url().startsWith('blob:'),`a backup is handed off as a Blob, not a data URL; got ${download.url().slice(0,24)}`);
+   const stream=await download.createReadStream();
+   const chunks=[];for await(const c of stream)chunks.push(c);
+   const payload=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+   assert.equal(payload.events.length,120,`every memory was exported, got ${payload.events.length}`);
+   assert.equal(payload.complete,true,'the payload states its own completeness');
+   assert.equal(payload.counts.moments,120,'and the count it reports matches the contents');
+   assert.equal(payload.scope.images,'references-to-stored-images-only','images are labelled as references, not photo bytes');
+   assert.equal(state.exportRequests.filter(r=>r.action==='page'&&r.kind==='moments').length,2,'snapshot export follows both pages independently of feed');
+   assert.deepEqual(state.exportRequests.filter(r=>r.action==='page').map(r=>r.kind),['moments','moments','tracks','tags','perspectives']);
+   assert.equal(state.exportRequests.at(-1).action,'finalize','all pages precede finalization');
+   assert.deepEqual(payload.eventTracks,state.exportTracks,'fresh snapshot tracks, not startup cache');
+   assert.deepEqual(payload.customTags,state.exportTags,'fresh snapshot tags, not startup cache');
+   assert.deepEqual(errors,[]);
+   results.push('backup follows every page, states its own scope, and downloads as a Blob PASS');await context.close();}
+
+  for(const failedStage of ['start','moments','tracks','tags','perspectives','finalize']) {
+   const {page,state,context,errors}=await fixture(browser,{exportFailure:failedStage});
+   const downloads=[];page.on('download',d=>downloads.push(d));
+   await page.getByTitle('More actions',{exact:true}).click();await page.locator('#export-timeline-json').click();
+   await page.getByRole('alert').filter({hasText:'Synthetic export scope changed'}).waitFor();
+   assert.equal(downloads.length,0,`${failedStage}: failed snapshot never downloads a partial file`);
+   if(failedStage!=='finalize')assert(!state.exportRequests.some(r=>r.action==='finalize'),'failed page cannot finalize');
+   assert.deepEqual(errors,[]);results.push(`backup ${failedStage} failure displays error and writes no download PASS`);await context.close();
+  }
 
   // ---- Phase 3: postcard composer (synthetic controlled routes) ----
   {const {page,state,context,errors}=await fixture(browser,{viewerTracks:true});

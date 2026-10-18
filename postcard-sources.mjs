@@ -38,12 +38,12 @@ async function readStream(stream, limit, signal) {
 
 /**
  * @param spec validated postcard spec (validatePostcardRequest output)
- * @param deps { userId, pool, qschema, s3, bucket, prefix, resolveVariant, exactMomentAccess, imageAccess }
+ * @param deps { userId, pool, qschema, s3, bucket, prefix, resolveVariant, exactMomentAccess, imageAccess, sourceSlot }
  * @param signal aborts on client disconnect
  * @returns { photos } aligned with spec.images; null for text-only cells
  */
 export async function resolvePostcardPhotos(spec, deps, signal) {
-  const { userId, pool, qschema, s3, bucket, prefix, resolveVariant, exactMomentAccess, imageAccess } = deps;
+  const { userId, pool, qschema, s3, bucket, prefix, resolveVariant, exactMomentAccess, imageAccess, sourceSlot } = deps;
   const postError = message => new ApiError(422, message);
 
   // 1) Fresh owner-only access check for every selected moment. Export is an
@@ -79,32 +79,39 @@ export async function resolvePostcardPhotos(spec, deps, signal) {
   }
 
   // 3) Fresh image access + namespace check immediately before each byte read.
+  //    The shared sourceSlot bounds aggregate read concurrency across all
+  //    in-flight postcards; each slot is released when its read settles.
   const photos = await mapLimit(selections, MAX_CONCURRENT_FETCHES, async selection => {
     if (!selection.imageId) return null;
     if (signal?.aborted) throw signal.reason;
-    const image = await imageAccess(userId, selection.imageId, pool);
-    if (!image || image.moment_id !== selection.moment.id || image.owner_id !== userId) {
-      throw postError('One of the chosen photos was removed. Update your selection and try again.');
-    }
-    const variant = resolveVariant(image, 'display') || resolveVariant(image, 'original');
-    if (!variant || !variant.key.startsWith(prefix)) throw new ApiError(502, 'Image storage is temporarily unavailable.');
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new ApiError(504, 'One of the chosen photos took too long to load. Try again.')), FETCH_TIMEOUT_MS);
-    timer.unref?.();
-    const onParentAbort = () => controller.abort(signal.reason || new ApiError(499, 'Postcard rendering was cancelled.'));
-    signal?.addEventListener('abort', onParentAbort, { once: true });
+    const releaseSlot = sourceSlot ? await sourceSlot() : null;
     try {
-      const object = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: variant.key }), { abortSignal: controller.signal });
-      const buffer = await readStream(object.Body, MAX_SOURCE_BYTES, controller.signal);
-      return { buffer, contentType: image.content_type };
-    } catch (error) {
-      if (error instanceof ApiError) throw error;
-      if (controller.signal.aborted) throw controller.signal.reason;
-      throw postError('One of the chosen photos could not be loaded. Remove it and try again.');
+      const image = await imageAccess(userId, selection.imageId, pool);
+      if (!image || image.moment_id !== selection.moment.id || image.owner_id !== userId) {
+        throw postError('One of the chosen photos was removed. Update your selection and try again.');
+      }
+      const variant = resolveVariant(image, 'display') || resolveVariant(image, 'original');
+      if (!variant || !variant.key.startsWith(prefix)) throw new ApiError(502, 'Image storage is temporarily unavailable.');
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(new ApiError(504, 'One of the chosen photos took too long to load. Try again.')), FETCH_TIMEOUT_MS);
+      timer.unref?.();
+      const onParentAbort = () => controller.abort(signal.reason || new ApiError(499, 'Postcard rendering was cancelled.'));
+      signal?.addEventListener('abort', onParentAbort, { once: true });
+      try {
+        const object = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: variant.key }), { abortSignal: controller.signal });
+        const buffer = await readStream(object.Body, MAX_SOURCE_BYTES, controller.signal);
+        return { buffer, contentType: image.content_type };
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        if (controller.signal.aborted) throw controller.signal.reason;
+        throw postError('One of the chosen photos could not be loaded. Remove it and try again.');
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onParentAbort);
+      }
     } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onParentAbort);
+      releaseSlot?.();
     }
   });
 

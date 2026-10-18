@@ -94,40 +94,6 @@ export const saveStoredCustomTags = (tags: string[]): void => {
   }
 };
 
-export interface TimelineBackupPayload {
-  version: string;
-  exportedAt: string;
-  eventTracks: EventTrack[];
-  events: TimelineEvent[];
-  customTags?: string[];
-  perspectives?: MomentPerspective[];
-}
-
-export const exportTimelineData = (
-  tracks: EventTrack[],
-  events: TimelineEvent[],
-  tags: string[],
-  perspectives: MomentPerspective[] = [],
-) => {
-  const payload: TimelineBackupPayload = {
-    version: '3.0',
-    exportedAt: new Date().toISOString(),
-    eventTracks: tracks,
-    events: events,
-    customTags: tags,
-    perspectives,
-  };
-
-  const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));
-  const downloadAnchor = document.createElement('a');
-  downloadAnchor.setAttribute('href', dataStr);
-  const now = new Date().toISOString().split('T')[0];
-  downloadAnchor.setAttribute('download', `timeline_events_backup_${now}.json`);
-  document.body.appendChild(downloadAnchor);
-  downloadAnchor.click();
-  downloadAnchor.remove();
-};
-
 export const formatDateDisplay = (dateString: string, timeString?: string): string => {
   try {
     const dateObj = new Date(dateString + 'T00:00:00');

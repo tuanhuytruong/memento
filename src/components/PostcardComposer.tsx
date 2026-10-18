@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { EventTrack, PostcardRequest, PostcardSelection, PostcardTemplateKey, TimelineEvent } from '../types';
 import { momentIdentity, trackIdentity } from '../lib/resourceIdentity';
+import { requestPostcardPage } from '../lib/discoveryApi';
 import { PrivateImage } from './PrivateImage';
 import { useModalLifecycle } from '../lib/useModalLifecycle';
 import { POSTCARD_LIMITS, POSTCARD_TEMPLATES, downloadPostcard, imageIdOf, renderPostcard, templateOf, validatePostcard } from '../lib/postcard';
@@ -11,7 +12,7 @@ interface Props {
   isOpen: boolean;
   /** Only the signed-in user's own tracks may be exported as a postcard. */
   tracks: EventTrack[];
-  events: TimelineEvent[];
+  events?: TimelineEvent[];
   currentUserId: string;
   onClose: () => void;
 }
@@ -30,7 +31,7 @@ function isCompact() {
   return typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches;
 }
 
-export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, events, currentUserId, onClose }) => {
+export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, currentUserId, onClose }) => {
   const panelRef = useModalLifecycle(isOpen, onClose);
   const [step, setStep] = useState<Step>('select');
   const [template, setTemplate] = useState<PostcardTemplateKey>('journey');
@@ -52,12 +53,24 @@ export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, events, curr
     [tracks, currentUserId],
   );
   const bounds = templateOf(template);
-  const trackMoments = useMemo(() => {
-    if (!trackKey) return [];
-    return events
-      .filter(event => `${event.resourceOwnerId}:${event.eventId}` === trackKey && (!event.date || event.date.slice(0, 10) <= new Date().toISOString().slice(0, 10)))
-      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : momentIdentity(a) < momentIdentity(b) ? -1 : 1));
-  }, [events, trackKey]);
+  const [trackMoments, setTrackMoments] = useState<TimelineEvent[]>([]);
+  const [search, setSearch] = useState('');
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [pagePending, setPagePending] = useState(false);
+  const [pageError, setPageError] = useState('');
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    setTrackMoments([]); setNextCursor(null); setPageError('');
+    if (!isOpen || !trackKey) return;
+    const controller = new AbortController(); setPagePending(true);
+    requestPostcardPage(trackKey, search, cursor, controller.signal).then(page => {
+      if (controller.signal.aborted) return;
+      setTrackMoments(page.moments); setNextCursor(page.nextCursor);
+    }).catch(failure => { if (!controller.signal.aborted) setPageError(failure instanceof Error ? failure.message : 'Could not load memories.'); })
+      .finally(() => { if (!controller.signal.aborted) setPagePending(false); });
+    return () => controller.abort();
+  }, [isOpen, trackKey, search, cursor, currentUserId, retry]);
 
   const releasePreview = useCallback(() => {
     if (previewUrlRef.current) { URL.revokeObjectURL(previewUrlRef.current); previewUrlRef.current = null; }
@@ -80,7 +93,7 @@ export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, events, curr
 
   // Clear bytes on logout/identity change as well as on close.
   useEffect(() => {
-    releasePreview();
+    abortRef.current?.abort(); setSelection([]); setTrackKey(''); setSearch(''); setCursor(null); setTrackMoments([]); setPending(false); releasePreview();
   }, [currentUserId, releasePreview]);
 
   const buildSpec = useCallback((): PostcardRequest => ({
@@ -147,7 +160,7 @@ export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, events, curr
       setError(failure instanceof Error && failure.message ? failure.message : 'The postcard could not be created. Please try again.');
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
-      setPending(false);
+      if (!controller.signal.aborted) setPending(false);
     }
   };
 
@@ -262,7 +275,7 @@ export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, events, curr
                 <h3 id="postcard-track-heading" className="mb-2 text-sm font-semibold text-stone-800 dark:text-stone-100">Your track</h3>
                 <select
                   value={trackKey}
-                  onChange={event => { setTrackKey(event.target.value); setSelection([]); invalidate(); }}
+                  onChange={event => { setTrackKey(event.target.value); setCursor(null); setSelection([]); invalidate(); }}
                   className="min-h-11 w-full rounded-xl border border-stone-200 bg-white px-3 text-sm dark:border-stone-700 dark:bg-stone-900"
                 >
                   <option value="">Choose one of your tracks…</option>
@@ -276,10 +289,13 @@ export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, events, curr
                 <h3 id="postcard-moments-heading" className="mb-2 text-sm font-semibold text-stone-800 dark:text-stone-100">
                   Moments <span className="font-normal text-stone-500">({selection.length}/{bounds.max})</span>
                 </h3>
+                {trackKey && <label className="block text-sm">Search your memories<input value={search} maxLength={120} onChange={event => { setSearch(event.target.value); setCursor(null); }} className="my-2 min-h-11 w-full rounded-xl border px-3 dark:bg-stone-950 dark:border-stone-700" /></label>}
+                {pagePending && <p role="status">Loading memories…</p>}
+                {pageError && <div role="alert">{pageError}<button type="button" onClick={() => setRetry(value => value + 1)} className="min-h-11 px-3 underline">Retry</button></div>}
                 {!trackKey && <p className="text-sm text-stone-500">Choose a track to see its moments.</p>}
-                {trackKey && trackMoments.length === 0 && (
+                {trackKey && !pagePending && !pageError && trackMoments.length === 0 && (
                   <p className="rounded-xl border border-dashed border-stone-300 p-3 text-sm text-stone-600 dark:border-stone-700 dark:text-stone-300">
-                    This track has no moments yet. Add a memory, then come back to make a postcard.
+                    No memories found. Try another search or track.
                   </p>
                 )}
                 {trackKey && trackMoments.length > 0 && (
@@ -303,6 +319,8 @@ export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, events, curr
                     })}
                   </ul>
                 )}
+                <div className="mt-2 flex flex-wrap gap-2">{cursor && <button type="button" disabled={pagePending} onClick={() => setCursor(null)} className="min-h-11 rounded-xl border px-3 text-sm">First page</button>}{nextCursor && <button type="button" disabled={pagePending} onClick={() => setCursor(nextCursor)} className="min-h-11 rounded-xl border px-3 text-sm">Next page</button>}</div>
+                <p className="mt-2 text-xs text-stone-500">Your selected memories stay selected across pages and search.</p>
               </section>
             </div>
             <div className={`min-w-0 flex-col gap-4 ${compact ? 'flex' : 'flex'} ${showStep('customize') ? '' : 'hidden'}`}>
