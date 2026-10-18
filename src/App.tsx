@@ -5,6 +5,7 @@ import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
 import { matchesMomentFilters, compareMoments, filterProjection, applyFilterPatch } from './lib/momentFilters';
 import { releaseAllMomentDrafts } from './lib/useMomentDraft';
 import { useMomentFeed } from './lib/useMomentFeed';
+import { useDebouncedSearch } from './lib/useDebouncedSearch';
 import { LoadMoreMemories } from './components/LoadMoreMemories';
 import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation } from './lib/api';
 import { CollaborationModal, SharedInvitations } from './components/CollaborationModal';
@@ -515,12 +516,13 @@ export default function App() {
 
   const availableYears = useMemo(() => overview?.years ?? [], [overview]);
 
-  const feedQuery = useMemo(() => ({ ...filterProjection(filters), sortDirection: filters.sortDirection,
-    trackKey: selectedTrackKey === 'all' ? null : selectedTrackKey, limit: 40 }), [filters, selectedTrackKey]);
+  const search = useDebouncedSearch(filters.search, authGenerationRef.current);
+  const feedQuery = useMemo(() => ({ ...filterProjection(filters), search: search.value, sortDirection: filters.sortDirection,
+    trackKey: selectedTrackKey === 'all' ? null : selectedTrackKey, limit: 40 }), [filters, selectedTrackKey, search.value]);
   const fetchFeedPage = useCallback(({ cursor, query, signal }: any) =>
-    dataApi.queryMoments({ ...query, cursor, includeTotal: true }, signal), []);
+    dataApi.queryMoments({ ...query, cursor, includeTotal: cursor === null }, signal), []);
   const feed = useMomentFeed({ query: feedQuery, generation: authGenerationRef.current,
-    enabled: !!user && dataReady, fetchPage: fetchFeedPage, maxRetainedPages: 5 });
+    enabled: !!user && dataReady && !search.pending, fetchPage: fetchFeedPage, maxRetainedPages: 5 });
   useEffect(() => { feed.refresh(); }, [feedRevision]);
   useEffect(() => { setEvents(feed.items); }, [feed.items.map(momentIdentity).join('|'), feed.loading]);
   const filteredEvents = feed.items.map(item => events.find(local => momentIdentity(local) === momentIdentity(item)) ?? item);
@@ -743,6 +745,10 @@ export default function App() {
             availableYears={availableYears}
             viewMode={viewMode}
             onViewModeChange={setViewMode}
+            searchPending={search.pending || feed.loading}
+            onSearchEnter={search.flush}
+            onSearchCompositionStart={search.compositionStart}
+            onSearchCompositionEnd={search.compositionEnd}
             totalFilteredCount={feed.total ?? 0}
             savedCount={savedCount}
             totalCount={
@@ -754,8 +760,9 @@ export default function App() {
         </div>
 
         {/* View Switcher: Timeline, Compact List, or Gallery */}
-        <main>
-          {viewMode === 'timeline' && (
+        <main aria-busy={search.pending || feed.loading}>
+          {(search.pending || feed.loading) && <div role="status" className="min-h-48 py-16 text-center">Updating memories…</div>}
+          {!search.pending && !feed.loading && viewMode === 'timeline' && (
             <TimelineView
               events={filteredEvents}
               tracks={eventTracks}
@@ -806,7 +813,7 @@ export default function App() {
             />
           )}
 
-          {viewMode === 'compact' && (
+          {!search.pending && !feed.loading && viewMode === 'compact' && (
             <CompactListView
               events={filteredEvents}
               tracks={eventTracks}
@@ -821,7 +828,7 @@ export default function App() {
             />
           )}
 
-          {viewMode === 'gallery' && (
+          {!search.pending && !feed.loading && viewMode === 'gallery' && (
             <GalleryView
               events={filteredEvents}
               tracks={eventTracks}
@@ -905,7 +912,7 @@ export default function App() {
         onAccept={acceptInvitation}
       />}
       <button type="button" onClick={() => setIsBlindboxOpen(true)} title="Open a random memory" aria-label="Open a random memory" className="fixed bottom-[max(1.5rem,env(safe-area-inset-bottom))] right-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full bg-amber-600 text-white shadow-lg transition hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-300 sm:right-6"><Dices className="h-5 w-5" /></button>
-      <LoadMoreMemories hasMore={feed.hasMore} loading={feed.loading} error={feed.error}
+      <LoadMoreMemories hasMore={feed.hasMore && !search.pending} loading={feed.loading || search.pending} error={feed.error}
         windowShifted={feed.windowShifted} loadedCount={feed.items.length} totalCount={feed.total}
         onLoadMore={feed.loadMore} onNewer={feed.newer} onRefresh={feed.refresh} />
       {isBlindboxOpen && <BlindboxMemory key={authGenerationRef.current} currentUserId={user.id} open={isBlindboxOpen} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}

@@ -136,7 +136,7 @@ test('the SQL fold and the client fold agree on Vietnamese, emoji and whitespace
   try {
     for (const sample of samples) {
       const { rows } = await pool.query(`SELECT ${sqlFold('$1')} AS folded`, [sample]);
-      assert.equal(rows[0].folded, foldSearchText(sample), `SQL fold matches the client fold for ${JSON.stringify(sample)}; sql=${JSON.stringify(rows[0].folded)} js=${JSON.stringify(foldSearchText(sample))} db=${pool.options?.connectionString?.slice(0, 40)}`);
+      assert.equal(rows[0].folded, foldSearchText(sample), 'SQL fold matches client reference');
     }
     t.diagnostic(`fold parity verified for ${samples.length} samples`);
   } finally {

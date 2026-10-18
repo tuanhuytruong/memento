@@ -1,3 +1,6 @@
+import { literalSearchPattern, sqlFold as canonicalFold } from './moment-search.mjs';
+// Discovery retains the legacy sqlFold export below; main-feed tag matching uses
+// the canonical Unicode decomposition shared with stored main-search text.
 // Phase 3 Task 3.1: the bounded read contract.
 //
 // The existing `GET /api/moments` returns the caller's entire accessible set,
@@ -289,14 +292,7 @@ const AUTHORIZED_SCOPE = `(
  * Images and reaction summaries are fetched only for the returned page and in
  * one batch each, so the cost per page is constant rather than per card.
  */
-export async function queryMoments(client, userId, request, schema, helpers = {}) {
-  const { fold = sqlFold, reactionSummaries } = helpers;
-  const { limit, direction, filters } = request;
-  const scope = scopeHash(filters, request.direction, userId);
-  const cursor = request.cursor === undefined ? null : decodeCursor(request.cursor, scope);
-  if (cursor === undefined) throw new ApiError(400, 'cursor does not match this query');
-  if (cursor && cursor.direction !== direction) throw new ApiError(400, 'cursor does not match this sort direction');
-
+export function buildMomentPredicates(userId, filters, fold = canonicalFold) {
   const args = [userId];
   const where = [];
   const add = (value) => { args.push(value); return `$${args.length}`; };
@@ -316,29 +312,16 @@ export async function queryMoments(client, userId, request, schema, helpers = {}
     const bounds = [];
     if (filters.dateFrom) bounds.push(`q.document->>'date' >= ${add(filters.dateFrom)}`);
     if (filters.dateTo) bounds.push(`q.document->>'date' <= ${add(filters.dateTo)}`);
-    const unknownDate = `q.document->>'date' !~ '^\\d{4}-\\d{2}-\\d{2}$'`;
+    const unknownDate = `NOT ${sqlCalendarDate("q.document->>'date'")}`;
     where.push(bounds.length > 1 ? `(${unknownDate} OR (${bounds.join(' AND ')}))` : `(${unknownDate} OR ${bounds[0]})`);
   }
-  if (filters.search.trim()) {
-    // One folded haystack built from exactly the fields the client searches.
-    const haystack = [
-      "coalesce(q.document->>'title','')",
-      "coalesce(q.document->>'description','')",
-      "coalesce(q.document->>'idea','')",
-      "coalesce(q.document->>'emotion','')",
-      "coalesce(q.document->'location'->>'name','')",
-      "coalesce(q.document->'location'->>'city','')",
-      "coalesce(q.document->'location'->>'country','')",
-      "coalesce((SELECT string_agg(x.value, ' ') FROM jsonb_array_elements_text(coalesce(q.document->'tags','[]'::jsonb)) x),'')",
-    ].map(fold).join(" || ' ' || ");
-    // The needle is folded in JS with the same function the client uses, so a
-    // query and a local filter can never disagree about what matched.
-    where.push(`(${haystack}) LIKE '%' || ${add(foldNeedle(filters.search))} || '%'`);
+  if (foldNeedle(filters.search)) {
+    where.push(`q.search_text LIKE ${add(literalSearchPattern(filters.search))} ESCAPE E'\\\\'`);
   }
   // Selected tags keep OR semantics, matched on folded equality.
   if (filters.selectedTags.length > 0) {
-    const placeholders = filters.selectedTags.map(tag => add(tag));
-    where.push(`EXISTS (SELECT 1 FROM jsonb_array_elements_text(coalesce(q.document->'tags','[]'::jsonb)) t WHERE ${fold('t.value')} IN (${placeholders.join(', ')}))`);
+    const placeholders = filters.selectedTags.map(tag => add(foldNeedle(tag)));
+    where.push(`EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(q.document->'tags') = 'array' THEN q.document->'tags' ELSE '[]'::jsonb END) t WHERE ${fold('t.value')} IN (${placeholders.join(', ')}))`);
   }
   if (filters.selectedEmotions.length > 0) {
     where.push(`q.document->>'emotion' = ANY(${add(filters.selectedEmotions)})`);
@@ -348,6 +331,19 @@ export async function queryMoments(client, userId, request, schema, helpers = {}
   if (filters.savedOnly) {
     where.push(`EXISTS (SELECT 1 FROM {schema}.saved_moments sv WHERE sv.user_id = $1 AND sv.moment_owner_id = q.owner_id AND sv.moment_id = q.id)`);
   }
+
+  return { args, where };
+}
+
+export async function queryMoments(client, userId, request, schema, helpers = {}) {
+  const { fold = canonicalFold, reactionSummaries } = helpers;
+  const { limit, direction, filters } = request;
+  const scope = scopeHash(filters, request.direction, userId);
+  const cursor = request.cursor === undefined ? null : decodeCursor(request.cursor, scope);
+  if (cursor === undefined) throw new ApiError(400, 'cursor does not match this query');
+  if (cursor && cursor.direction !== direction) throw new ApiError(400, 'cursor does not match this sort direction');
+
+  const { args, where } = buildMomentPredicates(userId, filters, fold);
 
   // Keyset predicate. Newest sorts the tuple descending, oldest ascending.
   const cmp = direction === 'newest' ? '<' : '>';
@@ -364,7 +360,7 @@ export async function queryMoments(client, userId, request, schema, helpers = {}
   const order = direction === 'newest' ? 'DESC' : 'ASC';
 
   const sql = `
-    WITH authorized AS (${AUTHORIZED_SCOPE}),
+    WITH authorized AS (${AUTHORIZED_SCOPE.replace('m.document, m.version', 'm.document, m.version, m.search_text')}),
     q AS (SELECT * FROM authorized)
     SELECT q.owner_id, q.id, q.event_id, q.document, q.version,
            ${dateKey('q')} AS sort_date, ${timeKey('q')} AS sort_time
@@ -411,28 +407,10 @@ export async function queryMoments(client, userId, request, schema, helpers = {}
  * never exceed what paging would actually return.
  */
 export async function queryFacets(client, userId, request, schema) {
-  const { filters } = request;
-  const args = [userId];
-  const where = [];
-  const add = (value) => { args.push(value); return `$${args.length}`; };
-  // Rebuild the same predicates; kept beside the page query so the two cannot
-  // drift into disagreeing about which rows count.
-  if (filters.trackKey) where.push(`q.owner_id = ${add(filters.trackKey.ownerId)} AND q.event_id = ${add(filters.trackKey.id)}`);
-  if (filters.selectedYear !== 'all') where.push(`q.document->>'date' LIKE ${add(`${filters.selectedYear}-%`)}`);
-  if (filters.search.trim()) {
-    const haystack = [
-      "coalesce(q.document->>'title','')", "coalesce(q.document->>'description','')",
-      "coalesce(q.document->>'idea','')", "coalesce(q.document->>'emotion','')",
-      "coalesce(q.document->'location'->>'name','')", "coalesce(q.document->'location'->>'city','')",
-      "coalesce(q.document->'location'->>'country','')",
-      "coalesce((SELECT string_agg(x.value, ' ') FROM jsonb_array_elements_text(coalesce(q.document->'tags','[]'::jsonb)) x),'')",
-    ].map(sqlFold).join(" || ' ' || ");
-    where.push(`(${haystack}) LIKE '%' || ${add(filters.search)} || '%'`);
-  }
-  if (filters.milestonesOnly) where.push(`(q.document->'isMilestone')::text = 'true'`);
+  const { args, where } = buildMomentPredicates(userId, request.filters);
 
   const { rows } = await client.query(`
-    WITH authorized AS (${AUTHORIZED_SCOPE}),
+    WITH authorized AS (${AUTHORIZED_SCOPE.replace('m.document, m.version', 'm.document, m.version, m.search_text')}),
     q AS (SELECT * FROM authorized)
     SELECT
       COUNT(*)::int AS total,

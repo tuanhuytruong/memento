@@ -28,6 +28,10 @@ interface FilterBarProps {
   availableYears: string[];
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
+  searchPending?: boolean;
+  onSearchEnter?: () => void;
+  onSearchCompositionStart?: () => void;
+  onSearchCompositionEnd?: () => void;
   totalFilteredCount: number;
   totalCount: number;
   /** The caller's own saved count, from the server. */
@@ -45,6 +49,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   totalFilteredCount,
   totalCount,
   savedCount,
+  searchPending, onSearchEnter, onSearchCompositionStart, onSearchCompositionEnd,
 }) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -95,6 +100,9 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             id="timeline-search-input"
             value={filters.search}
             onChange={(e) => onFilterChange({ search: e.target.value })}
+            onKeyDown={(e) => { if(e.key === 'Enter' && !e.nativeEvent.isComposing) onSearchEnter?.(); }}
+            onCompositionStart={onSearchCompositionStart}
+            onCompositionEnd={onSearchCompositionEnd}
             placeholder="Search events, ideas, emotions, cities, or stories..."
             className="w-full pl-9 pr-8 py-2 rounded-xl text-xs sm:text-sm border border-stone-200 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition"
           />
@@ -431,9 +439,8 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
       {/* Filter status summary */}
       <div className="flex items-center justify-between text-xs text-stone-500 dark:text-stone-400 pt-1">
-        <span>
-          Showing <strong className="text-stone-900 dark:text-stone-100">{totalFilteredCount}</strong> of{' '}
-          {totalCount} events
+        <span role="status" aria-live="polite" aria-busy={searchPending}>
+          {searchPending ? 'Updating memories…' : <>Showing <strong className="text-stone-900 dark:text-stone-100">{totalFilteredCount}</strong> of{' '}{totalCount} events</>}
         </span>
         {activeFiltersCount > 0 && (
           <span className="text-amber-700 dark:text-amber-400 font-medium">

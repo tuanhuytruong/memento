@@ -133,6 +133,8 @@ export function useMomentFeed(options: {
   // into another account's list.
   const scope = feedScopeHash(query, generation);
   const [landedScope, setLandedScope] = useState(scope);
+  const currentScope = useRef({ scope, enabled });
+  currentScope.current = { scope, enabled };
   const activeController = useRef<AbortController | null>(null);
   const busy = useRef(false);
   const requestId = useRef(0);
@@ -150,7 +152,7 @@ export function useMomentFeed(options: {
     setError(null);
     try {
       const page = await fetchPage({ cursor: mode === 'more' ? cursorRef.current : null, query, signal: controller.signal });
-      if (id !== requestId.current) return; // superseded: never land
+      if (id !== requestId.current || currentScope.current.scope !== scope || !currentScope.current.enabled) return; // superseded: never land
       const next = mode === 'more' ? [...existing, page.moments] : [page.moments];
       const slid = slideWindow(next, maxRetainedPages);
       setLandedScope(scope);
@@ -165,7 +167,7 @@ export function useMomentFeed(options: {
         setTotal(page.total);
       }
     } catch (failure) {
-      if (id !== requestId.current) return;
+      if (id !== requestId.current || currentScope.current.scope !== scope || !currentScope.current.enabled) return;
       if ((failure as { name?: string })?.name === 'AbortError') return;
       setError(failure instanceof Error ? failure.message : 'Could not load memories. Please retry.');
     } finally {
