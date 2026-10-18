@@ -65,7 +65,7 @@ export const LoadMoreMemories: React.FC<{
       </div>
     )}
 
-    {typeof totalCount === 'number' && !loading && (
+    {typeof totalCount === 'number' && (
       <p className="text-[11px] text-stone-400 dark:text-stone-500 text-center" id="feed-progress">
         Showing {loadedCount} of {totalCount}
       </p>

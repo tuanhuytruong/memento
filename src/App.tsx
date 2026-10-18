@@ -763,8 +763,8 @@ export default function App() {
 
         {/* View Switcher: Timeline, Compact List, or Gallery */}
         <main aria-busy={search.pending || feed.loading}>
-          {(search.pending || feed.loading) && <div role="status" className="min-h-48 py-16 text-center">Updating memories…</div>}
-          {!search.pending && !feed.loading && viewMode === 'timeline' && (
+          {(search.pending || (feed.loading && !feed.appendLoading)) && <div role="status" className="min-h-48 py-16 text-center">Updating memories…</div>}
+          {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'timeline' && (
             <TimelineView
               events={filteredEvents}
               tracks={eventTracks}
@@ -815,7 +815,7 @@ export default function App() {
             />
           )}
 
-          {!search.pending && !feed.loading && viewMode === 'compact' && (
+          {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'compact' && (
             <CompactListView
               events={filteredEvents}
               tracks={eventTracks}
@@ -830,7 +830,7 @@ export default function App() {
             />
           )}
 
-          {!search.pending && !feed.loading && viewMode === 'gallery' && (
+          {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'gallery' && (
             <GalleryView
               events={filteredEvents}
               tracks={eventTracks}

@@ -89,6 +89,8 @@ export interface MomentFeedState {
   total: number | null;
   hasMore: boolean;
   loading: boolean;
+  /** Only same-scope cursor append keeps the existing cards mounted. */
+  appendLoading: boolean;
   error: string | null;
   /** True when older pages were dropped to stay inside the retained window. */
   windowShifted: boolean;
@@ -124,6 +126,7 @@ export function useMomentFeed(options: {
   const [cursor, setCursor] = useState<string | null>(null);
   const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [appendLoading, setAppendLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dropped, setDropped] = useState(0);
   const [reloadToken, setReloadToken] = useState(0);
@@ -149,6 +152,7 @@ export function useMomentFeed(options: {
     activeController.current = controller;
     busy.current = true;
     setLoading(true);
+    setAppendLoading(mode === 'more');
     setError(null);
     try {
       const page = await fetchPage({ cursor: mode === 'more' ? cursorRef.current : null, query, signal: controller.signal });
@@ -171,7 +175,7 @@ export function useMomentFeed(options: {
       if ((failure as { name?: string })?.name === 'AbortError') return;
       setError(failure instanceof Error ? failure.message : 'Could not load memories. Please retry.');
     } finally {
-      if (id === requestId.current) { busy.current = false; setLoading(false); }
+      if (id === requestId.current) { busy.current = false; setLoading(false); setAppendLoading(false); }
     }
   }, [fetchPage, query, scope, enabled, maxRetainedPages]);
 
@@ -218,6 +222,7 @@ export function useMomentFeed(options: {
     total: enabled && landedScope === scope ? total : null,
     hasMore: enabled && landedScope === scope && cursor !== null,
     loading,
+    appendLoading: enabled && landedScope === scope && appendLoading,
     error,
     windowShifted: dropped > 0,
     loadedPages: pages.length,

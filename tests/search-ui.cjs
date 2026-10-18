@@ -52,8 +52,28 @@ await waitCount(p,1);assert.equal(queryRequests.length-before,1);report.checks.p
 await search.fill('Live memory 0003');await search.press('Enter');await waitCount(p,1);report.checks.push('Enter flush');
 await search.dispatchEvent('compositionstart');await search.fill('Live memory 0004');before=queryRequests.length;await p.waitForTimeout(400);assert.equal(queryRequests.length,before);await search.dispatchEvent('compositionend');await waitCount(p,1);report.checks.push('IME does not dispatch partial composition');
 await p.getByRole('button',{name:'Clear search',exact:true}).click();await waitCount(p,40);
-await p.locator('#feed-load-more').click();await waitCount(p,80);assert.equal(queryRequests.at(-1).includeTotal,false);assert.equal(queryRequests.at(-2).includeTotal,true);assert.match(await p.locator('#filter-toolbar').innerText(),/Showing 281 of/);report.checks.push('total initial true, load-more false; total retained');
+// Hold the genuine append response: existing nodes and scroll must survive.
+const appendGate=hold(false);
+await p.locator('#feed-load-more').scrollIntoViewIfNeeded();
+await p.evaluate(()=>{window.__appendCards=[...document.querySelectorAll('[id^="event-card-"]')];window.__appendScroll=scrollY;});
+await p.locator('#feed-load-more').click();await appendGate.entered;
+await p.waitForTimeout(150);
+assert.equal(await p.locator('[id^="event-card-"]').count(),40);
+assert.ok(await p.evaluate(()=>window.__appendCards.every(n=>n.isConnected)));
+assert.ok(await p.evaluate(()=>Math.abs(scrollY-window.__appendScroll)<2));
+appendGate.release();await waitCount(p,80);
+assert.ok(await p.evaluate(()=>window.__appendCards.every(n=>n.isConnected)));
+report.checks.push('held genuine append response retains all mounted cards and scroll');
+assert.equal(queryRequests.at(-1).includeTotal,false);assert.equal(queryRequests.at(-2).includeTotal,true);assert.match(await p.locator('#filter-toolbar').innerText(),/Showing 281 of/);report.checks.push('total initial true, load-more false; total retained');
 for(const u of users.slice(1)){await u.page.locator('#timeline-search-input').fill('Live memory 0001');await waitCount(u.page,1);assert.match(await u.page.locator('#filter-toolbar').innerText(),/Showing 1 of/);report.checks.push(`${u.role}: genuine accepted shared search`);}
+// Genuine authenticated API + browser regression for context-sensitive Greek casing.
+await pool.query(`UPDATE ${qschema}.moments SET document=jsonb_set(document,'{title}','"ΟΣ ΣΟΣ"'),version=version+1 WHERE owner_id=$1 AND id='live-0010'`,[owner.id]);
+for(const needle of ['ΟΣ','ος','οσ','ΣΟΣ','σος','σοσ']){
+ const result=await p.evaluate(async search=>{const r=await fetch('/api/moments/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({search,includeTotal:true})});return {status:r.status,data:await r.json()};},needle);
+ assert.equal(result.status,200);assert.equal(result.data.total,1);assert.equal(result.data.moments[0].id,'live-0010');
+ await search.fill(needle);await waitCount(p,1);assert.match(await p.locator('[id^="event-card-"]').innerText(),/ΟΣ ΣΟΣ/);
+}
+report.checks.push('Greek final sigma: six uppercase/final/non-final needle variants find same authorized row and exact total via real API/browser');
 // Real editor composer mutation, including a new tag, through product UI.
 const editor=users[1].page;
 await editor.locator('#timeline-search-input').fill('Live memory 0006');await waitCount(editor,1);

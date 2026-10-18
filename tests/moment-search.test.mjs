@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { searchableText, foldNeedle, sqlSearchCorpus, literalSearchPattern, corpusMigration } from '../moment-search.mjs';
+import {foldSearchText} from '../src/lib/momentFilters.ts';
+import {backfillSearch} from '../scripts/backfill-moment-search.mjs';
+import { searchableText, foldNeedle, sqlSearchCorpus, literalSearchPattern, corpusMigration, sigmaFoldMigration } from '../moment-search.mjs';
 
 test('canonical field order, empty and malformed optional fields', () => {
  assert.equal(searchableText({title:' Đà  Lạt ',description:'\tSương',idea:'',tags:['',null,'vui'],emotion:'joy',location:{name:'Hồ',city:'Huế',country:'Việt Nam'}}),'da lat suong vui joy ho hue viet nam');
@@ -9,6 +11,7 @@ test('canonical field order, empty and malformed optional fields', () => {
  assert.equal(literalSearchPattern(' %_\\ '),'%\\%\\_\\\\%');
 });
 test('migration is generated from canonical builder', async()=>assert.equal(await fs.readFile(new URL('../migrations/010-moment-search-corpus.sql',import.meta.url),'utf8'),corpusMigration()));
+test('sigma migration is generated from canonical builder', async()=>assert.equal(await fs.readFile(new URL('../migrations/012-moment-search-sigma-fold.sql',import.meta.url),'utf8'),sigmaFoldMigration()));
 test('SQL corpus parity, trigger atomicity and private column', {timeout:60000}, async t => {
  if(process.env.RUN_INTEGRATION!=='1') return t.skip('requires DB');
  const {pool,qschema,schema}=await import('../memento-db.mjs');
@@ -16,8 +19,8 @@ test('SQL corpus parity, trigger atomicity and private column', {timeout:60000},
  const c=await pool.connect();
  try {
   const letters='àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ';
-  const texts=['title description','%_\\\' DROP TABLE x; --','😀 東京 Ελληνικά café Ångström Ç ñ',' x \t\n y ',letters,letters.toUpperCase(),letters.normalize('NFD'),'a\u00a0b\u2003c'];
-  for(const text of texts){const doc={title:text,description:'story',tags:['',text],location:{city:text}};const r=await c.query(`SELECT ${sqlSearchCorpus('$1::jsonb')} AS corpus`,[doc]);assert.equal(r.rows[0].corpus,searchableText(doc));}
+  const texts=['title description','ΟΣ','ΣΟΣ','ος','οσ','σος','σοσ','ΟΣ ΣΟΣ','ΟΣ'.normalize('NFD'),'ΣΟΣ'.normalize('NFD'),'%_\\\' DROP TABLE x; --','😀 東京 Ελληνικά café Ångström Ç ñ',' x \t\n y ',letters,letters.toUpperCase(),letters.normalize('NFD'),'a\u00a0b\u2003c'];
+  for(const text of texts){assert.equal(foldNeedle(text),foldSearchText(text));const doc={title:text,description:'story',tags:['',text],location:{city:text}};const r=await c.query(`SELECT ${sqlSearchCorpus('$1::jsonb')} AS corpus`,[doc]);assert.equal(r.rows[0].corpus,searchableText(doc));}
   for(const doc of [{tags:null},{tags:'legacy'},{title:12,tags:[false,12,{},'tag'],location:[]}]) assert.equal((await c.query(`SELECT ${sqlSearchCorpus('$1::jsonb')} AS corpus`,[doc])).rows[0].corpus,searchableText(doc));
   await c.query('BEGIN');
   await c.query(`CREATE TEMP TABLE search_trigger_probe (LIKE ${qschema}.moments INCLUDING ALL) ON COMMIT DROP`);
@@ -31,5 +34,15 @@ test('SQL corpus parity, trigger atomicity and private column', {timeout:60000},
   await c.query(`UPDATE search_trigger_probe SET document=jsonb_set(document,'{tags}','["Đổi tên"]')`);
   assert.equal((await c.query('SELECT search_text FROM search_trigger_probe')).rows[0].search_text,'old doi ten');
   await c.query('ROLLBACK');
+  // Actual bounded recompute on disposable rows, preserving document/version.
+  await c.query(`CREATE TEMP TABLE search_backfill_probe (LIKE ${qschema}.moments INCLUDING ALL)`);
+  await c.query(`INSERT INTO search_backfill_probe(owner_id,id,event_id,document,search_text) VALUES('00000000-0000-4000-8000-000000000001','probe','track',$1,'ος σος')`,[{id:'probe',eventId:'track',title:'ΟΣ ΣΟΣ'}]);
+  const before=(await c.query('SELECT document,version FROM search_backfill_probe')).rows;
+  const adapter={query:(sql,args)=>c.query(sql.replaceAll('"memento_dev".moments','search_backfill_probe'),args)};
+  assert.deepEqual(await backfillSearch(adapter,'memento_dev',{recompute:true,batchSize:1,delayMs:0}),{total:1,batches:1,remaining:0,mismatches:0});
+  assert.deepEqual((await c.query('SELECT document,version FROM search_backfill_probe')).rows,before);
+  assert.equal((await c.query('SELECT search_text FROM search_backfill_probe')).rows[0].search_text,'οσ σοσ');
+  assert.equal((await backfillSearch(adapter,'memento_dev',{recompute:true,delayMs:0})).total,0);
+  await c.query('DROP TABLE search_backfill_probe');
  }finally{await c.query('ROLLBACK');c.release();await pool.end();}
 });

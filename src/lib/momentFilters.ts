@@ -34,6 +34,8 @@ export function foldSearchText(input: string): string {
     .replace(DIACRITIC_MARKS, '')
     .normalize('NFC')
     .toLowerCase()
+    // Context-free sigma: PostgreSQL lower() does not apply JS final-sigma rules.
+    .replace(/ς/g, 'σ')
     .replace(/\s+/g, ' ')
     .trim();
 }
