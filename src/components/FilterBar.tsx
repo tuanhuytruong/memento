@@ -119,7 +119,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         </div>
 
         {/* View Mode Switcher + Sort + Advanced Toggle */}
-        <div className="flex items-center gap-2 justify-between sm:justify-end">
+        <div className="flex flex-wrap items-center gap-2 justify-between sm:justify-end">
           {/* View toggle tabs */}
           <div className="flex items-center p-1 rounded-xl bg-stone-100 dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700">
             <button

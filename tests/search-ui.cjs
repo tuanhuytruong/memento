@@ -7,18 +7,24 @@ const {app}=await import('../server.mjs');const {pool,qschema,hashSession}=await
 assert.equal(process.env.DB_SCHEMA,'memento_dev');
 const out=path.resolve('.hermes/evidence/search-optimization');fs.mkdirSync(out,{recursive:true});
 const report={synthetic:false,scope:'Authenticated Chromium against disposable latest-source Express API and latest dist; temporary real PostgreSQL metadata/users/sessions. No intercepted or synthetic product responses; no R2.',checks:[],requests:[],pageerrors:[],cleanup:false};
+report.checks.push=(...items)=>{for(const item of items)console.log('CHECK',item);return Array.prototype.push.apply(report.checks,items);};
+const activeGates=[];
 const users=['owner','editor','viewer'].map(role=>({role,id:crypto.randomUUID(),username:`qa_${role}_${crypto.randomBytes(6).toString('hex')}`,token:crypto.randomBytes(32).toString('hex')}));
+const password=crypto.randomBytes(18).toString('hex');
+const passwordHash=await require('bcryptjs').hash(password,12);
+let barrier=null;
 const owner=users[0],track='live-qa-track',N=281;let api,web,browser;let contexts=[];
 const listen=s=>new Promise(r=>s.listen(0,'127.0.0.1',r));
 const close=s=>s?new Promise(r=>s.close(r)):Promise.resolve();
 try{
-for(const u of users){await pool.query(`INSERT INTO ${qschema}.users(id,username,password_hash) VALUES($1,$2,$3)`,[u.id,u.username,'unused-qa-fixture']);await pool.query(`INSERT INTO ${qschema}.sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 hour')`,[hashSession(u.token),u.id]);}
+for(const u of users){await pool.query(`INSERT INTO ${qschema}.users(id,username,password_hash) VALUES($1,$2,$3)`,[u.id,u.username,passwordHash]);await pool.query(`INSERT INTO ${qschema}.sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 hour')`,[hashSession(u.token),u.id]);}
 const td={id:track,title:'Live QA track',description:'Temporary authenticated browser metadata',color:'indigo',icon:'Heart',tags:[],createdAt:'2026-10-15',updatedAt:'2026-10-15'};
 await pool.query(`INSERT INTO ${qschema}.tracks(owner_id,id,document) VALUES($1,$2,$3)`,[owner.id,track,td]);
 for(let i=0;i<N;i++){const id=`live-${String(i).padStart(4,'0')}`;const d={id,eventId:track,title:`Live memory ${String(i).padStart(4,'0')}`,description:'Exact authenticated detail payload',date:'2026-10-15',tags:['qa-live'],images:[],isMilestone:i%10===0,createdAt:'2026-10-15',updatedAt:'2026-10-15'};await pool.query(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document) VALUES($1,$2,$3,$4)`,[owner.id,id,track,d]);}
 for(const u of users.slice(1))await pool.query(`INSERT INTO ${qschema}.track_collaborators(id,owner_id,track_id,recipient_id,role,expires_at,accepted_at) VALUES($1,$2,$3,$4,$5,now()+interval '7 days',now())`,[crypto.randomUUID(),owner.id,track,u.id,u.role]);
 api=http.createServer(app);await listen(api);
-web=http.createServer((req,res)=>{if(req.url.startsWith('/api/')||req.url==='/health'){const upstream=http.request({hostname:'127.0.0.1',port:api.address().port,path:req.url,method:req.method,headers:req.headers},r=>{res.writeHead(r.statusCode,r.headers);r.pipe(res);});upstream.on('error',()=>{res.statusCode=502;res.end();});req.pipe(upstream);return;}let f=path.join(process.cwd(),'dist',decodeURIComponent(req.url.split('?')[0]));if(!fs.existsSync(f)||fs.statSync(f).isDirectory())f=path.join(process.cwd(),'dist/index.html');const ext=path.extname(f);res.setHeader('Content-Type',ext==='.js'?'text/javascript':ext==='.css'?'text/css':'text/html');res.end(fs.readFileSync(f));});await listen(web);const base=`http://127.0.0.1:${web.address().port}`;
+web=http.createServer(async(req,res)=>{if(req.url.startsWith('/api/')||req.url==='/health'){let gate=null;if(req.url==='/api/moments/query'&&barrier){gate=barrier;barrier=null;gate.enter();if(gate.before)await gate.wait;}const upstream=http.request({hostname:'127.0.0.1',port:api.address().port,path:req.url,method:req.method,headers:req.headers},async r=>{if(gate&&!gate.before){const chunks=[];for await(const chunk of r)chunks.push(chunk);gate.enter();await gate.wait;if(!res.destroyed){res.writeHead(r.statusCode,r.headers);res.end(Buffer.concat(chunks));}}else{res.writeHead(r.statusCode,r.headers);r.pipe(res);}});upstream.on('error',()=>{res.statusCode=502;res.end();});req.pipe(upstream);return;}let f=path.join(process.cwd(),'dist',decodeURIComponent(req.url.split('?')[0]));if(!fs.existsSync(f)||fs.statSync(f).isDirectory())f=path.join(process.cwd(),'dist/index.html');const ext=path.extname(f);res.setHeader('Content-Type',ext==='.js'?'text/javascript':ext==='.css'?'text/css':'text/html');res.end(fs.readFileSync(f));});await listen(web);const base=`http://127.0.0.1:${web.address().port}`;
+const hold=(before=false)=>{let enter,release;const entered=Promise.race([new Promise(r=>enter=r),new Promise((_,reject)=>{const t=setTimeout(()=>reject(new Error('Barrier entry timeout')),15000);t.unref();})]),wait=new Promise(r=>release=r);const gate={before,enter,wait,entered,release};activeGates.push(gate);barrier=gate;return gate;};
 report.entry=fs.readFileSync('dist/index.html','utf8').match(/src="([^\"]+\.js)"/)[1];report.ports={api:api.address().port,web:web.address().port};
 browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/home/ubuntu/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux-arm64/chrome-headless-shell',args:['--no-sandbox']});
 for(const u of users){const c=await browser.newContext({viewport:{width:1280,height:900},acceptDownloads:true,reducedMotion:'reduce'});contexts.push(c);await c.addCookies([{name:'memento_session',value:u.token,url:base,httpOnly:true,sameSite:'Lax'}]);const p=await c.newPage();u.page=p;p.on('pageerror',e=>report.pageerrors.push({role:u.role,message:e.message}));p.on('response',r=>{if(new URL(r.url()).pathname.startsWith('/api/'))report.requests.push({role:u.role,method:r.request().method(),path:new URL(r.url()).pathname,status:r.status()});});await p.goto(base);await p.waitForFunction(()=>document.querySelectorAll('[id^="event-card-"]').length===40);assert.equal(await p.locator('[id^="event-card-"]').count(),40);report.checks.push(`${u.role}: authenticated startup 40 cards`);}
@@ -48,6 +54,46 @@ await search.dispatchEvent('compositionstart');await search.fill('Live memory 00
 await p.getByRole('button',{name:'Clear search',exact:true}).click();await waitCount(p,40);
 await p.locator('#feed-load-more').click();await waitCount(p,80);assert.equal(queryRequests.at(-1).includeTotal,false);assert.equal(queryRequests.at(-2).includeTotal,true);assert.match(await p.locator('#filter-toolbar').innerText(),/Showing 281 of/);report.checks.push('total initial true, load-more false; total retained');
 for(const u of users.slice(1)){await u.page.locator('#timeline-search-input').fill('Live memory 0001');await waitCount(u.page,1);assert.match(await u.page.locator('#filter-toolbar').innerText(),/Showing 1 of/);report.checks.push(`${u.role}: genuine accepted shared search`);}
+// Real editor composer mutation, including a new tag, through product UI.
+const editor=users[1].page;
+await editor.locator('#timeline-search-input').fill('Live memory 0006');await waitCount(editor,1);
+await editor.locator('[id^="event-card-"]').first().click();
+await editor.getByRole('dialog',{name:'Memory details',exact:true}).getByRole('button',{name:'Edit event',exact:true}).click();
+await editor.locator('#event-title-input').fill('Editor changed searchable title');
+await editor.locator('#create-custom-tag-button').click();
+await editor.getByRole('textbox',{name:'New tag name',exact:true}).fill('editor-search-tag');
+await editor.getByRole('button',{name:'Add',exact:true}).click();
+await editor.locator('[role="dialog"][aria-label="Edit memory"] button[type="submit"]').click();
+await editor.locator('[role="dialog"][aria-label="Edit memory"]').waitFor({state:'detached'});
+for(const needle of ['Editor changed searchable title','editor-search-tag']){await search.fill(needle);await waitCount(p,1);assert.match(await p.locator('[id^="event-card-"]').first().innerText(),/Editor changed searchable title/);}
+report.checks.push('editor: actual composer text and tag save searchable immediately by owner');
+// Transport failure injection only: no fabricated API payload; retry hits real Express/Postgres.
+await p.route('**/api/moments/query',route=>route.abort('failed'),{times:1});
+await search.fill('Live memory 0005');await p.locator('#feed-retry').waitFor();
+assert.equal(await p.locator('[id^="event-card-"]').count(),0);
+await p.screenshot({path:path.join(out,'search-failure.png'),fullPage:true});
+await p.locator('#feed-retry').click();await waitCount(p,1);
+report.checks.push('transport-fault injection: search failure visible, retry returns real authorized result');
+// Keyboard and hit-testing across mobile, short landscape, desktop; actual control activation.
+report.geometry=[];
+for(const size of [{width:320,height:900},{width:390,height:900},{width:667,height:375},{width:1280,height:900}]){
+ await p.setViewportSize(size);await search.fill('Live memory 0005');await waitCount(p,1);
+ for(const selector of ['#timeline-search-input','button[aria-label="Clear search"]','#view-timeline-btn','#view-compact-btn','#view-gallery-btn','#toggle-sort-direction','#toggle-advanced-filters']){
+  const control=p.locator(selector);await control.scrollIntoViewIfNeeded();
+  const geometry=await control.evaluate(el=>{const r=el.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+r.height/2;const hit=document.elementFromPoint(x,y);return {x:r.x,y:r.y,width:r.width,height:r.height,hit:el===hit||el.contains(hit),inside:r.x>=0&&r.right<=innerWidth&&r.y>=0&&r.bottom<=innerHeight,points:[.15,.5,.85].flatMap(dx=>[.15,.5,.85].map(dy=>{const h=document.elementFromPoint(r.x+r.width*dx,r.y+r.height*dy);return el===h||el.contains(h)||(el.id==='timeline-search-input'&&!!h?.closest('button[aria-label="Clear search"]'));} ))};});
+  report.geometry.push({viewport:size,selector,...geometry});assert.ok(geometry.points.every(Boolean),`${size.width}: ${selector} target partially obstructed`);assert.equal(geometry.hit,true,`${size.width}: ${selector} center obstructed`);assert.equal(geometry.inside,true,`${size.width}: ${selector} outside viewport`);
+ }
+ await search.focus();await search.press('Tab');assert.equal(await p.evaluate(()=>document.activeElement?.getAttribute('aria-label')),'Clear search');await p.keyboard.press('Enter');await waitCount(p,40);
+ for(const id of ['view-compact-btn','view-gallery-btn','view-timeline-btn']){await p.locator('#'+id).focus();await p.keyboard.press('Space');await p.waitForFunction(id=>document.getElementById(id)?.getAttribute('aria-pressed')==='true',id);}
+ await p.locator('#toggle-advanced-filters').focus();await p.keyboard.press('Enter');await p.waitForFunction(()=>document.querySelector('#toggle-advanced-filters')?.getAttribute('aria-expanded')==='true');
+ await p.keyboard.press('Enter');
+ await p.locator('#toggle-sort-direction').focus();const label=await p.locator('#toggle-sort-direction').getAttribute('aria-label');await p.keyboard.press('Space');await p.waitForFunction(label=>document.querySelector('#toggle-sort-direction')?.getAttribute('aria-label')!==label,label);await waitCount(p,40);
+ await p.getByRole('button',{name:'Open a random memory',exact:true}).click();await p.getByRole('dialog',{name:'Blindbox memory',exact:true}).waitFor();await p.keyboard.press('Escape');await p.getByRole('dialog',{name:'Blindbox memory',exact:true}).waitFor({state:'detached'});
+ await p.locator('#filter-toolbar').scrollIntoViewIfNeeded();
+ await p.screenshot({path:path.join(out,`search-keyboard-${size.width}.png`),fullPage:true});
+ report.checks.push(`${size.width}x${size.height}: toolbar nine-point hit-tests/in-viewport, Tab clear, keyboard views/filters/sort, Blindbox open/Escape`);
+}
+await p.setViewportSize({width:1280,height:900});
 // Exact identity collision on viewer-owned track never hides shared owner's row.
 await pool.query(`INSERT INTO ${qschema}.tracks(owner_id,id,document) VALUES($1,'collision',$2)`,[users[2].id,{...td,id:'collision'}]);
 await pool.query(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document) VALUES($1,'live-0001','collision',$2)`,[users[2].id,{id:'live-0001',eventId:'collision',title:'Live memory 0001',date:'2026-10-15',tags:[]}]);
@@ -56,8 +102,26 @@ await viewer.reload();await waitCount(viewer,40);await viewer.locator('#timeline
 // Real API text mutation triggers corpus maintenance before next search.
 await pool.query(`UPDATE ${qschema}.moments SET document=jsonb_set(document,'{title}','"Changed search marker"'),version=version+1 WHERE owner_id=$1 AND id='live-0001'`,[owner.id]);
 await p.locator('#timeline-search-input').fill('Changed search marker');await waitCount(p,1);report.checks.push('transactional text update immediately searchable');
+const pendingRevoke=hold(true);
+await viewer.locator('#timeline-search-input').fill('Changed search marker');await pendingRevoke.entered;
 const revoked=await p.evaluate(async ({uid})=>{const r=await fetch('/api/tracks/live-qa-track/collaborators/'+uid,{method:'DELETE'});return r.status;},{uid:users[2].id});assert.equal(revoked,200);
-await viewer.locator('#timeline-search-input').fill('Changed search marker');await waitCount(viewer,0);assert.match(await viewer.locator('#filter-toolbar').innerText(),/Showing 0 of/);report.checks.push('revoke: subsequent viewer search and total exclude shared content');
+pendingRevoke.release();await waitCount(viewer,0);assert.match(await viewer.locator('#filter-toolbar').innerText(),/Showing 0 of/);report.checks.push('pending real request held before upstream: owner revoke commits, then viewer query and total exclude shared content');
+// Hold bytes from a completed real owner query; switch via actual logout/login without reload.
+await search.fill('Live memory 0007');await waitCount(p,1);
+const held=hold(false);await search.fill('Changed search marker');await held.entered;
+await p.locator('[data-account-menu] > button').click();await p.getByRole('menuitem',{name:'Sign out',exact:true}).click();
+await p.locator('input[autocomplete="username"]').fill(users[2].username);
+await p.locator('input[autocomplete="current-password"]').fill(password);
+await p.getByRole('button',{name:'Sign in',exact:true}).click();await waitCount(p,1);
+held.release();await p.waitForTimeout(400);
+assert.equal(await p.locator('#timeline-search-input').inputValue(),'');
+assert.doesNotMatch(await p.locator('main').innerText(),/Changed search marker|Editor changed searchable title/);
+await p.locator('#timeline-search-input').fill('Changed search marker');await waitCount(p,0);
+await p.screenshot({path:path.join(out,'search-account-switch.png'),fullPage:true});
+report.checks.push('held completed real API response discarded across actual logout/login; viewer count and DOM isolated');
+// Restore owner context with a fresh server session (logout invalidated original).
+owner.token=crypto.randomBytes(32).toString('hex');await pool.query(`INSERT INTO ${qschema}.sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 hour')`,[hashSession(owner.token),owner.id]);
+await p.context().addCookies([{name:'memento_session',value:owner.token,url:base,httpOnly:true,sameSite:'Lax'}]);await p.reload();await waitCount(p,40);
 // Authenticated HTTP warm measurements, isolated latest-source API; no query contents logged.
 report.http=[];
 for(const includeTotal of [false,true]){
@@ -74,5 +138,5 @@ for(const cold of [true,false])for(let i=0;i<5;i++){
  if(context)await context.close();
 }
 assert.deepEqual(report.pageerrors,[]);report.passed=true;
-}catch(e){report.passed=false;report.error=e.stack;process.exitCode=1;}finally{for(const c of contexts)await c.close().catch(()=>{});if(browser)await browser.close();await close(web);await close(api);await pool.query(`DELETE FROM ${qschema}.users WHERE id=ANY($1::uuid[])`,[users.map(u=>u.id)]);const left=await pool.query(`SELECT count(*)::int n FROM ${qschema}.users WHERE id=ANY($1::uuid[])`,[users.map(u=>u.id)]);report.cleanup=left.rows[0].n===0;report.ownedServersStopped=(!web||!web.listening)&&(!api||!api.listening);await pool.end();fs.writeFileSync(path.join(out,'search-ui-results.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));}
+}catch(e){report.passed=false;report.error=e.stack;process.exitCode=1;}finally{for(const gate of activeGates)gate.release();for(const c of contexts)await c.close().catch(()=>{});if(browser)await browser.close();await close(web);await close(api);await pool.query(`DELETE FROM ${qschema}.users WHERE id=ANY($1::uuid[])`,[users.map(u=>u.id)]);const left=await pool.query(`SELECT count(*)::int n FROM ${qschema}.users WHERE id=ANY($1::uuid[])`,[users.map(u=>u.id)]);report.cleanup=left.rows[0].n===0;report.ownedServersStopped=(!web||!web.listening)&&(!api||!api.listening);await pool.end();fs.writeFileSync(path.join(out,'search-ui-results.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));}
 })().catch(e=>{console.error(e.message);process.exitCode=1;});
