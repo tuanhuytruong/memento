@@ -251,7 +251,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
         {/* Date range: an optional inclusive local-calendar window. Picking a
             year clears it and vice versa, through one shared rule. */}
-        <DateRangePicker key={`${filters.selectedYear}:${filters.selectedEventId}:${filters.dateFrom}:${filters.dateTo}`} dateFrom={filters.dateFrom} dateTo={filters.dateTo} onChange={onFilterChange} />
+        <DateRangePicker dateFrom={filters.dateFrom} dateTo={filters.dateTo} onChange={onFilterChange} />
 
         {/* Quick toggle chips */}
         <div className="h-4 w-px bg-stone-200 dark:bg-stone-700 mx-1 shrink-0" />

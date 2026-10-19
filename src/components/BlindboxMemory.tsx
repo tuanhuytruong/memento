@@ -12,7 +12,7 @@ type Props = { open: boolean; currentUserId?: string; events?: TimelineEvent[]; 
 type Reveal = BlindboxResult | null;
 const intents: { key: BlindboxIntent; label: string }[] = [{ key: 'surprise', label: 'Surprise me' }, { key: 'comfort', label: 'Comfort' }, { key: 'courage', label: 'Courage' }, { key: 'spark', label: 'Spark' }, { key: 'reflection', label: 'Reflection' }, { key: 'celebration', label: 'Celebrate' }];
 
-export function BlindboxMemory(props: Props) { return props.open ? <BlindboxBody key={props.currentUserId} {...props} /> : null; }
+export function BlindboxMemory(props: Props) { return props.open ? <BlindboxBody {...props} /> : null; }
 function BlindboxBody({ open, currentUserId, tracks, onClose, onOpen }: Props) {
   const reducedMotion = useReducedMotion();
   const [intent, setIntent] = useState<BlindboxIntent>('surprise');
