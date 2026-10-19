@@ -163,6 +163,7 @@ async function fixture(browser, options={}) {
   }
   else if(url.pathname==='/api/images') {
     const id=req.headers()['idempotency-key'];assert(id,'missing Idempotency-Key');state.uploadIds.push(id);
+    if(state.uploadGate){state.uploadStarted?.resolve();await state.uploadGate.promise;}
     if(state.uploadFailure && state.uploadIds.length===2)return route.fulfill({status:503,json:{error:'Synthetic upload failure'}});
     if(state.uploadRefresh && state.uploadIds.length===3) state.refreshFailure=true;
     body={image:{id:'fixture-upload'}};
@@ -369,6 +370,7 @@ async function logoutAndLogin(page){
    await logoutAndLogin(page);await delay(300);
    assert.equal(await page.locator('#event-card-A\\:created-A').count(),0);assert(!(await page.locator('body').innerText()).includes('Previous-account'));assert.deepEqual(errors,[]);
    results.push('pending create blocks dismissal; successful create closes modal; no A content after logout/login B PASS');await context.close();}
+  {const gate=deferred(),started=deferred();const {page,state,context,errors}=await fixture(browser,{uploadGate:gate,uploadStarted:started});await page.locator('#open-create-event-modal').click();await page.locator('#event-modal-backdrop input[type="text"]').first().waitFor();const fields=page.locator('#event-modal-backdrop input');const inputs=await fields.evaluateAll(xs=>xs.map(x=>({type:x.type,value:x.value})));await fields.nth(inputs.findIndex(x=>x.type==='text' && x.value==='')).fill('Background upload save');const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');await page.locator('#event-modal-backdrop input[type="file"]').setInputFiles({name:'slow.png',mimeType:'image/png',buffer:png});await page.locator('#save-event-button').click();await started.promise;await page.locator('#event-modal-backdrop').waitFor({state:'detached'});await page.getByText(/Moment saved · Saving 1 photo in the background/).waitFor();assert.equal(state.uploadIds.length,1);gate.resolve();await page.getByText(/Moment saved · Saving 1 photo in the background/).waitFor({state:'detached'});assert.deepEqual(errors,[]);results.push('confirmed event closes before held photo upload; background status persists then clears PASS');await context.close();}
   {const {page,state,context}=await fixture(browser,{uploadFailure:true,uploadRefresh:true});await page.locator('#open-create-event-modal').click();await page.locator('#event-modal-backdrop input[type="text"]').first().waitFor();
    const fields=page.locator('#event-modal-backdrop input');const inputs=await fields.evaluateAll(xs=>xs.map(x=>({type:x.type,value:x.value})));await fields.nth(inputs.findIndex(x=>x.type==='text' && x.value==='')).fill('Synthetic upload queue');
    const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');

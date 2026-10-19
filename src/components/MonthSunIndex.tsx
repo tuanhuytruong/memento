@@ -1,5 +1,6 @@
 import React from 'react';
 import type { BrowsePreview } from '../lib/api';
+import { PrivateImage } from './PrivateImage';
 
 export const SUN_RAY_LIMIT = 10;
 export interface SunRay { index: number; angle: number; x: number; y: number; item: BrowsePreview }
@@ -35,7 +36,7 @@ export const MonthSunIndex: React.FC<{
     <ol className="absolute inset-0 m-0 list-none p-0">
       {rays.map(ray => <li key={`${ray.item.ownerId}:${ray.item.id}:${ray.index}`} className="absolute -translate-x-1/2 -translate-y-1/2" style={{ left: `${ray.x}%`, top: `${ray.y}%` }}>
         <button type="button" disabled={disabled} aria-current={activeIndex === ray.index ? 'true' : undefined} aria-label={sunRayLabel(ray.item, ray.index + 1, items.length)} onMouseEnter={() => onSelect(ray.index)} onFocus={() => onSelect(ray.index)} onClick={() => onSelect(ray.index)} className={`flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border-2 bg-stone-100 text-xs font-semibold shadow-sm transition motion-reduce:transition-none dark:bg-stone-800 ${activeIndex === ray.index ? 'border-amber-500 ring-2 ring-amber-300 dark:ring-amber-700' : 'border-stone-300 hover:border-amber-400 dark:border-stone-600'}`}>
-          {ray.item.thumbUrl ? <img src={ray.item.thumbUrl} alt="" className="h-full w-full object-cover" loading="lazy" /> : <span aria-hidden="true">{ray.index + 1}</span>}
+          {ray.item.thumbUrl ? <PrivateImage src={ray.item.thumbUrl} variant="thumb" alt="" className="h-full w-full" loading="lazy" /> : <span aria-hidden="true">{ray.index + 1}</span>}
         </button>
       </li>)}
     </ol>
