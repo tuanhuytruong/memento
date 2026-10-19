@@ -36,6 +36,8 @@ import {
 } from '../lib/useMomentDraft';
 import { MomentConflictPanel, type ConflictState } from './MomentConflictPanel';
 
+export type SaveProgress = { phase: 'writing' | 'preparing-images' | 'uploading-images' | 'reconciling' | 'complete'; acknowledged?: number; total?: number };
+
 interface EventModalProps {
   isOpen: boolean;
   eventToEdit?: TimelineEvent | null;
@@ -45,7 +47,7 @@ interface EventModalProps {
   /** Auth generation fence: a draft never crosses an account or session boundary. */
   sessionGeneration: number;
   onClose: () => void;
-  onSave: (eventData: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles?: File[], eventOwnerId?: string, expectedVersion?: number) => Promise<void>;
+  onSave: (eventData: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles?: File[], eventOwnerId?: string, expectedVersion?: number, onProgress?: (progress: SaveProgress) => void) => Promise<void>;
   onAddCustomTag?: (newTag: string) => Promise<void>;
   onCreateNewTrack?: () => void;
 }
@@ -66,6 +68,8 @@ export const EventModal: React.FC<EventModalProps> = ({
   const initialized = useRef(false);
   const blobs = useRef<string[]>([]);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveProgress, setSaveProgress] = useState<SaveProgress | null>(null);
+  const [retrySave, setRetrySave] = useState<null | (() => Promise<void>)>(null);
   const [isCompressing, setIsCompressing] = useState(false);
   const busy = isSaving || isCompressing;
 
@@ -476,7 +480,7 @@ export const EventModal: React.FC<EventModalProps> = ({
     setSaveError('');
     setIsSaving(true);
     try {
-      await onSave(payload, eventToEdit?.id, imageFiles, selectedTrack.resourceOwnerId, latest.version);
+      await onSave(payload, eventToEdit?.id, imageFiles, selectedTrack.resourceOwnerId, latest.version, setSaveProgress);
       succeedAndClose();
     } catch (error) {
       // A further conflict returns to comparison; nothing is force-overwritten.
@@ -550,11 +554,12 @@ export const EventModal: React.FC<EventModalProps> = ({
 
     const payload = buildPayload(images);
     setSaveError('');
+    setSaveProgress({ phase: 'writing' });
     setIsSaving(true);
-    onSave(payload, eventToEdit?.id, imageFiles, selectedTrack.resourceOwnerId, effectiveVersion)
+    onSave(payload, eventToEdit?.id, imageFiles, selectedTrack.resourceOwnerId, effectiveVersion, setSaveProgress)
       .then(succeedAndClose)
-      .catch((error: unknown) => toConflictOrError(error, eventToEdit!.id, eventToEdit?.resourceOwnerId || selectedTrack.resourceOwnerId))
-      .finally(() => { if (alive.current) setIsSaving(false); });
+      .catch((error: unknown) => { const retry = (error as { retry?: unknown })?.retry; if (typeof retry === 'function') { setRetrySave(() => retry as () => Promise<void>); setSaveError(error instanceof Error ? error.message : 'Could not finish saving this memory.'); return; } return toConflictOrError(error, eventToEdit?.id || '', eventToEdit?.resourceOwnerId || selectedTrack.resourceOwnerId); })
+      .finally(() => { if (alive.current) { setIsSaving(false); setSaveProgress(null); } });
   };
 
   // Combine default tags with existing tags
@@ -604,9 +609,12 @@ export const EventModal: React.FC<EventModalProps> = ({
           </button>
         </div>
 
+        {isSaving && <div className="absolute inset-x-0 bottom-0 top-[73px] z-20 flex items-center justify-center bg-white/95 px-8 text-center dark:bg-stone-900/95" role="status" aria-live="polite"><div><div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"><Sparkles className="h-7 w-7 motion-safe:animate-pulse" /></div><h3 className="text-xl font-semibold">{saveProgress?.phase === 'writing' ? 'Holding on to this moment…' : saveProgress?.phase === 'preparing-images' ? 'Gathering the little details…' : saveProgress?.phase === 'uploading-images' ? 'Placing each photo with care…' : saveProgress?.phase === 'reconciling' ? 'Giving this memory a place to stay…' : 'Your memory is ready.'}</h3><p className="mt-3 max-w-sm text-sm text-stone-500">{saveProgress?.phase === 'uploading-images' && saveProgress.total ? `Placing photo ${(saveProgress.acknowledged ?? 0) + 1} of ${saveProgress.total} with care…` : 'Please keep this window open while we finish the real save.'}</p></div></div>}
+
         {/* Scrollable body. The footer is a flex SIBLING below, so Save/Cancel
             are always reachable and never overlay the photo grid. */}
         <form id="event-modal-form" onSubmit={handleSubmit} className="px-4 sm:px-6 py-5 space-y-5 overflow-y-auto flex-1 text-sm">
+          {retrySave && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200"><p>{saveError}</p><button id="retry-save-event" type="button" className="mt-3 min-h-11 rounded-xl bg-amber-600 px-4 font-semibold text-white" onClick={() => { const retry = retrySave; setRetrySave(null); setSaveError(''); setSaveProgress({ phase: 'reconciling' }); setIsSaving(true); retry().then(succeedAndClose).catch(error => { const again=(error as {retry?:unknown})?.retry; if(typeof again==='function') setRetrySave(() => again as () => Promise<void>); setSaveError(error instanceof Error ? error.message : 'Could not finish saving this memory.'); }).finally(() => { if(alive.current){setIsSaving(false);setSaveProgress(null);} }); }}>Retry save</button></div>}
           {!hasWritableTrack && (
             <p role="status" className="rounded-xl border border-stone-200 bg-stone-50 dark:border-stone-800 dark:bg-stone-800/50 px-4 py-3 text-sm text-stone-600 dark:text-stone-300">
               You do not have a track you can write to yet. Create your first track to start logging memories, or ask an owner to share one with editing access.

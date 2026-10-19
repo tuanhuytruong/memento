@@ -1,10 +1,13 @@
 import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import type { SaveProgress } from './components/EventModal';
 import { AccountOverview, TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
 import { buildCompleteBackup, downloadBackup } from './lib/exportBackup';
 import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
 import { matchesMomentFilters, compareMoments, filterProjection, applyFilterPatch } from './lib/momentFilters';
 import { releaseAllMomentDrafts } from './lib/useMomentDraft';
-import { useMomentFeed } from './lib/useMomentFeed';
+import { useMomentFeed, feedScopeHash } from './lib/useMomentFeed';
+import {MonthQuickBrowseRail} from './components/MonthQuickBrowseRail';
+const MonthQuickBrowse=lazy(()=>import('./components/MonthQuickBrowse').then(m=>({default:m.MonthQuickBrowse})));
 import { useDebouncedSearch } from './lib/useDebouncedSearch';
 import { LoadMoreMemories } from './components/LoadMoreMemories';
 import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation } from './lib/api';
@@ -23,7 +26,7 @@ const ImageLightbox = lazy(() => import('./components/ImageLightbox').then(modul
 const BlindboxMemory = lazy(() => import('./components/BlindboxMemory').then(module => ({ default: module.BlindboxMemory })));
 // Postcard rendering is a heavy, rarely-used flow; it never joins the initial bundle.
 const PostcardComposer = lazy(() => import('./components/PostcardComposer').then(module => ({ default: module.PostcardComposer })));
-import { Dices } from 'lucide-react';
+import { FloatingMemoryActions } from './components/FloatingMemoryActions';
 import { MemoryResurfacing } from './components/MemoryResurfacing';
 import type { MemoryVisit } from './lib/memoryResurfacing';
 import { DeferredUiBoundary } from './components/DeferredUiBoundary';
@@ -56,6 +59,9 @@ export default function App() {
   const saveGeneration = useRef(0);
   const visitWrites = useRef(new Map<string, number>());
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
+  const [monthBrowseOpen,setMonthBrowseOpen]=useState(false);
+  const [browseInitialMonth,setBrowseInitialMonth]=useState('undated');
+  const [browseInitialPreview,setBrowseInitialPreview]=useState<{ownerId:string;id:string}|undefined>();
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const [perspectiveError, setPerspectiveError] = useState('');
   const authGenerationRef = useRef(0);
@@ -229,6 +235,7 @@ export default function App() {
 
   function resetSnapshots() {
     setShareTrack(null); setCollaborationInvitations([]); setIsBlindboxOpen(false);
+    setMonthBrowseOpen(false);
     setIsEventModalOpen(false); setEventToEdit(null); setEventToView(null);
     setIsEventTrackModalOpen(false); setTrackToEdit(null);
     setLightboxState({ images: [], index: 0, isOpen: false });
@@ -454,6 +461,8 @@ export default function App() {
   // derived from server-authoritative roles rather than local UI state.
   const canCreateEntry = eventTracks.some((track) => track.accessRole === 'owner' || track.accessRole === 'editor');
 
+  const openCreateEntry = () => { if (canCreateEntry) { setEventToEdit(null); setIsEventModalOpen(true); } };
+
   // Persist each change before reflecting it in the UI; failed requests leave the prior data intact.
   const handleSaveTrack = async (
     trackData: Omit<EventTrack, 'id' | 'createdAt' | 'updatedAt'>,
@@ -519,40 +528,52 @@ export default function App() {
   const search = useDebouncedSearch(filters.search, authGenerationRef.current);
   const feedQuery = useMemo(() => ({ ...filterProjection(filters), search: search.value, sortDirection: filters.sortDirection,
     trackKey: selectedTrackKey === 'all' ? null : selectedTrackKey, limit: 40 }), [filters, selectedTrackKey, search.value]);
-  const fetchFeedPage = useCallback(({ cursor, query, signal }: any) =>
-    dataApi.queryMoments({ ...query, cursor, includeTotal: cursor === null }, signal), []);
+  const fetchFeedPage = useCallback(({ cursor, navigation, query, signal }: any) =>
+    dataApi.queryMoments({ ...query, cursor, navigation, includeTotal: cursor === null }, signal), []);
+  const fetchFeedSeek=useCallback((query:any,target:any,signal:AbortSignal)=>dataApi.seekMoments({...query,target},signal),[]);
   const feed = useMomentFeed({ query: feedQuery, generation: authGenerationRef.current,
-    enabled: !!user && dataReady && !search.pending, fetchPage: fetchFeedPage, maxRetainedPages: 5 });
+    enabled: !!user && dataReady && !search.pending, fetchPage: fetchFeedPage, fetchSeek:fetchFeedSeek, maxRetainedPages: 5 });
   useEffect(() => { feed.refresh(); }, [feedRevision]);
-  useEffect(() => { setEvents(feed.items); }, [feed.items.map(momentIdentity).join('|'), feed.loading]);
-  const filteredEvents = feed.items.map(item => events.find(local => momentIdentity(local) === momentIdentity(item)) ?? item);
+  useEffect(() => { setEvents(feed.items); }, [feed.items.map(item=>`${momentIdentity(item)}:${item.version??0}`).join('|'), feed.loading, feed.seeking]);
+  const filteredEvents = feed.items.map(item => events.find(local => momentIdentity(local) === momentIdentity(item) && (local.version??0)>=(item.version??0)) ?? item);
 
-  // Save a moment server-side first; local state changes only after a confirmed response.
-  // expectedVersion is optional: the composer passes the version it displayed,
-  // or the freshly reviewed one after a conflict rebase.
-  const handleSaveEvent = async (
-    data: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>,
-    editId?: string,
-    imageFiles: File[] = [],
-    eventOwnerId?: string,
-    expectedVersion?: number
-  ) => {
+  const browseScope=feedScopeHash(feedQuery,authGenerationRef.current);
+  useEffect(()=>{setMonthBrowseOpen(false);},[browseScope,viewMode]);
+  const pendingLanding=useRef<{ownerId:string;id:string;scope:string}|null>(null);
+  const prependAnchor=useRef<{id:string;top:number;scope:string}|null>(null);
+  useEffect(()=>{pendingLanding.current=null;prependAnchor.current=null;},[browseScope,viewMode]);
+  const landBrowse=useCallback((page:import('./lib/useMomentFeed').MomentFeedPage)=>{
+    const target=page.target??(page.moments[0]?{ownerId:page.moments[0].resourceOwnerId!,id:page.moments[0].id}:null);pendingLanding.current=target?{...target,scope:browseScope}:null;setMonthBrowseOpen(false);
+  },[browseScope]);
+  useEffect(()=>{if(monthBrowseOpen||!pendingLanding.current)return;let cancelled=false;let frame=0;const target=pendingLanding.current;const deadline=performance.now()+5000;
+    const place=()=>{if(cancelled||target.scope!==browseScope||performance.now()>deadline){pendingLanding.current=null;return;}const card=document.getElementById(`event-card-${target.ownerId}:${target.id}`);if(!card){frame=requestAnimationFrame(place);return;}pendingLanding.current=null;card.scrollIntoView({block:'center',behavior:'instant'});card.setAttribute('tabindex','-1');card.focus({preventScroll:true});card.classList.add('ring-2','ring-amber-400');setTimeout(()=>card.classList.remove('ring-2','ring-amber-400'),1800);};
+    void document.fonts.ready.then(()=>{if(!cancelled)frame=requestAnimationFrame(()=>{frame=requestAnimationFrame(place);});});return()=>{cancelled=true;cancelAnimationFrame(frame);};
+  },[monthBrowseOpen,feed.items.map(momentIdentity).join('|')]);
+  const pageWithAnchor=(action:()=>void)=>{
+    const cards=Array.from(document.querySelectorAll<HTMLElement>('[id^="event-card-"]'));const card=cards.find(c=>c.getBoundingClientRect().bottom>120);const top=card?.getBoundingClientRect().top;const id=card?.id;
+    if(id&&top!=null)prependAnchor.current={id,top,scope:browseScope};action();
+  };
+  useEffect(()=>{if(feed.loading||feed.seeking||!prependAnchor.current)return;const anchor=prependAnchor.current;prependAnchor.current=null;let cancelled=false;void document.fonts.ready.then(()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{if(cancelled||anchor.scope!==browseScope)return;const node=document.getElementById(anchor.id);if(node)scrollBy(0,node.getBoundingClientRect().top-anchor.top);})));return()=>{cancelled=true;};},[feed.loading,feed.seeking,feed.items.map(momentIdentity).join('|')]);
+  // The modal is released only after create/edit, optional private uploads and feed reconciliation.
+  const handleSaveEvent = async (data: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles: File[] = [], eventOwnerId?: string, expectedVersion?: number, onProgress: (progress: SaveProgress) => void = () => {}) => {
     const generation = authGenerationRef.current;
     if (uploadBusy.current || (imageFiles.length && pendingImageRetry)) throw new Error('Finish or retry the previous photo upload before attaching more files. Your draft is preserved.');
-    // The loaded edit snapshot, NOT the freshest timeline, defines what this form was based on.
     if (editId && (!eventToEdit || eventToEdit.id !== editId)) throw new Error('This edit is no longer open. Close and reopen the form before saving. Your draft is unchanged.');
     const version = expectedVersion ?? eventToEdit?.version;
     if (editId && !Number.isInteger(version)) throw new Error('This edit has no version. Close and reopen the form before saving. Your draft is unchanged.');
-    const saved = editId
-      ? await dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!)
-      : await dataApi.createMoment(data, eventOwnerId!);
+    onProgress({ phase: 'writing' });
+    const saved = editId ? await dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!) : await dataApi.createMoment(data, eventOwnerId!);
     assertSession(generation);
-    setEvents((prev) => editId ? prev.map((event) => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
-    await loadData();
-    if (imageFiles.length) {
-      const queue = { momentId: saved.id, ownerId: saved.resourceOwnerId!, files: imageFiles.map((file) => ({ file, uploadId: crypto.randomUUID() })) };
-      setPendingImageRetry(queue);
-      await processImageQueue(queue, generation);
+    setEvents(prev => editId ? prev.map(event => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
+    const queue = { momentId: saved.id, ownerId: saved.resourceOwnerId!, files: imageFiles.map(file => ({ file, uploadId: crypto.randomUUID() })) };
+    const reconcile = async () => { onProgress({ phase: 'reconciling' }); await loadData(); assertSession(generation); setFeedRevision(value => value + 1); await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); assertSession(generation); setPendingImageRetry(null); setDataError(''); onProgress({ phase: 'complete' }); };
+    try {
+      if (queue.files.length) { onProgress({ phase: 'preparing-images' }); setPendingImageRetry(queue); await processImageQueue(queue, generation, onProgress); }
+      await reconcile();
+    } catch (failure) {
+      const error = failure instanceof Error ? failure : new Error('Could not finish saving this memory.');
+      (error as Error & { retry?: () => Promise<void> }).retry = async () => { const remaining = pendingImageRetry?.momentId === queue.momentId ? pendingImageRetry.files : queue.files; if (remaining.length) await processImageQueue({ ...queue, files: remaining }, generation, onProgress); await reconcile(); };
+      throw error;
     }
   };
 
@@ -625,27 +646,13 @@ export default function App() {
     }
   };
 
-  async function processImageQueue(queue: NonNullable<typeof pendingImageRetry>, generation: number) {
-    if (uploadBusy.current) return;
-    uploadBusy.current = true; setUploadRunning(true);
-    let remaining = queue.files;
+  async function processImageQueue(queue: NonNullable<typeof pendingImageRetry>, generation: number, onProgress?: (progress: SaveProgress) => void) {
+    if (uploadBusy.current) throw new Error('Another photo upload is still running.');
+    uploadBusy.current = true; setUploadRunning(true); let remaining = queue.files;
     try {
-      while (remaining.length) {
-        assertSession(generation);
-        const { file, uploadId } = remaining[0];
-        await dataApi.uploadImage(file, queue.momentId, queue.ownerId, uploadId);
-        assertSession(generation);
-        remaining = remaining.slice(1);
-        setPendingImageRetry({ ...queue, files: remaining });
-      }
-      await loadData();
-      assertSession(generation);
-      setPendingImageRetry(null); setDataError('');
-    } catch (error) {
-      if (generation !== authGenerationRef.current) return;
-      setPendingImageRetry({ ...queue, files: remaining });
-      setDataError(remaining.length ? `Moment saved; ${remaining.length} image(s) remain. Retry resumes after acknowledged files: ${error instanceof Error ? error.message : 'upload failed'}` : 'Photos uploaded. Timeline refresh failed; retry refresh without re-uploading.');
-    } finally { if (generation === authGenerationRef.current) { uploadBusy.current = false; setUploadRunning(false); } }
+      while (remaining.length) { assertSession(generation); onProgress?.({ phase: 'uploading-images', acknowledged: queue.files.length - remaining.length, total: queue.files.length }); const { file, uploadId } = remaining[0]; await dataApi.uploadImage(file, queue.momentId, queue.ownerId, uploadId); assertSession(generation); remaining = remaining.slice(1); setPendingImageRetry({ ...queue, files: remaining }); }
+    } catch (error) { if (generation === authGenerationRef.current) setPendingImageRetry({ ...queue, files: remaining }); throw error; }
+    finally { if (generation === authGenerationRef.current) { uploadBusy.current = false; setUploadRunning(false); } }
   }
   const retryImageUploads = async () => {
     if (pendingImageRetry) await processImageQueue(pendingImageRetry, authGenerationRef.current);
@@ -667,6 +674,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
+        {uploadRunning && pendingImageRetry && <div role="status" aria-live="polite" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">Moment saved · Saving {pendingImageRetry.files.length} photo{pendingImageRetry.files.length === 1 ? '' : 's'} in the background…</div>}
         {dataError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200"><span>{dataError}</span><span className="flex gap-3">{pendingImageRetry && <button disabled={uploadRunning} className="font-semibold underline disabled:opacity-50" onClick={() => void retryImageUploads()}>{uploadRunning ? 'Uploading…' : pendingImageRetry.files.length ? 'Retry image upload' : 'Retry timeline refresh'}</button>}<button className="font-semibold underline" onClick={() => setDataError('')}>Dismiss</button></span></div>}
         <SharedInvitations invitations={collaborationInvitations} onAccept={(id) => runMutation(() => acceptInvitation(id))} />
         {/* Header Ribbon & Global Stats */}
@@ -678,10 +686,7 @@ export default function App() {
           trackCount={eventTracks.length}
           username={user.username}
           onLogout={() => void handleLogout()}
-          onAddNewEvent={() => {
-            setEventToEdit(null);
-            setIsEventModalOpen(true);
-          }}
+          onAddNewEvent={openCreateEntry}
           // One export path only: a second, lighter one would be the route a
           // partial backup escapes through.
           onExportJson={exportJsonWithPerspectives}
@@ -689,8 +694,7 @@ export default function App() {
           onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
           canCreateEntry={canCreateEntry}
         />
-        {/* Keep rediscovery in flow: a floating action can obstruct narrow search controls. */}
-        <div className="flex justify-end mb-4"><button type="button" onClick={() => setIsBlindboxOpen(true)} title="Open a random memory" aria-label="Open a random memory" className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-amber-600 text-white shadow-lg transition hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-300"><Dices className="h-5 w-5" /></button></div>
+        <FloatingMemoryActions canCreate={canCreateEntry} onCreate={openCreateEntry} onDiscover={() => setIsBlindboxOpen(true)} hidden={monthBrowseOpen || isEventModalOpen || isEventTrackModalOpen || isBlindboxOpen || isPostcardOpen || !!eventToView || !!shareTrack || lightboxState.isOpen} />
         {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
         {selectedTrackKey === 'all' && (
           <MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} />
@@ -761,8 +765,12 @@ export default function App() {
           />
         </div>
 
+        <MonthQuickBrowseRail hidden={viewMode!=='timeline'||monthBrowseOpen||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} onOpen={(month,preview)=>{setBrowseInitialMonth(month);setBrowseInitialPreview(preview);setMonthBrowseOpen(true);}}/>
+        {monthBrowseOpen&&<Suspense fallback={<div role="status" className="fixed inset-0 z-[80] bg-stone-950/40 flex items-center justify-center">Loading month browser…</div>}><MonthQuickBrowse query={feedQuery} generation={authGenerationRef.current} initialMonth={browseInitialMonth} initialPreview={browseInitialPreview} onClose={()=>setMonthBrowseOpen(false)} onSeek={feed.seek} onLanded={landBrowse}/></Suspense>}
+        {feed.navigationTarget&&<div className="mb-4 flex items-center gap-3 text-sm text-stone-500" role="status">Browsing from {'month'in feed.navigationTarget?feed.navigationTarget.month:'selected memory'}<button className="min-h-11 px-3 underline" onClick={feed.newer}>{filters.sortDirection==='oldest'?'Back to start':'Back to latest'}</button></div>}
+        {feed.hasPrevious&&<div className="flex justify-center mb-4"><button id="feed-load-previous" disabled={feed.loading||feed.seeking} className="min-h-11 px-5 rounded-xl border border-stone-300 dark:border-stone-700" onClick={()=>pageWithAnchor(feed.loadPrevious)}>Load previous memories</button></div>}
         {/* View Switcher: Timeline, Compact List, or Gallery */}
-        <main aria-busy={search.pending || feed.loading}>
+        <main className={viewMode==='timeline'?'lg:pr-64':undefined} aria-busy={search.pending || feed.loading}>
           {(search.pending || (feed.loading && !feed.appendLoading)) && <div role="status" className="min-h-48 py-16 text-center">Updating memories…</div>}
           {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'timeline' && (
             <TimelineView
@@ -843,6 +851,10 @@ export default function App() {
         </main>
       </div>
 
+      <LoadMoreMemories hasMore={feed.hasMore && !search.pending} loading={feed.loading || search.pending} error={feed.error}
+        windowShifted={feed.windowShifted} loadedCount={feed.items.length} totalCount={feed.total}
+        onLoadMore={()=>pageWithAnchor(feed.loadMore)} onNewer={feed.newer} onRefresh={feed.refresh} />
+      <div aria-hidden="true" className="h-24" />
       <DeferredUiBoundary key={`${user.id}:${authGenerationRef.current}`}><Suspense fallback={<div role="status" className="fixed bottom-4 left-4 z-[100] rounded-lg bg-white p-3 text-sm shadow-lg dark:bg-stone-900">Opening…</div>}>
       {/* Create / Edit Event Track Modal */}
       {isEventTrackModalOpen && <EventTrackModal key={`${user.id}:${authGenerationRef.current}`}
@@ -913,9 +925,6 @@ export default function App() {
         invitations={collaborationInvitations}
         onAccept={acceptInvitation}
       />}
-      <LoadMoreMemories hasMore={feed.hasMore && !search.pending} loading={feed.loading || search.pending} error={feed.error}
-        windowShifted={feed.windowShifted} loadedCount={feed.items.length} totalCount={feed.total}
-        onLoadMore={feed.loadMore} onNewer={feed.newer} onRefresh={feed.refresh} />
       {isBlindboxOpen && <BlindboxMemory key={authGenerationRef.current} currentUserId={user.id} open={isBlindboxOpen} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}
       {/* Image Lightbox viewer */}
       {lightboxState.isOpen && <ImageLightbox

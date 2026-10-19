@@ -1,3 +1,4 @@
+import {browseMonths,browsePreview,seekMoments} from './month-browse-queries.mjs';
 import { mountExportSnapshotRoutes } from './export-snapshot.mjs';
 import { mountDiscoveryRoutes } from './discovery-routes.mjs';
 import { operationalMetrics, sampleOperationalState, cleanupExpiredSessions } from './operational-metrics.mjs';
@@ -384,9 +385,15 @@ app.get('/api/moments', auth, async (req,res,next) => { try {
 //
 // This is a read, so it deliberately takes no owner write lock and is not
 // metered as a content mutation: browsing must not queue behind editing.
+for (const [path, handler] of [['browse/months', browseMonths], ['browse/preview', browsePreview], ['seek', seekMoments]]) {
+  app.post(`/api/moments/${path}`, auth, asyncHandler(async(req,res)=>{
+    res.set('Cache-Control','no-store');
+    res.json(await handler(pool,req.user.id,req.body,DB_SCHEMA,{reactionSummaries,safeMoment}));
+  }));
+}
 app.post('/api/moments/query', auth, asyncHandler(async (req, res) => {
   const request = validateQueryRequest(req.body, req.user.id);
-  const page = await queryMoments(pool, req.user.id, { ...request, cursor: req.body?.cursor ?? null }, DB_SCHEMA, { reactionSummaries, safeMoment });
+  const page = await queryMoments(pool, req.user.id, { ...request, cursor: req.body?.cursor ?? null, navigation: req.body?.navigation ?? 'next' }, DB_SCHEMA, { reactionSummaries, safeMoment });
   // Totals and facets cost one extra aggregate query, so they are opt-in; both
   // come from the same authorized scope and filters as the page itself.
   const aggregate = request.includeTotal || request.includeFacets
@@ -396,6 +403,8 @@ app.post('/api/moments/query', auth, asyncHandler(async (req, res) => {
   res.json({
     moments: page.moments,
     nextCursor: page.nextCursor,
+    previousCursor: page.previousCursor,
+    scope: page.scope,
     ...(aggregate && request.includeTotal ? { total: aggregate.total } : {}),
     ...(aggregate && request.includeFacets
       ? { facets: { milestones: aggregate.milestones, withImages: aggregate.with_images, years: aggregate.years, earliest: aggregate.earliest, latest: aggregate.latest } }

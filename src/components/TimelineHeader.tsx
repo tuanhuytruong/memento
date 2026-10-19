@@ -1,14 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Calendar,
   Plus,
   Download,
-  Star,
-  MapPin,
   Image as ImageIcon,
   Sparkles,
   MoreHorizontal,
-  ChevronDown,
 } from 'lucide-react';
 import { AccountOverview } from '../types';
 
@@ -41,9 +38,6 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
 }) => {
   const [accountOpen, setAccountOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  // Mobile shows one compact summary line; the full ribbon sits behind an
-  // explicit Details toggle so the first memory is closer to the top.
-  const [showMetrics, setShowMetrics] = useState(false);
 
   // Close dropdowns on outside click.
   useEffect(() => {
@@ -168,98 +162,13 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
         </div>
       </div>
 
-      {/* Metrics: one compact summary line on mobile, the full ribbon on
-          sm and above. Details expands the ribbon on narrow screens. */}
-      <div className="pt-4">
-        <div className="flex items-center justify-between gap-3 sm:hidden">
-          <p className="text-xs text-stone-600 dark:text-stone-300 min-w-0 truncate">
-            <span className="font-bold text-stone-900 dark:text-stone-100">{totalEvents}</span> memories
-            <span className="text-stone-400"> · </span>
-            <span className="font-bold text-stone-900 dark:text-stone-100">{trackCount}</span> {trackCount === 1 ? 'timeline' : 'timelines'}
-            {milestonesCount > 0 && (<><span className="text-stone-400"> · </span><span className="font-bold text-amber-700 dark:text-amber-400">{milestonesCount}</span> milestones</>)}
-          </p>
-          <button
-            type="button"
-            id="toggle-metrics-details"
-            aria-expanded={showMetrics}
-            onClick={() => setShowMetrics((prev) => !prev)}
-            className="inline-flex min-h-11 items-center gap-1 px-3 text-[11px] font-semibold rounded-lg bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-700 transition shrink-0"
-          >
-            Details
-            <ChevronDown className={`w-3 h-3 transition-transform ${showMetrics ? 'rotate-180' : ''}`} />
-          </button>
-        </div>
-
-        <div className={`${showMetrics ? 'grid' : 'hidden'} grid-cols-2 gap-2 mt-2 sm:grid sm:mt-0`}>
-          <div className="px-3 py-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 flex items-center justify-center shrink-0">
-              <Sparkles className="w-4 h-4" />
-            </div>
-            <div>
-              <div className="text-base sm:text-lg font-bold text-stone-900 dark:text-stone-100 leading-none">
-                {trackCount}
-              </div>
-              <div className="text-[11px] text-stone-400 font-medium mt-0.5">
-                Event Timelines
-              </div>
-            </div>
-          </div>
-
-          <div className="px-3 py-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 flex items-center justify-center shrink-0">
-              <Calendar className="w-4 h-4" />
-            </div>
-            <div>
-              <div className="text-base sm:text-lg font-bold text-stone-900 dark:text-stone-100 leading-none">
-                {totalEvents}
-              </div>
-              <div className="text-[11px] text-stone-400 font-medium mt-0.5">
-                Total Logged
-              </div>
-            </div>
-          </div>
-
-          <div className="px-3 py-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
-              <Star className="w-4 h-4 fill-current" />
-            </div>
-            <div>
-              <div className="text-base sm:text-lg font-bold text-stone-900 dark:text-stone-100 leading-none">
-                {milestonesCount}
-              </div>
-              <div className="text-[11px] text-stone-400 font-medium mt-0.5">
-                Milestones
-              </div>
-            </div>
-          </div>
-
-          <div className="px-3 py-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 flex items-center justify-center shrink-0">
-              <ImageIcon className="w-4 h-4" />
-            </div>
-            <div>
-              <div className="text-base sm:text-lg font-bold text-stone-900 dark:text-stone-100 leading-none">
-                {totalPhotos}
-              </div>
-              <div className="text-[11px] text-stone-400 font-medium mt-0.5">
-                Attached Photos
-              </div>
-            </div>
-          </div>
-
-          <div className="px-3 py-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs flex items-center gap-3 col-span-2 sm:col-span-1">
-            <div className="w-8 h-8 rounded-lg bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 flex items-center justify-center shrink-0">
-              <MapPin className="w-4 h-4" />
-            </div>
-            <div>
-              <div className="text-base sm:text-lg font-bold text-stone-900 dark:text-stone-100 leading-none">
-                {uniquePlaces}
-              </div>
-              <div className="text-[11px] text-stone-400 font-medium mt-0.5">
-                Unique Places
-              </div>
-            </div>
-          </div>
+      <div id="memory-summary" data-summary className="mt-3 rounded-xl bg-stone-100/60 dark:bg-stone-800/40 px-3 py-2 text-xs text-stone-600 dark:text-stone-300">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{totalEvents}</strong> {totalEvents === 1 ? 'memory' : 'memories'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{trackCount}</strong> {trackCount === 1 ? 'timeline' : 'timelines'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><ImageIcon size={13} /><span><strong>{totalPhotos}</strong> {totalPhotos === 1 ? 'photo' : 'photos'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{milestonesCount}</strong> {milestonesCount === 1 ? 'milestone' : 'milestones'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{uniquePlaces}</strong> {uniquePlaces === 1 ? 'place' : 'places'}</span></span>
         </div>
       </div>
     </header>

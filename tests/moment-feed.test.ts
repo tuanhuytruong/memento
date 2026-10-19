@@ -4,7 +4,7 @@
 // memory twice after a concurrent edit.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { feedScopeHash, dedupeByIdentity, slideWindow, type MomentFeedQuery } from '../src/lib/useMomentFeed';
+import { retainDirectional, feedScopeHash, dedupeByIdentity, slideWindow, type MomentFeedQuery } from '../src/lib/useMomentFeed';
 
 const event = (id: string, ownerId = 'A') => ({ id, resourceOwnerId: ownerId }) as never;
 
@@ -68,6 +68,14 @@ test('the retained window is bounded however far the user pages', () => {
   const within = slideWindow([[1], [2]], 5);
   assert.equal(within.dropped, 0, 'nothing is dropped while the window has room');
   assert.equal(slideWindow([], 5).pages.length, 0);
+});
+
+test('two-sided boundary eviction keeps the fetched edge, at most200 cards and composite identities',()=>{
+ const pages=Array.from({length:8},(_,i)=>({nextCursor:`n${i}`,previousCursor:`p${i}`,moments:Array.from({length:40},(_,j)=>event(`${i}-${j}`))}));
+ const next=retainDirectional(pages,5,'next'),previous=retainDirectional(pages,5,'previous');
+ assert.equal(next[0].previousCursor,'p3');assert.equal(next.at(-1)?.nextCursor,'n7');
+ assert.equal(previous[0].previousCursor,'p0');assert.equal(previous.at(-1)?.nextCursor,'n4');
+ for(const retained of [next,previous])assert.equal(dedupeByIdentity(retained.map(p=>p.moments)).length,200);
 });
 
 test('an empty first page is a valid, non-erroring state', () => {

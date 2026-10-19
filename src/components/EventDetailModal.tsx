@@ -185,7 +185,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
                 onClick={() => {
                   if (requestClose()) onEdit(event);
                 }}
-                className="min-h-11 min-w-11 p-2 text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition"
+                className="inline-flex items-center justify-center min-h-11 min-w-11 p-2 text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition"
                 title="Edit event"
               >
                 <Edit className="w-4 h-4" />
@@ -193,7 +193,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
               <button
                 disabled={busy || perspectivePending.current}
                 onClick={() => { if (!perspectivePending.current && window.confirm(draftDirty.current ? 'Delete this timeline event and discard your unsaved perspective?' : 'Delete this timeline event?')) void mutate(async () => { await onDelete(event); if (alive.current) onClose(); }); }}
-                className="min-h-11 min-w-11 p-2 text-stone-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
+                className="inline-flex items-center justify-center min-h-11 min-w-11 p-2 text-stone-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
                 title="Delete event"
               >
                 <Trash2 className="w-4 h-4" />

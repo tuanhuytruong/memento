@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+import {sealBrowseCursor, openBrowseCursor} from './navigation-cursors.mjs';
 import { literalSearchPattern, sqlFold as canonicalFold } from './moment-search.mjs';
 // Discovery retains the legacy sqlFold export below; main-feed tag matching uses
 // the canonical Unicode decomposition shared with stored main-search text.
@@ -173,14 +175,8 @@ export function scopeHash(filters, direction, userId) {
     k: filters.trackKey ?? null,
     s: filters.savedOnly === true,
   });
-  // FNV-1a: small, deterministic, and good enough to detect an accidental
-  // scope change. It is a consistency check, not a signature.
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < canonical.length; index += 1) {
-    hash ^= canonical.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(36);
+  // Collision-resistant scope binding; HMAC cursor authentication is separate.
+  return createHash('sha256').update(canonical).digest('base64url');
 }
 
 /**
@@ -276,7 +272,7 @@ export function validateQueryRequest(body, userId) {
  * tracks they hold an accepted, unrevoked collaboration on. Everything else in
  * this module filters *within* this set, never outside it.
  */
-const AUTHORIZED_SCOPE = `(
+export const AUTHORIZED_SCOPE = `(
   SELECT m.owner_id, m.id, m.event_id, m.document, m.version
   FROM {schema}.moments m
   WHERE m.owner_id = $1
@@ -339,25 +335,30 @@ export async function queryMoments(client, userId, request, schema, helpers = {}
   const { fold = canonicalFold, reactionSummaries } = helpers;
   const { limit, direction, filters } = request;
   const scope = scopeHash(filters, request.direction, userId);
-  const cursor = request.cursor === undefined ? null : decodeCursor(request.cursor, scope);
+  const navigation = request.navigation ?? 'next';
+  if (!['next','previous'].includes(navigation)) throw new ApiError(400, 'invalid navigation direction');
+  const binding = {user:userId,scope,purpose:'feed',navigation};
+  const cursor = !request.cursor ? null : openBrowseCursor(request.cursor,binding);
   if (cursor === undefined) throw new ApiError(400, 'cursor does not match this query');
   if (cursor && cursor.direction !== direction) throw new ApiError(400, 'cursor does not match this sort direction');
 
   const { args, where } = buildMomentPredicates(userId, filters, fold);
 
   // Keyset predicate. Newest sorts the tuple descending, oldest ascending.
-  const cmp = direction === 'newest' ? '<' : '>';
-  if (cursor) {
-    args.push(cursor.date, cursor.time, cursor.ownerId, cursor.id);
+  const reverse = navigation === 'previous';
+  const cmp = (direction === 'newest') !== reverse ? '<' : '>';
+  const boundary = request.seekTuple || cursor;
+  if (boundary) {
+    args.push(boundary.date, boundary.time, boundary.ownerId, boundary.id);
     const [d, t, o, i] = [`$${args.length - 3}`, `$${args.length - 2}`, `$${args.length - 1}`, `$${args.length}`];
     // Row expressions on the left, cursor values on the right. Getting this
     // backwards inverts the page: "newest" would walk toward older rows
     // instead of away from the cursor.
-    where.push(`(${dateKey('q')}, ${timeKey('q')}, q.owner_id, q.id) ${cmp} (${d}, ${t}, ${o}, ${i})`);
+    where.push(`(${dateKey('q')}, ${timeKey('q')}, q.owner_id, q.id) ${request.seekTuple ? (cmp === '<' ? '<=' : '>=') : cmp} (${d}, ${t}, ${o}, ${i})`);
   }
   args.push(limit + 1);
   const limitParam = `$${args.length}`;
-  const order = direction === 'newest' ? 'DESC' : 'ASC';
+  const order = (direction === 'newest') !== reverse ? 'DESC' : 'ASC';
 
   const sql = `
     WITH authorized AS (${AUTHORIZED_SCOPE.replace('m.document, m.version', 'm.document, m.version, m.search_text')}),
@@ -372,6 +373,9 @@ export async function queryMoments(client, userId, request, schema, helpers = {}
   const { rows } = await client.query(sql, args);
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
+  if (reverse) page.reverse();
+  const first = page[0];
+  const token = (row, nav) => row ? sealBrowseCursor({date:row.sort_date,time:row.sort_time,ownerId:row.owner_id,id:row.id,direction,scope},{user:userId,scope,purpose:'feed',navigation:nav}) : null;
   const last = page[page.length - 1];
 
   // Batched, page-scoped enrichment: one query for images, one for reactions.
@@ -391,12 +395,20 @@ export async function queryMoments(client, userId, request, schema, helpers = {}
     imagesByMoment.set(key, list);
   }
 
+  // Exact boundary existence avoids a dead previous control at the first/single seek result.
+  let beforeExists = Boolean(cursor || request.seekTuple);
+  if (request.seekTuple && first) {
+    const base = buildMomentPredicates(userId, filters, fold);
+    base.args.push(first.sort_date, first.sort_time, first.owner_id, first.id);
+    base.where.push(`(${dateKey('q')},${timeKey('q')},q.owner_id,q.id) ${direction === 'newest' ? '>' : '<'} ($${base.args.length-3},$${base.args.length-2},$${base.args.length-1},$${base.args.length})`);
+    const exists = await client.query(`WITH authorized AS (${AUTHORIZED_SCOPE.replace('m.document, m.version','m.document, m.version, m.search_text')}), q AS (SELECT * FROM authorized) SELECT 1 FROM q WHERE ${base.where.join(' AND ')} LIMIT 1`.replaceAll('{schema}',schema),base.args);
+    beforeExists=exists.rows.length>0;
+  }
   const { safeMoment } = helpers;
   return {
     moments: page.map(row => safeMoment(row.document, imagesByMoment.get(`${row.owner_id}:${row.id}`) || [], reactions.get(`${row.owner_id}:${row.id}`) || [], row.version, row.owner_id)),
-    nextCursor: hasMore && last
-      ? encodeCursor({ date: last.sort_date, time: last.sort_time, ownerId: last.owner_id, id: last.id, direction, scope })
-      : null,
+    nextCursor: (reverse ? Boolean(cursor) : hasMore) ? token(last,'next') : null,
+    previousCursor: (reverse ? hasMore : beforeExists) ? token(first,'previous') : null,
     scope,
   };
 }

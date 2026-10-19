@@ -1,3 +1,4 @@
+import { DateRangePicker } from './DateRangePicker';
 import React, { useState } from 'react';
 import {
   Search,
@@ -7,7 +8,6 @@ import {
   Image as ImageIcon,
   ArrowUpDown,
   Calendar,
-  CalendarRange,
   Sparkles,
   Bookmark,
   BookmarkCheck,
@@ -251,40 +251,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
         {/* Date range: an optional inclusive local-calendar window. Picking a
             year clears it and vice versa, through one shared rule. */}
-        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-          <span className="text-stone-400 font-medium flex items-center gap-1 shrink-0">
-            <CalendarRange className="w-3 h-3" /> Dates
-          </span>
-          <label className="sr-only" htmlFor="filter-date-from">From date</label>
-          <input
-            id="filter-date-from"
-            type="date"
-            value={filters.dateFrom}
-            max={filters.dateTo || undefined}
-            onChange={(e) => onFilterChange({ dateFrom: e.target.value })}
-            className="px-2 py-1.5 min-h-11 min-w-0 flex-1 sm:flex-none basis-24 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
-          />
-          <span className="text-stone-400 shrink-0" aria-hidden="true">→</span>
-          <label className="sr-only" htmlFor="filter-date-to">To date</label>
-          <input
-            id="filter-date-to"
-            type="date"
-            value={filters.dateTo}
-            min={filters.dateFrom || undefined}
-            onChange={(e) => onFilterChange({ dateTo: e.target.value })}
-            className="px-2 py-1.5 min-h-11 min-w-0 flex-1 sm:flex-none basis-24 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
-          />
-          {(filters.dateFrom || filters.dateTo) && (
-            <button
-              type="button"
-              aria-label="Clear date range"
-              onClick={() => onFilterChange({ dateFrom: '', dateTo: '' })}
-              className="min-h-11 min-w-11 flex items-center justify-center text-stone-400 hover:text-stone-600"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
+        <DateRangePicker key={`${filters.selectedYear}:${filters.selectedEventId}:${filters.dateFrom}:${filters.dateTo}`} dateFrom={filters.dateFrom} dateTo={filters.dateTo} onChange={onFilterChange} />
 
         {/* Quick toggle chips */}
         <div className="h-4 w-px bg-stone-200 dark:bg-stone-700 mx-1 shrink-0" />

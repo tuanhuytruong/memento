@@ -212,8 +212,7 @@ async function logoutAndLogin(page){
  const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/opt/hermes/tools/chromium-1208/chrome-linux/chrome',args:['--no-sandbox']});
  try {
   const {page,state,context,errors}=await fixture(browser,{reduced:true});
-  await page.getByRole('button',{name:'Open a random memory',exact:true}).click();
-  await page.getByRole('button',{name:'Reveal a memory',exact:true}).click();
+  await page.getByRole('button',{name:'Memory actions',exact:true}).click();await page.getByRole('button',{name:'Open a random memory',exact:true}).click();
   await page.getByRole('heading',{name:'Outside loaded feed',exact:true}).waitFor();
   await page.getByRole('button',{name:'Close',exact:true}).click();
   await page.getByTitle('More actions',{exact:true}).click();
