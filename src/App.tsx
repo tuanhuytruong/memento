@@ -572,12 +572,19 @@ export default function App() {
       ? await dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!)
       : await dataApi.createMoment(data, eventOwnerId!);
     assertSession(generation);
+    // The confirmed moment is already authoritative enough to render. Do not
+    // hold the composer open behind optional local photo work or a refresh.
     setEvents((prev) => editId ? prev.map((event) => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
-    await loadData();
     if (imageFiles.length) {
       const queue = { momentId: saved.id, ownerId: saved.resourceOwnerId!, files: imageFiles.map((file) => ({ file, uploadId: crypto.randomUUID() })) };
       setPendingImageRetry(queue);
-      await processImageQueue(queue, generation);
+      // The queue owns its own errors and final reconciliation. Its upload IDs
+      // are retained across a lost acknowledgement/retry, but it must never
+      // delay the successful create/edit promise consumed by EventModal.
+      void processImageQueue(queue, generation);
+    } else {
+      // Reconcile full-scope metadata without delaying the acknowledged save.
+      void loadData().catch(() => undefined);
     }
   };
 
@@ -692,6 +699,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
+        {uploadRunning && pendingImageRetry && <div role="status" aria-live="polite" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">Moment saved · Saving {pendingImageRetry.files.length} photo{pendingImageRetry.files.length === 1 ? '' : 's'} in the background…</div>}
         {dataError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200"><span>{dataError}</span><span className="flex gap-3">{pendingImageRetry && <button disabled={uploadRunning} className="font-semibold underline disabled:opacity-50" onClick={() => void retryImageUploads()}>{uploadRunning ? 'Uploading…' : pendingImageRetry.files.length ? 'Retry image upload' : 'Retry timeline refresh'}</button>}<button className="font-semibold underline" onClick={() => setDataError('')}>Dismiss</button></span></div>}
         <SharedInvitations invitations={collaborationInvitations} onAccept={(id) => runMutation(() => acceptInvitation(id))} />
         {/* Header Ribbon & Global Stats */}
