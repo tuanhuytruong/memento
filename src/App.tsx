@@ -61,6 +61,7 @@ export default function App() {
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
   const [monthBrowseOpen,setMonthBrowseOpen]=useState(false);
   const [browseInitialMonth,setBrowseInitialMonth]=useState('undated');
+  const [browseInitialPreview,setBrowseInitialPreview]=useState<{ownerId:string;id:string}|undefined>();
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const [perspectiveError, setPerspectiveError] = useState('');
   const authGenerationRef = useRef(0);
@@ -764,12 +765,12 @@ export default function App() {
           />
         </div>
 
-        <MonthQuickBrowseRail hidden={viewMode!=='timeline'||monthBrowseOpen||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} onOpen={month=>{setBrowseInitialMonth(month);setMonthBrowseOpen(true);}}/>
-        {monthBrowseOpen&&<Suspense fallback={<div role="status" className="fixed inset-0 z-[80] bg-stone-950/40 flex items-center justify-center">Loading month browser…</div>}><MonthQuickBrowse query={feedQuery} generation={authGenerationRef.current} initialMonth={browseInitialMonth} onClose={()=>setMonthBrowseOpen(false)} onSeek={feed.seek} onLanded={landBrowse}/></Suspense>}
+        <MonthQuickBrowseRail hidden={viewMode!=='timeline'||monthBrowseOpen||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} onOpen={(month,preview)=>{setBrowseInitialMonth(month);setBrowseInitialPreview(preview);setMonthBrowseOpen(true);}}/>
+        {monthBrowseOpen&&<Suspense fallback={<div role="status" className="fixed inset-0 z-[80] bg-stone-950/40 flex items-center justify-center">Loading month browser…</div>}><MonthQuickBrowse query={feedQuery} generation={authGenerationRef.current} initialMonth={browseInitialMonth} initialPreview={browseInitialPreview} onClose={()=>setMonthBrowseOpen(false)} onSeek={feed.seek} onLanded={landBrowse}/></Suspense>}
         {feed.navigationTarget&&<div className="mb-4 flex items-center gap-3 text-sm text-stone-500" role="status">Browsing from {'month'in feed.navigationTarget?feed.navigationTarget.month:'selected memory'}<button className="min-h-11 px-3 underline" onClick={feed.newer}>{filters.sortDirection==='oldest'?'Back to start':'Back to latest'}</button></div>}
         {feed.hasPrevious&&<div className="flex justify-center mb-4"><button id="feed-load-previous" disabled={feed.loading||feed.seeking} className="min-h-11 px-5 rounded-xl border border-stone-300 dark:border-stone-700" onClick={()=>pageWithAnchor(feed.loadPrevious)}>Load previous memories</button></div>}
         {/* View Switcher: Timeline, Compact List, or Gallery */}
-        <main className={viewMode==='timeline'?'lg:pr-36':undefined} aria-busy={search.pending || feed.loading}>
+        <main className={viewMode==='timeline'?'lg:pr-64':undefined} aria-busy={search.pending || feed.loading}>
           {(search.pending || (feed.loading && !feed.appendLoading)) && <div role="status" className="min-h-48 py-16 text-center">Updating memories…</div>}
           {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'timeline' && (
             <TimelineView

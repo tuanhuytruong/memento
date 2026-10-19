@@ -1,10 +1,158 @@
-import React,{useEffect,useState} from 'react';
-import {CalendarRange} from 'lucide-react';
-import {monthKeyForDate} from '../lib/monthBrowse';
-export const MonthQuickBrowseRail:React.FC<{onOpen:(month:string)=>void;hidden:boolean;empty:boolean}>=({onOpen,hidden,empty})=>{
- const [month,setMonth]=useState('undated');const [top,setTop]=useState(50);const [safe,setSafe]=useState(true);
- useEffect(()=>{if(hidden)return;let frame=0;const update=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{const rail=document.getElementById('month-browse-open');if(!rail)return;if(document.querySelector('#memory-actions,[role=dialog]')){setSafe(false);return;}const r=rail.getBoundingClientRect();const controls=Array.from(document.querySelectorAll<HTMLElement>('button,input,select,a[href]')).filter(el=>el!==rail&&!rail.contains(el)&&!el.closest('[role=dialog]'));let found=false;for(const percent of [50,40,60,30,70,20]){const y=innerHeight*percent/100-r.height/2;const collision=controls.some(el=>{const b=el.getBoundingClientRect();return b.width>0&&b.height>0&&b.right>r.left-8&&b.left<r.right+8&&b.bottom>y-8&&b.top<y+r.height+8;});if(!collision){setTop(percent);found=true;break;}}setSafe(found);});};const observer=new MutationObserver(update);observer.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['style','class']});addEventListener('scroll',update,{passive:true});addEventListener('resize',update);update();return()=>{observer.disconnect();cancelAnimationFrame(frame);removeEventListener('scroll',update);removeEventListener('resize',update);};},[hidden]);
- useEffect(()=>{if(hidden)return;let frame=0;const update=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{const cards=[...document.querySelectorAll<HTMLElement>('[id^="event-card-"]')];const first=cards.find(card=>{const r=card.getBoundingClientRect();return r.bottom>120&&r.top<innerHeight*.7;});const date=first?.querySelector('time')?.getAttribute('datetime')||first?.getAttribute('data-memory-date');if(first)setMonth(monthKeyForDate(date??''));});};update();const observer=new MutationObserver(update);observer.observe(document.querySelector('main')??document.body,{subtree:true,childList:true});addEventListener('scroll',update,{passive:true});return()=>{observer.disconnect();removeEventListener('scroll',update);cancelAnimationFrame(frame);};},[hidden]);
- if(hidden||empty)return null;
- return <aside style={{top:`${top}%`,visibility:safe?'visible':'hidden'}} className="hidden lg:block fixed right-4 -translate-y-1/2 z-30"><button id="month-browse-open" onClick={()=>onOpen(month)} className="flex min-h-11 items-center gap-2 rounded-xl border border-stone-200 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 p-3 shadow-md text-xs text-stone-600 dark:text-stone-300 hover:border-amber-400 focus-visible:ring-2 focus-visible:ring-amber-500"><CalendarRange size={18}/><span>Browse by month<br/><span className="text-[10px] text-stone-400">{month==='undated'?'Undated':month}</span></span></button></aside>;
+import React, { useEffect, useRef, useState } from 'react';
+import { CalendarRange } from 'lucide-react';
+import { monthKeyForDate } from '../lib/monthBrowse';
+import { EDGE_IDLE_WIDTH, EDGE_RAIL_HEIGHT, placeRail, previewWidthFor, railStep } from '../lib/monthEdgeFilmstrip';
+import { useMonthRailPreview } from '../lib/useMonthRailPreview';
+import type { MomentFeedQuery } from '../lib/useMomentFeed';
+import { MonthEdgeFilmstrip } from './MonthEdgeFilmstrip';
+
+type Open = (month: string, preview?: { ownerId: string; id: string }) => void;
+
+/** Exterior rail controller. It measures the real content gutter before mounting and never
+ * requests month metadata until a genuine hover/focus/wheel interaction begins. */
+export const MonthQuickBrowseRail: React.FC<{
+  onOpen: Open;
+  hidden: boolean;
+  empty: boolean;
+  query: MomentFeedQuery;
+  generation: number;
+}> = ({ onOpen, hidden, empty, query, generation }) => {
+  const [month, setMonth] = useState('undated');
+  const [finePointer, setFinePointer] = useState(false);
+  const [safe, setSafe] = useState(false);
+  const [top, setTop] = useState(0);
+  const [previewWidth, setPreviewWidth] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [interacted, setInteracted] = useState(false);
+  const [active, setActive] = useState(0);
+  const railActive = !hidden && !empty && finePointer && safe && interacted;
+  const preview = useMonthRailPreview({ active: railActive, month, query, generation });
+  const activeRef = useRef(0);
+  activeRef.current = active;
+
+  const updateVisibleMonth = () => {
+    const card = [...document.querySelectorAll<HTMLElement>('[id^="event-card-"]')].find((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.bottom > 120 && rect.top < innerHeight * 0.7;
+    });
+    if (!card) return;
+    const date = card.querySelector('time')?.getAttribute('datetime') || card.getAttribute('data-memory-date') || '';
+    const next = monthKeyForDate(date);
+    setMonth((current) => current === next ? current : next);
+  };
+
+  useEffect(() => {
+    if (hidden || empty) return;
+    // Chromium's headless matcher can report `hover: none` despite exposing a mouse;
+    // coarse-pointer remains the authoritative mobile exclusion, while desktop keeps
+    // keyboard access to the same semantic controls.
+    const pointer = matchMedia('(min-width: 1024px) and (not (pointer: coarse))');
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const eligible = pointer.matches;
+        setFinePointer(eligible);
+        if (!eligible || document.querySelector('[role="dialog"],#memory-actions,[data-floating-actions][data-open="true"]')) {
+          setSafe(false); setExpanded(false); return;
+        }
+        const main = document.querySelector<HTMLElement>('main[aria-busy]');
+        // The usable gutter is the actual rendered timeline edge, not the main
+        // container box (which has desktop right padding reserved for the rail).
+        const cards = Array.from(document.querySelectorAll<HTMLElement>('[id^="event-card-"]'));
+        const right = cards.length
+          ? Math.max(...cards.map((card) => card.getBoundingClientRect().right))
+          : (main?.getBoundingClientRect().right ?? innerWidth);
+        const gutter = Math.max(0, innerWidth - right);
+        const width = previewWidthFor(gutter);
+        // The timeline reserves this entire gutter (see App's `lg:pr-64`), so content
+        // controls cannot enter it. Only active overlays disable the rail above; avoid
+        // treating every normal main-content control as an exterior collision band.
+        const position = placeRail({ viewportHeight: innerHeight, railHeight: EDGE_RAIL_HEIGHT });
+        const usable = width !== null && position !== null;
+        setPreviewWidth(width);
+        setTop(position ?? 0);
+        setSafe(usable);
+        if (!usable) setExpanded(false);
+        updateVisibleMonth();
+      });
+    };
+    const observer = new ResizeObserver(update);
+    if (document.body) observer.observe(document.body);
+    // Feed pages replace their card subtree without necessarily changing the body box.
+    // Observe only that subtree and coalesce via the existing animation-frame update.
+    const feed = document.querySelector('main[aria-busy]');
+    const mutations = new MutationObserver(update);
+    if (feed) mutations.observe(feed, { childList: true, subtree: true });
+    pointer.addEventListener('change', update);
+    addEventListener('resize', update);
+    addEventListener('scroll', update, { passive: true });
+    update();
+    return () => {
+      observer.disconnect();
+      mutations.disconnect();
+      cancelAnimationFrame(frame);
+      pointer.removeEventListener('change', update);
+      removeEventListener('resize', update);
+      removeEventListener('scroll', update);
+    };
+  }, [empty, hidden]);
+
+  // A new visible month is a different rail scope. Discard ephemeral selection and require
+  // another deliberate interaction; the hook aborts/fences any prior request.
+  useEffect(() => {
+    setInteracted(false);
+    setExpanded(false);
+    setActive(0);
+  }, [month, generation, query.search, query.selectedYear, query.dateFrom, query.dateTo, query.trackKey, query.sortDirection, query.hasImagesOnly, query.milestonesOnly, query.savedOnly]);
+
+  useEffect(() => {
+    setActive((value) => Math.max(0, Math.min(preview.items.length - 1, value)));
+  }, [preview.items.length, preview.page]);
+
+  const useRail = () => {
+    if (!safe || hidden || empty) return;
+    setInteracted(true);
+    setExpanded(true);
+  };
+  const step = (delta: -1 | 1) => {
+    useRail();
+    const result = railStep(activeRef.current, preview.items.length, delta, preview.hasNext, preview.hasPrevious);
+    setActive(result.index);
+    if (result.page === 'next') preview.nextPage();
+    if (result.page === 'previous') preview.previousPage();
+  };
+
+  if (hidden || empty || !finePointer || !safe) return null;
+  return <MonthEdgeFilmstrip
+    items={preview.items}
+    active={active}
+    total={preview.total}
+    month={month}
+    previewWidth={previewWidth}
+    disabled={preview.loading && !preview.items.length}
+    loading={preview.loading}
+    error={preview.error}
+    top={top}
+    onOpenMonth={() => onOpen(month)}
+    onBrowseItem={(item) => onOpen(month, { ownerId: item.ownerId, id: item.id })}
+    onHoverItem={(index) => { useRail(); setActive(index); }}
+    onStep={step}
+    onNextPage={preview.nextPage}
+    onPreviousPage={preview.previousPage}
+    onRetry={preview.retry}
+    hasNext={preview.hasNext}
+    hasPrevious={preview.hasPrevious}
+    onExpandChange={(next) => { if (next) useRail(); else setExpanded(false); }}
+    expanded={expanded}
+  />;
 };
+
+/** Fallback entry for layouts that cannot mount a safe exterior rail. It is deliberately
+ * conventional and has no radial affordance. This component remains out of the timeline
+ * until a host supplies a compact toolbar location. */
+export const MonthBrowseFallback: React.FC<{ month: string; onOpen: () => void }> = ({ month, onOpen }) => (
+  <button type="button" onClick={onOpen} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-stone-200 bg-white px-3 text-xs font-semibold dark:border-stone-700 dark:bg-stone-900">
+    <CalendarRange size={16} aria-hidden="true" /> Browse {month === 'undated' ? 'Undated' : month}
+  </button>
+);

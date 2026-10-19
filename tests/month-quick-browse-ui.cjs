@@ -300,13 +300,14 @@ async function setup(browser, base, n, variants = false) {
       .locator('[id^="event-card-"]')
       .evaluateAll((es) => es.map((e) => e.id));
     const y = await page.evaluate(() => scrollY);
-    await page.locator("#month-browse-open").click();
+    await page.locator("#month-edge-rail").hover();
+    await page.locator('[data-testid="edge-film-preview"]').waitFor();
+    assert.equal(state.requests.filter((r) => r.path === "/api/moments/browse/preview").length, 1, "one bounded rail preview request after interaction");
+    await page.getByRole("button", { name: "Browse this memory", exact: true }).click();
     await page.locator('[data-testid="sun-preview"]').first().waitFor();
     assert.equal(await page.locator('[data-testid="sun-preview"]').count(), 1);
-    assert.equal(
-      await page.getByRole("button", { name: /Memory \d+ of \d+:/ }).count(),
-      10,
-    );
+    assert.equal(await page.getByRole("button", { name: /Memory \d+ of \d+:/ }).count(), 0, "dialog has no radial ray controls");
+    assert((await page.locator('[data-testid="browse-grid"] > div > button').count()) >= 24, "conventional bounded grid");
     await page.getByRole("button", { name: "2026-09", exact: false }).click();
     await page.waitForFunction(
       () =>
@@ -545,7 +546,7 @@ async function setup(browser, base, n, variants = false) {
     report.checks.push("Desktop overlay closes on resize below1024");
     for (const width of [390, 768]) {
       await page.setViewportSize({ width, height: 844 });
-      assert.equal(await page.locator("#month-browse-open").count(), 1);
+      assert.equal(await page.locator("#month-browse-open").count(), 0);
       assert.equal(await page.locator("#month-browse-open").isVisible(), false);
       assert(
         await page.evaluate(
@@ -645,7 +646,7 @@ async function setup(browser, base, n, variants = false) {
         ?.textContent.includes("1–24 of 120"),
     );
     const rays = vp.getByRole("button", { name: /Memory \d+ of 24:/ });
-    assert.equal(await rays.count(), 10);
+    assert.equal(await rays.count(), 0, "dialog has no radial ray controls");
     const beforePreview = await vp
       .locator('[data-testid="sun-preview"] h3')
       .innerText();
@@ -656,9 +657,9 @@ async function setup(browser, base, n, variants = false) {
           ?.textContent !== before,
       beforePreview,
     );
-    assert((await rays.count()) <= 10);
+    assert.equal(await rays.count(), 0);
     const rayImages = vp.locator('[aria-label^="Memory "] img');
-    assert((await rayImages.count()) <= 10);
+    assert.equal(await rayImages.count(), 0);
     for (const image of await rayImages.all()) {
       await image.scrollIntoViewIfNeeded();
       await image.evaluate((el) => el.decode());
@@ -696,7 +697,7 @@ async function setup(browser, base, n, variants = false) {
       assert(
         (await vp
           .getByRole("button", { name: /Memory \d+ of 24:/ })
-          .count()) <= 10,
+          .count()) === 0,
       );
     }
     report.checks.push(
