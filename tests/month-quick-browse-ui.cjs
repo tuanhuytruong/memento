@@ -290,11 +290,22 @@ async function setup(browser, base, n, variants = false) {
         ?.textContent.includes("2026-10"),
     );
     assert.equal(
-      state.requests.filter((r) => r.path.includes("/browse/")).length,
+      state.requests.filter((r) => r.path === "/api/moments/browse/preview").length,
+      1,
+      "eligible idle rail warms one bounded preview page",
+    );
+    assert.equal(
+      state.requests.filter((r) => r.path === "/api/moments/browse/months").length,
+      1,
+      "idle rail loads bounded month metadata once",
+    );
+    assert.equal(
+      state.requests.filter((r) => r.path.startsWith("/api/images/")).length,
       0,
+      "warming metadata never requests a thumb",
     );
     report.checks.push(
-      "Closed no browse requests; rail reflects visible October",
+      "Idle rail warms one bounded preview page without image bytes",
     );
     const ids = await page
       .locator('[id^="event-card-"]')
@@ -302,7 +313,7 @@ async function setup(browser, base, n, variants = false) {
     const y = await page.evaluate(() => scrollY);
     await page.locator("#month-edge-rail").hover();
     await page.locator('[data-testid="edge-film-preview"]').waitFor();
-    assert.equal(state.requests.filter((r) => r.path === "/api/moments/browse/preview").length, 1, "one bounded rail preview request after interaction");
+    assert.equal(state.requests.filter((r) => r.path === "/api/moments/browse/preview").length, 1, "hover reuses the warmed bounded preview page");
     await page.getByRole("button", { name: "Browse this memory", exact: true }).click();
     await page.locator('[data-testid="sun-preview"]').first().waitFor();
     assert.equal(await page.locator('[data-testid="sun-preview"]').count(), 1);

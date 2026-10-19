@@ -7,13 +7,15 @@ import type { RailDirection } from './monthEdgeFilmstrip';
  * browser's stable contract is untouched: no metadata request, no dialog state, no year.
  *
  * Contract:
- * - nothing is fetched until the caller reports a real interaction (`active`);
+ * - one bounded metadata-only preview page can warm after the visible rail is eligible; images remain unfetched until its frame mounts;
  * - pages stay bounded (24 items, at most three cached pages) and only advance on gesture;
  * - every response is fenced by auth generation, query scope, month and request sequence;
  * - a failure keeps the last valid page and records the exact cursor operation for Retry.
  */
-export function useMonthRailPreview({ active, month, query, generation }: {
+export function useMonthRailPreview({ active, warm, month, query, generation }: {
   active: boolean;
+  /** Eligible idle rail may warm one bounded preview page; it never mounts an image. */
+  warm: boolean;
   month: string;
   query: MomentFeedQuery;
   generation: number;
@@ -85,20 +87,13 @@ export function useMonthRailPreview({ active, month, query, generation }: {
 
   const started = useRef('');
   useEffect(() => {
-    if (!active) return;
+    if (!active && !warm) return;
     if (started.current === key) return;
     started.current = key;
     void load(null, 'next');
-  }, [active, key, load]);
+  }, [active, warm, key, load]);
 
-  // Leaving the rail aborts in-flight work; the bounded cache survives for the same month.
-  useEffect(() => {
-    if (active) return;
-    started.current = '';
-    controller.current?.abort();
-    sequence.current += 1;
-    setLoading(false);
-  }, [active]);
+  // Keep the warmed page while the pointer leaves; scope/month cleanup above fences stale work.
 
   useEffect(() => () => {
     controller.current?.abort();
