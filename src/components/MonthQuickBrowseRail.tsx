@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { CalendarRange } from 'lucide-react';
+import { dataApi } from '../lib/api';
 import { monthKeyForDate } from '../lib/monthBrowse';
 import { EDGE_IDLE_WIDTH, EDGE_RAIL_HEIGHT, placeRail, previewWidthFor, railStep } from '../lib/monthEdgeFilmstrip';
 import { useMonthRailPreview } from '../lib/useMonthRailPreview';
@@ -27,6 +28,10 @@ export const MonthQuickBrowseRail: React.FC<{
   const [expanded, setExpanded] = useState(false);
   const [interacted, setInteracted] = useState(false);
   const [active, setActive] = useState(0);
+  // Metadata is deliberately separate from preview media: it lets the idle rail reflect
+  // the visible month's real bounded tick count immediately after scroll, without
+  // fetching any memory previews or images until the user interacts.
+  const [monthCounts, setMonthCounts] = useState<Map<string, number> | null>(null);
   const railActive = !hidden && !empty && finePointer && safe && interacted && month !== null;
   const preview = useMonthRailPreview({ active: railActive, month: month ?? 'undated', query, generation });
   const activeRef = useRef(0);
@@ -42,6 +47,19 @@ export const MonthQuickBrowseRail: React.FC<{
     const next = monthKeyForDate(date);
     setMonth((current) => current === next ? current : next);
   };
+
+  useEffect(() => {
+    if (hidden || empty) return;
+    const controller = new AbortController();
+    setMonthCounts(null);
+    dataApi.browseMonths({ ...query, limit: 120 }, controller.signal).then((result) => {
+      if (controller.signal.aborted) return;
+      const next = new Map(result.months.map((entry) => [entry.key, entry.count]));
+      if (result.undatedCount) next.set('undated', result.undatedCount);
+      setMonthCounts(next);
+    }).catch(() => { if (!controller.signal.aborted) setMonthCounts(new Map()); });
+    return () => controller.abort();
+  }, [empty, hidden, generation, query.search, query.selectedYear, query.dateFrom, query.dateTo, query.trackKey, query.sortDirection, query.hasImagesOnly, query.milestonesOnly, query.savedOnly]);
 
   useEffect(() => {
     if (hidden || empty) return;
@@ -130,6 +148,7 @@ export const MonthQuickBrowseRail: React.FC<{
     items={preview.items}
     active={active}
     total={preview.total}
+    tickCount={monthCounts?.get(month) ?? null}
     month={month}
     previewWidth={previewWidth}
     disabled={preview.loading && !preview.items.length}
