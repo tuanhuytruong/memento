@@ -6,7 +6,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 require('dotenv').config({path:'.env.local',quiet:true});
 /* Target deployed nginx -> PM2; do not start API. */const {pool,qschema,hashSession}=await import('../memento-db.mjs');
 assert.equal(process.env.DB_SCHEMA,'memento_dev');
-const out=path.resolve('.hermes/evidence/compact-ui-refinements');fs.mkdirSync(out,{recursive:true});
+const out=path.resolve(process.env.MEMENTO_UI_ARTIFACTS||'.hermes/evidence/compact-ui-refinements');fs.mkdirSync(out,{recursive:true});
 const report={synthetic:false,scope:'Authenticated Chromium through disposable forwarding proxy -> deployed nginx3091 -> PM2 API3092; real temporary DEV PostgreSQL users/sessions/metadata; no fabricated product responses or R2.',checks:[],requests:[],pageerrors:[],cleanup:false};
 report.checks.push=(...items)=>{for(const item of items)console.log('CHECK',item);return Array.prototype.push.apply(report.checks,items);};
 const activeGates=[];

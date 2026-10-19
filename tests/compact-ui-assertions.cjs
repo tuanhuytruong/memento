@@ -19,6 +19,8 @@ module.exports = async function compactChecks(page) {
  await trigger.click();const editor=page.getByRole('dialog',{name:'Date range editor',exact:true});
  assert.equal(await trigger.getAttribute('aria-pressed'),'true');assert.notEqual((await style(trigger)).backgroundColor,inactive.backgroundColor);
  assert.equal(await editor.getByRole('button',{name:/Choose (From|To)/}).count(),0);
+ const dateGeometry=await require('./compact-date-assertions.cjs')(page,editor);
+ if(process.env.MEMENTO_UI_ARTIFACTS) await page.screenshot({path:require('node:path').join(process.env.MEMENTO_UI_ARTIFACTS,`date-${page.viewportSize().width}.png`)});
  const from=editor.locator('#filter-date-from'),to=editor.locator('#filter-date-to');
  await editor.getByRole('spinbutton',{name:'Calendar year'}).fill('2026');await editor.getByRole('combobox',{name:'Calendar month'}).selectOption('9');
  await from.focus();assert.equal(await from.evaluate(el=>document.activeElement===el),true);
@@ -31,5 +33,5 @@ module.exports = async function compactChecks(page) {
  await from.focus();await from.fill('2026-10-11');await from.press('Tab');assert.equal(await to.evaluate(el=>document.activeElement===el),true);
  await editor.getByRole('button',{name:'Cancel',exact:true}).click();
  assert.equal(await trigger.getAttribute('aria-pressed'),'false');assert.equal(await page.evaluate(()=>document.activeElement.id),'date-range-trigger');
- return {viewport:page.viewportSize(),rows,metrics,fab,pill:inactive};
+ return {viewport:page.viewportSize(),rows,metrics,fab,pill:inactive,dateGeometry};
 };

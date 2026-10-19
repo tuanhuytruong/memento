@@ -35,11 +35,15 @@ function DateRangeEditor({ dateFrom, dateTo, onChange, onClose, anchor }: Props 
       const width = Math.min(384, (viewport?.width || innerWidth) - 16);
       const bottomEdge = topEdge + (viewport?.height || innerHeight) - 16;
       const rect = trigger.getBoundingClientRect();
-      const naturalHeight = panel.scrollHeight + 2;
+      // Measure unconstrained content, not the current scroll box (which may
+      // retain a landscape max-height while resizing back to portrait).
+      const naturalHeight = (panel.firstElementChild as HTMLElement).offsetHeight + 18;
       const below = Math.max(0, bottomEdge - rect.bottom - 8);
       const above = Math.max(0, rect.top - 8 - topEdge);
       const flip = desktop && below < naturalHeight && above > below;
-      const maxHeight = desktop ? Math.min(bottomEdge - topEdge, flip ? above : below) : bottomEdge - topEdge;
+      // Prefer a fitting anchored side; if neither fits, clamp the whole panel
+      // into the viewport instead of clipping weeks to the smaller side.
+      const maxHeight = bottomEdge - topEdge;
       const height = Math.min(naturalHeight, maxHeight);
       const next = {
         desktop, width, maxHeight,
@@ -84,25 +88,28 @@ function DateRangeEditor({ dateFrom, dateTo, onChange, onClose, anchor }: Props 
     <div aria-hidden="true" className="fixed inset-0 z-[69] bg-stone-950/50 sm:hidden" />
     <div ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Date range editor" data-date-presentation={position?.desktop ? 'popover' : 'sheet'}
       style={position ? { left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight } : { visibility: 'hidden' }}
-      className="fixed z-[70] overflow-y-auto rounded-2xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-800 dark:text-stone-100 p-4 shadow-xl">
-      <h2 id="date-range-title" className="font-semibold text-lg">Date range</h2>
-      <div className="grid grid-cols-2 gap-2 my-3">{(['from','to'] as const).map(key => <label key={key} className="text-xs font-semibold min-w-0">{key === 'from' ? 'From' : 'To'}<input id={`filter-date-${key}`} type="text" inputMode="numeric" placeholder="YYYY-MM-DD" aria-describedby={error ? 'date-draft-error' : undefined} value={key === 'from' ? from : to} onFocus={() => setBound(key)} onClick={() => setBound(key)} onChange={e => key === 'from' ? setFrom(e.target.value) : setTo(e.target.value)} className={`mt-1 w-full min-w-0 rounded-xl border bg-stone-50 dark:bg-stone-800 p-2 min-h-11 ${bound === key ? 'border-amber-600 ring-1 ring-amber-600' : 'border-stone-300 dark:border-stone-600'}`} /></label>)}</div>
-      <div className="flex items-center gap-1 justify-between mb-2">
-        <button type="button" className={button} aria-label="Previous month" onClick={() => move(-1)}><ChevronLeft size={16} /></button>
+      className="fixed z-[70] overflow-y-auto rounded-2xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-800 dark:text-stone-100 p-2 shadow-xl">
+      <div data-date-content>
+      <div className="flex items-center gap-0 justify-between">
+        <h2 id="date-range-title" className="font-semibold text-sm whitespace-nowrap mr-auto">Date range</h2>
+        <button type="button" className="min-h-11 w-9 shrink-0 flex items-center justify-center rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800" aria-label="Previous month" onClick={() => move(-1)}><ChevronLeft size={16} /></button>
         <select aria-label="Calendar month" value={month} onChange={e => setMonth(Number(e.target.value))} className="min-h-11 bg-stone-100 dark:bg-stone-800 rounded-lg text-sm min-w-0">{Array.from({ length:12 }, (_,m) => <option key={m} value={m}>{new Date(2024,m,1).toLocaleString('en',{month:'short'})}</option>)}</select>
-        <input aria-label="Calendar year" type="number" min={100} max={9999} value={year} onChange={e => { const value=Number(e.target.value); if(value>=100 && value<=9999) setYear(value); }} className="w-20 min-h-11 bg-stone-100 dark:bg-stone-800 rounded-lg px-2 text-sm" />
-        <button type="button" className={button} aria-label="Next month" onClick={() => move(1)}><ChevronRight size={16} /></button>
+        <input aria-label="Calendar year" type="number" min={100} max={9999} value={year} onChange={e => { const value=Number(e.target.value); if(value>=100 && value<=9999) setYear(value); }} className="w-[4.5rem] min-h-11 bg-stone-100 dark:bg-stone-800 rounded-lg px-2 text-sm" />
+        <button type="button" className="min-h-11 w-9 shrink-0 flex items-center justify-center rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800" aria-label="Next month" onClick={() => move(1)}><ChevronRight size={16} /></button>
       </div>
-      <div className="grid grid-cols-7 text-center text-xs" aria-label="Calendar days">
-        {['Su','Mo','Tu','We','Th','Fr','Sa'].map(day => <span key={day} className="py-2 text-stone-500">{day}</span>)}
+      <div className="grid grid-cols-2 gap-2 my-1">{(['from','to'] as const).map(key => <label key={key} className="text-xs font-semibold min-w-0">{key === 'from' ? 'From' : 'To'}<input id={`filter-date-${key}`} type="text" inputMode="numeric" placeholder="YYYY-MM-DD" aria-describedby={error ? 'date-draft-error' : undefined} value={key === 'from' ? from : to} onFocus={() => setBound(key)} onClick={() => setBound(key)} onChange={e => key === 'from' ? setFrom(e.target.value) : setTo(e.target.value)} className={`mt-1 w-full min-w-0 rounded-xl border bg-stone-50 dark:bg-stone-800 px-2 py-1 min-h-10 ${bound === key ? 'border-amber-600 ring-1 ring-amber-600' : 'border-stone-300 dark:border-stone-600'}`} /></label>)}</div>
+      <div className="grid grid-cols-7 text-center text-xs" style={{ gridTemplateRows: '24px repeat(6, 44px)' }} aria-label="Calendar days">
+        {['Su','Mo','Tu','We','Th','Fr','Sa'].map(day => <span key={day} className="py-1 text-stone-500">{day}</span>)}
         {Array.from({length:offset},(_,i) => <span key={`empty-${i}`} />)}
         {Array.from({length:days},(_,i) => { const day=i+1, date=literal(day), selected=date===from || date===to; return <button key={day} type="button" aria-label={date} aria-pressed={selected} onClick={() => choose(day)} onKeyDown={e => { const delta = ({ArrowLeft:-1,ArrowRight:1,ArrowUp:-7,ArrowDown:7} as Record<string,number>)[e.key]; if(delta){e.preventDefault(); const target=day+delta; if(target>=1 && target<=days) (e.currentTarget.parentElement?.querySelector(`button[aria-label="${literal(target)}"]`) as HTMLButtonElement)?.focus();} }} className={`min-h-11 rounded-lg ${selected ? 'bg-amber-600 text-white' : from && to && date>from && date<to ? 'bg-amber-100 dark:bg-amber-950' : 'hover:bg-stone-100 dark:hover:bg-stone-800'}`}>{day}</button>; })}
+        {Array.from({length:42-offset-days},(_,i) => <span key={`trailing-${i}`} />)}
       </div>
       {error && <p role="alert" id="date-draft-error" className="text-xs text-rose-700 dark:text-rose-300 my-2">{error}</p>}
-      <div className="flex flex-wrap gap-1 mt-3 border-t border-stone-200 dark:border-stone-700 pt-2">
-        <button type="button" className={`${button} mr-auto`} onClick={() => { if(dateFrom || dateTo) onChange({dateFrom:'',dateTo:''}); onClose(); }}>Clear date filter</button>
+      <div className="flex flex-wrap gap-1 mt-1 border-t border-stone-200 dark:border-stone-700 pt-1">
+        <button type="button" aria-label="Clear date filter" className={`${button} mr-auto`} onClick={() => { if(dateFrom || dateTo) onChange({dateFrom:'',dateTo:''}); onClose(); }}>Clear</button>
         <button type="button" className={button} onClick={onClose}>Cancel</button>
         <button type="button" disabled={!!error} className={`${button} bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50`} onClick={() => { if(from!==dateFrom || to!==dateTo) onChange({dateFrom:from,dateTo:to}); onClose(); }}>Apply</button>
+      </div>
       </div>
     </div>
   </>;

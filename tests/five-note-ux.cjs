@@ -312,6 +312,33 @@ async function logoutAndLogin(page){
   assert.equal(queryCount(state),count);assert.deepEqual(f.errors,[]);
   check('date geometry: trigger-aligned desktop, bottom-right flip/clamp, left clamp, captured nested/document scroll, resize, mobile sheet, draft retention, outside/Escape focus, zero queries');await f.context.close();
  }
+ // Six-row low/edge triggers and an actual overflow-container scroll.
+ {
+  const f=await fixture(browser,{reduced:true});const {page,state}=f;const before=queryCount(state);
+  const trigger=page.locator('#date-range-trigger'),editor=page.getByRole('dialog',{name:'Date range editor',exact:true});
+  for(const size of [{width:1366,height:768},{width:800,height:620},{width:1280,height:900}]){
+   await page.setViewportSize(size);
+   for(const y of [size.height-110,Math.round(size.height/2)]){
+    await trigger.evaluate((el,{y,w})=>el.style.cssText=`position:fixed;left:${w-160}px;top:${y}px;z-index:10`,{y,w:size.width});
+    await trigger.click();const geometry=await require('./compact-date-assertions.cjs')(page,editor);
+    report.geometry.push({lowTrigger:true,trigger:await trigger.boundingBox(),...geometry});
+    assert(geometry.panel.x+geometry.panel.w<=size.width-8);
+    // When the panel fits above, keep the actual 8px anchor gap.
+    if(y-16>=geometry.panel.h)assert(Math.abs(geometry.panel.y+geometry.panel.h-(y-8))<2);
+    else assert(geometry.panel.y>=8 && geometry.panel.y+geometry.panel.h<=size.height-8);
+    await page.screenshot({path:path.join(artifacts,`date-edge-${size.width}-${y}.png`)});
+    await page.keyboard.press('Escape');
+   }
+  }
+  await trigger.evaluate(el=>{const host=document.createElement('div');host.id='date-scroll-host';host.style.cssText='position:fixed;left:100px;top:80px;width:300px;height:200px;overflow:auto;z-index:10';const content=document.createElement('div');content.style.cssText='height:800px;padding-top:120px';el.before(host);host.append(content);content.append(el);el.style.cssText='position:relative';});
+  await trigger.click();await page.waitForTimeout(100);const first=await editor.boundingBox();
+  await page.locator('#date-scroll-host').evaluate(el=>el.scrollTop=50);
+  await page.waitForFunction(()=>{const t=document.querySelector('#date-range-trigger').getBoundingClientRect(),p=document.querySelector('[aria-label="Date range editor"]').getBoundingClientRect();return Math.abs(p.top-t.bottom-8)<2;});
+  const second=await editor.boundingBox();assert(Math.abs(first.y-second.y-50)<2);
+  report.geometry.push({realNestedScroll:{first,second,scrollTop:50}});
+  await page.keyboard.press('Escape');assert.equal(queryCount(state),before);assert.deepEqual(f.errors,[]);
+  check('six-row low/edge geometry: 1366x768,800x620,1280x900 full 42 cells/footer without scroll; midpoint clamp; actual nested overflow scroll; keyboard endpoints; zero queries');await f.context.close();
+ }
  for(const role of ['owner','editor','viewer','empty']){
   const f=await fixture(browser,{reduced:true,tracks:role==='empty'?[]:[{...track,accessRole:role}],moments:role==='empty'?[]:[moment]});await openActions(f.page);
   assert.equal(await f.page.locator('#memory-actions').getByRole('button',{name:'New entry',exact:true}).count(),['owner','editor'].includes(role)?1:0);
