@@ -15,7 +15,7 @@ export function useModalLifecycle(open: boolean, onClose: () => void) {
     if (scrollLocks++ === 0) { originalOverflow = document.body.style.overflow; document.body.style.overflow = 'hidden'; }
     panels.push(panel);
     const focusable = (): HTMLElement[] => (Array.from(panel.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[tabindex="0"]')) as HTMLElement[]).filter((item) => item.getClientRects().length);
-    (focusable()[0] || panel).focus();
+    (focusable()[0] || panel).focus({ preventScroll: true });
     const key = (event: KeyboardEvent) => {
       const ordered = [...panels].sort((a, b) => (Number(getComputedStyle(a).zIndex) || 0) - (Number(getComputedStyle(b).zIndex) || 0));
       const top = ordered[ordered.length - 1];
@@ -29,7 +29,7 @@ export function useModalLifecycle(open: boolean, onClose: () => void) {
       }
     };
     document.addEventListener('keydown', key);
-    return () => { document.removeEventListener('keydown', key); const index = panels.indexOf(panel); if (index >= 0) panels.splice(index, 1); if (--scrollLocks === 0) document.body.style.overflow = originalOverflow; if (previous?.isConnected) previous.focus(); };
+    return () => { document.removeEventListener('keydown', key); const index = panels.indexOf(panel); if (index >= 0) panels.splice(index, 1); if (--scrollLocks === 0) document.body.style.overflow = originalOverflow; if (previous?.isConnected) previous.focus({ preventScroll: true }); };
   }, [open]);
   return ref;
 }

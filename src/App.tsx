@@ -23,7 +23,7 @@ const ImageLightbox = lazy(() => import('./components/ImageLightbox').then(modul
 const BlindboxMemory = lazy(() => import('./components/BlindboxMemory').then(module => ({ default: module.BlindboxMemory })));
 // Postcard rendering is a heavy, rarely-used flow; it never joins the initial bundle.
 const PostcardComposer = lazy(() => import('./components/PostcardComposer').then(module => ({ default: module.PostcardComposer })));
-import { Dices } from 'lucide-react';
+import { FloatingMemoryActions } from './components/FloatingMemoryActions';
 import { MemoryResurfacing } from './components/MemoryResurfacing';
 import type { MemoryVisit } from './lib/memoryResurfacing';
 import { DeferredUiBoundary } from './components/DeferredUiBoundary';
@@ -454,6 +454,8 @@ export default function App() {
   // derived from server-authoritative roles rather than local UI state.
   const canCreateEntry = eventTracks.some((track) => track.accessRole === 'owner' || track.accessRole === 'editor');
 
+  const openCreateEntry = () => { if (canCreateEntry) { setEventToEdit(null); setIsEventModalOpen(true); } };
+
   // Persist each change before reflecting it in the UI; failed requests leave the prior data intact.
   const handleSaveTrack = async (
     trackData: Omit<EventTrack, 'id' | 'createdAt' | 'updatedAt'>,
@@ -678,10 +680,7 @@ export default function App() {
           trackCount={eventTracks.length}
           username={user.username}
           onLogout={() => void handleLogout()}
-          onAddNewEvent={() => {
-            setEventToEdit(null);
-            setIsEventModalOpen(true);
-          }}
+          onAddNewEvent={openCreateEntry}
           // One export path only: a second, lighter one would be the route a
           // partial backup escapes through.
           onExportJson={exportJsonWithPerspectives}
@@ -689,8 +688,7 @@ export default function App() {
           onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
           canCreateEntry={canCreateEntry}
         />
-        {/* Keep rediscovery in flow: a floating action can obstruct narrow search controls. */}
-        <div className="flex justify-end mb-4"><button type="button" onClick={() => setIsBlindboxOpen(true)} title="Open a random memory" aria-label="Open a random memory" className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-amber-600 text-white shadow-lg transition hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-300"><Dices className="h-5 w-5" /></button></div>
+        <FloatingMemoryActions canCreate={canCreateEntry} onCreate={openCreateEntry} onDiscover={() => setIsBlindboxOpen(true)} hidden={isEventModalOpen || isEventTrackModalOpen || isBlindboxOpen || isPostcardOpen || !!eventToView || !!shareTrack || lightboxState.isOpen} />
         {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
         {selectedTrackKey === 'all' && (
           <MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} />
@@ -843,6 +841,10 @@ export default function App() {
         </main>
       </div>
 
+      <LoadMoreMemories hasMore={feed.hasMore && !search.pending} loading={feed.loading || search.pending} error={feed.error}
+        windowShifted={feed.windowShifted} loadedCount={feed.items.length} totalCount={feed.total}
+        onLoadMore={feed.loadMore} onNewer={feed.newer} onRefresh={feed.refresh} />
+      <div aria-hidden="true" className="h-24" />
       <DeferredUiBoundary key={`${user.id}:${authGenerationRef.current}`}><Suspense fallback={<div role="status" className="fixed bottom-4 left-4 z-[100] rounded-lg bg-white p-3 text-sm shadow-lg dark:bg-stone-900">Opening…</div>}>
       {/* Create / Edit Event Track Modal */}
       {isEventTrackModalOpen && <EventTrackModal key={`${user.id}:${authGenerationRef.current}`}
@@ -913,9 +915,6 @@ export default function App() {
         invitations={collaborationInvitations}
         onAccept={acceptInvitation}
       />}
-      <LoadMoreMemories hasMore={feed.hasMore && !search.pending} loading={feed.loading || search.pending} error={feed.error}
-        windowShifted={feed.windowShifted} loadedCount={feed.items.length} totalCount={feed.total}
-        onLoadMore={feed.loadMore} onNewer={feed.newer} onRefresh={feed.refresh} />
       {isBlindboxOpen && <BlindboxMemory key={authGenerationRef.current} currentUserId={user.id} open={isBlindboxOpen} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}
       {/* Image Lightbox viewer */}
       {lightboxState.isOpen && <ImageLightbox

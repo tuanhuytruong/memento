@@ -108,7 +108,7 @@ for(const size of [{width:320,height:900},{width:390,height:900},{width:667,heig
  await p.locator('#toggle-advanced-filters').focus();await p.keyboard.press('Enter');await p.waitForFunction(()=>document.querySelector('#toggle-advanced-filters')?.getAttribute('aria-expanded')==='true');
  await p.keyboard.press('Enter');
  await p.locator('#toggle-sort-direction').focus();const label=await p.locator('#toggle-sort-direction').getAttribute('aria-label');await p.keyboard.press('Space');await p.waitForFunction(label=>document.querySelector('#toggle-sort-direction')?.getAttribute('aria-label')!==label,label);await waitCount(p,40);
- await p.getByRole('button',{name:'Open a random memory',exact:true}).click();await p.getByRole('dialog',{name:'Blindbox memory',exact:true}).waitFor();await p.keyboard.press('Escape');await p.getByRole('dialog',{name:'Blindbox memory',exact:true}).waitFor({state:'detached'});
+ await p.getByRole('button',{name:'Memory actions',exact:true}).click();await p.getByRole('button',{name:'Open a random memory',exact:true}).click();await p.getByRole('dialog',{name:'Blindbox memory',exact:true}).waitFor();await p.keyboard.press('Escape');await p.getByRole('dialog',{name:'Blindbox memory',exact:true}).waitFor({state:'detached'});
  await p.locator('#filter-toolbar').scrollIntoViewIfNeeded();
  await p.screenshot({path:path.join(out,`search-keyboard-${size.width}.png`),fullPage:true});
  report.checks.push(`${size.width}x${size.height}: toolbar nine-point hit-tests/in-viewport, Tab clear, keyboard views/filters/sort, Blindbox open/Escape`);
