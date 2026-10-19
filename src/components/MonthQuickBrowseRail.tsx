@@ -161,8 +161,6 @@ export const MonthQuickBrowseRail: React.FC<{
     onNavigateItem={onNavigate}
     onHoverItem={(index) => { useRail(); setActive(index); }}
     onStep={step}
-    onNextPage={preview.nextPage}
-    onPreviousPage={preview.previousPage}
     onRetry={preview.retry}
     hasNext={preview.hasNext}
     hasPrevious={preview.hasPrevious}
