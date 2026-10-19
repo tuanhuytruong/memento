@@ -21,8 +21,7 @@ export interface MonthEdgeFilmstripProps {
   error?: string;
   /** Vertical position of the rail box, already collision-checked by the caller. */
   top: number;
-  onOpenMonth: () => void;
-  onBrowseItem: (item: BrowsePreview) => void;
+  onNavigateItem: (item: BrowsePreview) => void;
   onHoverItem: (index: number) => void;
   onStep: (delta: -1 | 1) => void;
   onNextPage: () => void;
@@ -39,7 +38,7 @@ export interface MonthEdgeFilmstripProps {
  */
 export const MonthEdgeFilmstrip: React.FC<MonthEdgeFilmstripProps> = ({
   items, active, total, tickCount, month, previewWidth, disabled, loading, error,
-  top, onOpenMonth, onBrowseItem, onHoverItem, onStep, onNextPage, onPreviousPage, onRetry,
+  top, onNavigateItem, onHoverItem, onStep, onNextPage, onPreviousPage, onRetry,
   hasNext, hasPrevious, onExpandChange, expanded,
 }) => {
   const region = EDGE_SLOT_REGION;
@@ -156,33 +155,21 @@ export const MonthEdgeFilmstrip: React.FC<MonthEdgeFilmstripProps> = ({
       className="absolute rounded-2xl border border-stone-200 bg-white/98 p-2.5 shadow-xl shadow-stone-900/10 backdrop-blur-sm dark:border-stone-700 dark:bg-stone-900/98"
       style={{ right: EDGE_IDLE_WIDTH + 8, width: previewWidth ?? 176, top: Math.max(0, Math.min(region - 168, region / 2 - 84)) }}
     >
-      {activeItem.thumbUrl
-        ? <PrivateImage src={activeItem.thumbUrl} variant="thumb" alt="" loading="eager" className="mb-2 h-[112px] w-full overflow-hidden rounded-xl" />
-        : <div className="mb-2 flex h-[72px] items-center justify-center rounded-xl bg-amber-50 px-2 text-center text-[11px] leading-snug text-amber-800 dark:bg-stone-800 dark:text-amber-200">{activeItem.excerpt || 'A memory in words'}</div>}
-      <time className="text-[11px] text-stone-500">{activeItem.date || 'Undated'}</time>
-      <h3 className="line-clamp-2 text-sm font-semibold leading-snug break-words">{activeItem.title || 'Untitled memory'}</h3>
-      {activeItem.excerpt && <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-stone-500 break-words">{activeItem.excerpt}</p>}
-      <div className="mt-2 flex items-center gap-1">
+      <button type="button" disabled={disabled} onClick={() => onNavigateItem(activeItem)} aria-label={`Go to memory: ${activeItem.title || 'Untitled memory'}`} className="block w-full rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 disabled:opacity-40">
+        {activeItem.thumbUrl
+          ? <PrivateImage src={activeItem.thumbUrl} variant="thumb" alt="" loading="eager" className="mb-2 h-[112px] w-full overflow-hidden rounded-xl" />
+          : <div className="mb-2 flex h-[72px] items-center justify-center rounded-xl bg-amber-50 px-2 text-center text-[11px] leading-snug text-amber-800 dark:bg-stone-800 dark:text-amber-200">{activeItem.excerpt || 'A memory in words'}</div>}
+        <time className="text-[11px] text-stone-500">{activeItem.date || 'Undated'}</time>
+        <h3 className="line-clamp-2 text-sm font-semibold leading-snug break-words">{activeItem.title || 'Untitled memory'}</h3>
+        {activeItem.excerpt && <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-stone-500 break-words">{activeItem.excerpt}</p>}
+      </button>
+      <div className="mt-2 flex items-center justify-between gap-1">
         <button type="button" disabled={disabled || !hasPrevious} onClick={onPreviousPage} className="min-h-11 min-w-11 rounded-lg border border-stone-200 text-xs disabled:opacity-40 dark:border-stone-700" aria-label="Previous memories">‹</button>
-        <button type="button" disabled={disabled} onClick={() => onBrowseItem(activeItem)} className="min-h-11 flex-1 rounded-lg bg-amber-600 px-2 text-[11px] font-semibold text-white disabled:opacity-40">Browse this memory</button>
         <button type="button" disabled={disabled || !hasNext} onClick={onNextPage} className="min-h-11 min-w-11 rounded-lg border border-stone-200 text-xs disabled:opacity-40 dark:border-stone-700" aria-label="Next memories">›</button>
       </div>
       <p role="status" className="mt-1 min-h-4 text-[10px] text-stone-500">{loading ? 'Loading month previews…' : error || `${ordinal(active)} of ${Math.max(total, items.length)} in ${monthLabel}`}</p>
       {error && <button type="button" onClick={onRetry} className="mt-1 min-h-11 w-full rounded-lg border border-stone-200 text-[11px] font-semibold dark:border-stone-700">Retry</button>}
     </div>}
 
-    <button
-      type="button"
-      id="month-browse-open"
-      data-month={month}
-      disabled={disabled}
-      onClick={onOpenMonth}
-      aria-label={`Browse memories from ${monthLabel}`}
-      className="absolute bottom-0 right-0 flex min-h-11 w-14 flex-col items-center justify-center rounded-l-xl border border-r-0 border-stone-200 bg-white/95 text-[10px] font-semibold leading-tight text-stone-600 shadow-sm hover:border-amber-400 focus-visible:ring-2 focus-visible:ring-amber-500 disabled:opacity-60 dark:border-stone-700 dark:bg-stone-900/95 dark:text-stone-300"
-    >
-      <span className="text-[11px] text-amber-700 dark:text-amber-300">{monthLabel.split(' ')[0]}</span>
-      <span>{monthLabel.split(' ')[1] ?? ''}</span>
-      <span className="sr-only">{month}</span>
-    </button>
   </aside>;
 };
