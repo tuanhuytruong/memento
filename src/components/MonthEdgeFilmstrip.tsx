@@ -119,7 +119,7 @@ export const MonthEdgeFilmstrip: React.FC<MonthEdgeFilmstripProps> = ({
     <svg aria-hidden="true" className="pointer-events-none absolute right-0 text-amber-500/80 dark:text-amber-300/70" width={EDGE_IDLE_WIDTH} height={region} viewBox={`0 0 ${EDGE_IDLE_WIDTH} ${region}`}>
       <path d={arcPath(shape, region)} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
       {slots.map((slot) => {
-        const line = tickLine(slotOffset(slot, region), shape, region, activeItem && window[slot.index] === active ? 14 : 8);
+        const line = tickLine(slotOffset(slot, region), shape, region, expanded && activeItem && window[slot.index] === active ? 14 : 8);
         return <line key={slot.index} {...line} stroke="currentColor" strokeWidth="1" strokeLinecap="round" />;
       })}
     </svg>
@@ -129,7 +129,8 @@ export const MonthEdgeFilmstrip: React.FC<MonthEdgeFilmstripProps> = ({
         const index = window[slot.index];
         if (index === undefined) return null;
         const item = items[index];
-        const isActive = index === active;
+        // Cache the selected item for immediate re-entry, but show no bold tick once the rail closes.
+        const isActive = expanded && index === active;
         const offset = slotOffset(slot, region);
         return <button
           key={`${item.ownerId}:${item.id}:${index}`}

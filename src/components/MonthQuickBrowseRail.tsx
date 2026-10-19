@@ -33,7 +33,13 @@ export const MonthQuickBrowseRail: React.FC<{
   // fetching any memory previews or images until the user interacts.
   const [monthCounts, setMonthCounts] = useState<Map<string, number> | null>(null);
   const railActive = !hidden && !empty && finePointer && safe && interacted && month !== null;
-  const preview = useMonthRailPreview({ active: railActive, month: month ?? 'undated', query, generation });
+  const preview = useMonthRailPreview({
+    active: railActive,
+    // Warm one bounded JSON preview page for the visible month. Photo bytes stay lazy
+    // because the preview frame and its PrivateImage mount only after real interaction.
+    warm: !hidden && !empty && finePointer && safe && month !== null,
+    month: month ?? 'undated', query, generation,
+  });
   const activeRef = useRef(0);
   activeRef.current = active;
 

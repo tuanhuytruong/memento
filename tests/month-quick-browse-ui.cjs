@@ -290,11 +290,22 @@ async function setup(browser, base, n, variants = false) {
         ?.textContent.includes("2026-10"),
     );
     assert.equal(
-      state.requests.filter((r) => r.path.includes("/browse/")).length,
+      state.requests.filter((r) => r.path === "/api/moments/browse/preview").length,
+      1,
+      "eligible idle rail warms one bounded preview page",
+    );
+    assert.equal(
+      state.requests.filter((r) => r.path === "/api/moments/browse/months").length,
+      1,
+      "idle rail loads bounded month metadata once",
+    );
+    assert.equal(
+      state.requests.filter((r) => r.path.startsWith("/api/images/")).length,
       0,
+      "warming metadata never requests a thumb",
     );
     report.checks.push(
-      "Closed no browse requests; rail reflects visible October",
+      "Idle rail warms one bounded preview page without image bytes",
     );
     const ids = await page
       .locator('[id^="event-card-"]')
@@ -302,8 +313,9 @@ async function setup(browser, base, n, variants = false) {
     const y = await page.evaluate(() => scrollY);
     await page.locator("#month-edge-rail").hover();
     await page.locator('[data-testid="edge-film-preview"]').waitFor();
-    assert.equal(state.requests.filter((r) => r.path === "/api/moments/browse/preview").length, 1, "one bounded rail preview request after interaction");
+    assert.equal(state.requests.filter((r) => r.path === "/api/moments/browse/preview").length, 1, "hover reuses the warmed bounded preview page");
     await page.getByRole("button", { name: "Browse this memory", exact: true }).click();
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="month-browse-panel"]')));
     await page.locator('[data-testid="sun-preview"]').first().waitFor();
     assert.equal(await page.locator('[data-testid="sun-preview"]').count(), 1);
     assert.equal(await page.getByRole("button", { name: /Memory \d+ of \d+:/ }).count(), 0, "dialog has no radial ray controls");
@@ -669,7 +681,7 @@ async function setup(browser, base, n, variants = false) {
     const thumbs = vs.requests.slice(imageRequestStart).filter((r) =>
       r.path.startsWith("/api/images/variant-"),
     );
-    assert(thumbs.length <= 10, `bounded thumb requests ${thumbs.length}`);
+    assert(thumbs.length <= 48, `bounded dialog-page thumb requests ${thumbs.length}`);
     assert.equal(new Set(thumbs.map((r) => r.url)).size, thumbs.length);
     assert(
       thumbs.every(
