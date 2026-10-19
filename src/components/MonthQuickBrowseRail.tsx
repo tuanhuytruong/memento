@@ -17,7 +17,9 @@ export const MonthQuickBrowseRail: React.FC<{
   query: MomentFeedQuery;
   generation: number;
 }> = ({ onOpen, hidden, empty, query, generation }) => {
-  const [month, setMonth] = useState('undated');
+  // Suppress the rail until a rendered feed card resolves its visible month.
+  // This prevents an initial-frame 'Undated' flash while the first page loads.
+  const [month, setMonth] = useState<string | null>(null);
   const [finePointer, setFinePointer] = useState(false);
   const [safe, setSafe] = useState(false);
   const [top, setTop] = useState(0);
@@ -25,8 +27,8 @@ export const MonthQuickBrowseRail: React.FC<{
   const [expanded, setExpanded] = useState(false);
   const [interacted, setInteracted] = useState(false);
   const [active, setActive] = useState(0);
-  const railActive = !hidden && !empty && finePointer && safe && interacted;
-  const preview = useMonthRailPreview({ active: railActive, month, query, generation });
+  const railActive = !hidden && !empty && finePointer && safe && interacted && month !== null;
+  const preview = useMonthRailPreview({ active: railActive, month: month ?? 'undated', query, generation });
   const activeRef = useRef(0);
   activeRef.current = active;
 
@@ -123,7 +125,7 @@ export const MonthQuickBrowseRail: React.FC<{
     if (result.page === 'previous') preview.previousPage();
   };
 
-  if (hidden || empty || !finePointer || !safe) return null;
+  if (hidden || empty || !finePointer || !safe || month === null) return null;
   return <MonthEdgeFilmstrip
     items={preview.items}
     active={active}

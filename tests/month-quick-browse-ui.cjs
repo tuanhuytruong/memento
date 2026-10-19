@@ -568,6 +568,8 @@ async function setup(browser, base, n, variants = false) {
       vs = v.state;
     await vp.goto(base);
     await vp.locator('[id^="event-card-"]').first().waitFor();
+    await vp.evaluate(async () => { await document.fonts.ready; scrollTo(0, 500); });
+    await vp.waitForFunction(() => Boolean(document.querySelector("#month-browse-open")));
     await vp.locator("#month-browse-open").click();
     await vp.locator('[data-testid="sun-preview"]').first().waitFor();
     // Real pointer events on the native range, not keyboard or dispatched change events.
