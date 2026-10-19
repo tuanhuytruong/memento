@@ -24,8 +24,6 @@ export interface MonthEdgeFilmstripProps {
   onNavigateItem: (item: BrowsePreview) => void;
   onHoverItem: (index: number) => void;
   onStep: (delta: -1 | 1) => void;
-  onNextPage: () => void;
-  onPreviousPage: () => void;
   onRetry: () => void;
   hasNext: boolean;
   hasPrevious: boolean;
@@ -38,7 +36,7 @@ export interface MonthEdgeFilmstripProps {
  */
 export const MonthEdgeFilmstrip: React.FC<MonthEdgeFilmstripProps> = ({
   items, active, total, tickCount, month, previewWidth, disabled, loading, error,
-  top, onNavigateItem, onHoverItem, onStep, onNextPage, onPreviousPage, onRetry,
+  top, onNavigateItem, onHoverItem, onStep, onRetry,
   hasNext, hasPrevious, onExpandChange, expanded,
 }) => {
   const region = EDGE_SLOT_REGION;
@@ -163,10 +161,6 @@ export const MonthEdgeFilmstrip: React.FC<MonthEdgeFilmstripProps> = ({
         <h3 className="line-clamp-2 text-sm font-semibold leading-snug break-words">{activeItem.title || 'Untitled memory'}</h3>
         {activeItem.excerpt && <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-stone-500 break-words">{activeItem.excerpt}</p>}
       </button>
-      <div className="mt-2 flex items-center justify-between gap-1">
-        <button type="button" disabled={disabled || !hasPrevious} onClick={onPreviousPage} className="min-h-11 min-w-11 rounded-lg border border-stone-200 text-xs disabled:opacity-40 dark:border-stone-700" aria-label="Previous memories">‹</button>
-        <button type="button" disabled={disabled || !hasNext} onClick={onNextPage} className="min-h-11 min-w-11 rounded-lg border border-stone-200 text-xs disabled:opacity-40 dark:border-stone-700" aria-label="Next memories">›</button>
-      </div>
       <p role="status" className="mt-1 min-h-4 text-[10px] text-stone-500">{loading ? 'Loading month previews…' : error || `${ordinal(active)} of ${Math.max(total, items.length)} in ${monthLabel}`}</p>
       {error && <button type="button" onClick={onRetry} className="mt-1 min-h-11 w-full rounded-lg border border-stone-200 text-[11px] font-semibold dark:border-stone-700">Retry</button>}
     </div>}
