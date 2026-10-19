@@ -82,6 +82,7 @@ export const EventCard: React.FC<EventCardProps> = ({
       {/* Main Event Card */}
       <div
         id={`event-card-${momentIdentity(event)}`}
+        data-memory-date={event.date??''}
         // Not in the tab order; it is only a focus TARGET when the detail view
         // closes, so keyboard users land back on the card they came from.
         tabIndex={-1}

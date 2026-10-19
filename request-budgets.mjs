@@ -33,7 +33,7 @@ export function createRequestBudgets({ now = Date.now, maxKeys = 10000, windowMs
       // budget instead of sharing the saved-content write allowance.
       if (req.method === 'POST' && req.path === '/api/postcards/render') return consume('render', req.user.id, res, next);
       if (req.method === 'POST' && /^\/api\/export\/(start|page|finalize)$/.test(req.path)) return consume('export', req.user.id, res, next);
-      const readPost = req.method === 'POST' && ['/api/moments/query', '/api/moments/facets', '/api/moments/resurfacing', '/api/discovery/blindbox', '/api/discovery/postcard-picker'].includes(req.path);
+      const readPost = req.method === 'POST' && ['/api/moments/browse/months', '/api/moments/browse/preview', '/api/moments/seek', '/api/moments/query', '/api/moments/facets', '/api/moments/resurfacing', '/api/discovery/blindbox', '/api/discovery/postcard-picker'].includes(req.path);
       return consume(image ? 'image' : readPost || ['GET', 'HEAD'].includes(req.method) ? 'read' : 'write', req.user.id, res, next);
     },
     stats() { return { keys: buckets.size, maxKeys }; },

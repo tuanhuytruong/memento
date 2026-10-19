@@ -37,6 +37,8 @@ export interface MomentFeedQuery {
 export interface MomentFeedPage {
   moments: TimelineEvent[];
   nextCursor: string | null;
+  previousCursor?: string | null;
+  target?: {ownerId:string;id:string};
   total?: number;
 }
 
@@ -109,19 +111,32 @@ export function slideWindow<T>(pages: T[][], maxPages: number): { pages: T[][]; 
   return { pages: pages.slice(dropped), dropped };
 }
 
+/** Two-sided eviction shares exactly the same policy for documents and boundary cursors. */
+export function retainDirectional<T>(pages:T[],maximum:number,navigation:'next'|'previous'):T[]{return navigation==='previous'?pages.slice(0,maximum):pages.slice(-maximum);}
 export function useMomentFeed(options: {
-  fetchPage: (args: { cursor: string | null; query: MomentFeedQuery; signal: AbortSignal }) => Promise<MomentFeedPage>;
+  fetchPage: (args: { cursor: string | null; navigation?: 'next'|'previous'; query: MomentFeedQuery; signal: AbortSignal }) => Promise<MomentFeedPage>;
+  fetchSeek?: (query:MomentFeedQuery,target:{ownerId:string;id:string}|{month:string},signal:AbortSignal)=>Promise<MomentFeedPage>;
   query: MomentFeedQuery;
   generation: number;
   enabled?: boolean;
   maxRetainedPages?: number;
 }): MomentFeedState & {
+  seek: (target:{ownerId:string;id:string}|{month:string},signal?:AbortSignal)=>Promise<MomentFeedPage|null>;
+  loadPrevious:()=>void;
+  hasPrevious:boolean;
+  seeking:boolean;
+  navigationTarget:{ownerId:string;id:string}|{month:string}|null;
   loadMore: () => void;
   older: () => void;
   newer: () => void;
   refresh: () => void;
 } {
-  const { fetchPage, query, generation, enabled = true, maxRetainedPages = 5 } = options;
+  const { fetchPage, fetchSeek, query, generation, enabled = true, maxRetainedPages = 5 } = options;
+  const [hasPrevious,setHasPrevious]=useState(false);
+  const [seeking,setSeeking]=useState(false);
+  const [navigationTarget,setNavigationTarget]=useState<{ownerId:string;id:string}|{month:string}|null>(null);
+  const pageBounds=useRef<MomentFeedPage[]>([]);
+  const anchor=useRef<{ownerId:string;id:string}|{month:string}|null>(null);
   const [pages, setPages] = useState<TimelineEvent[][]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [total, setTotal] = useState<number | null>(null);
@@ -144,7 +159,7 @@ export function useMomentFeed(options: {
   const cursorRef = useRef<string | null>(null);
   const firstCursorRef = useRef<string | null | undefined>(undefined);
 
-  const run = useCallback(async (mode: 'initial' | 'more', existing: TimelineEvent[][]) => {
+  const run = useCallback(async (mode: 'initial' | 'more' | 'previous', existing: TimelineEvent[][]) => {
     if (!enabled) return;
     const id = ++requestId.current;
     activeController.current?.abort();
@@ -152,18 +167,21 @@ export function useMomentFeed(options: {
     activeController.current = controller;
     busy.current = true;
     setLoading(true);
-    setAppendLoading(mode === 'more');
+    setAppendLoading(mode !== 'initial');
     setError(null);
     try {
-      const page = await fetchPage({ cursor: mode === 'more' ? cursorRef.current : null, query, signal: controller.signal });
+      const page = await fetchPage({ cursor: mode === 'more' ? cursorRef.current : mode === 'previous' ? pageBounds.current[0]?.previousCursor ?? null : null, navigation: mode === 'previous' ? 'previous':'next', query, signal: controller.signal });
       if (id !== requestId.current || currentScope.current.scope !== scope || !currentScope.current.enabled) return; // superseded: never land
-      const next = mode === 'more' ? [...existing, page.moments] : [page.moments];
-      const slid = slideWindow(next, maxRetainedPages);
+      const next = mode === 'more' ? [...existing, page.moments] : mode === 'previous' ? [page.moments,...existing] : [page.moments];
+      const bounds = mode === 'more' ? [...pageBounds.current,page] : mode === 'previous' ? [page,...pageBounds.current] : [page];
+      const slid = mode === 'previous' ? {pages:next.slice(0,maxRetainedPages),dropped:Math.max(0,next.length-maxRetainedPages)} : slideWindow(next,maxRetainedPages);
+      pageBounds.current=retainDirectional(bounds,maxRetainedPages,mode==='previous'?'previous':'next');
+      setHasPrevious(!!pageBounds.current[0]?.previousCursor);
       setLandedScope(scope);
       setPages(slid.pages);
       setDropped(dropped => dropped + slid.dropped);
-      cursorRef.current = page.nextCursor;
-      setCursor(page.nextCursor);
+      cursorRef.current = pageBounds.current.at(-1)?.nextCursor ?? null;
+      setCursor(cursorRef.current);
       if (mode === 'initial') {
         firstCursorRef.current = null;
         setTotal(typeof page.total === 'number' ? page.total : null);
@@ -185,6 +203,7 @@ export function useMomentFeed(options: {
     cursorRef.current = null;
     firstCursorRef.current = undefined;
     setPages([]);
+    pageBounds.current=[];setHasPrevious(false);anchor.current=null;setNavigationTarget(null);setSeeking(false);
     setCursor(null);
     setTotal(null);
     setDropped(0);
@@ -208,14 +227,27 @@ export function useMomentFeed(options: {
   /** Move the window back toward newer content; a fresh first page. */
   const newer = useCallback(() => {
     if (busy.current) return;
-    setDropped(0);
+    setDropped(0);anchor.current=null;setNavigationTarget(null);
     void run('initial', []);
   }, [loading, run]);
 
+  const loadPrevious=useCallback(()=>{if(!busy.current && hasPrevious)void run('previous',pages);},[hasPrevious,pages,run]);
+  const seek=useCallback(async(target:{ownerId:string;id:string}|{month:string}, external?:AbortSignal,refreshing=false)=>{
+    if(!enabled || !fetchSeek || busy.current)return null;
+    const id=++requestId.current;activeController.current?.abort();const controller=new AbortController();activeController.current=controller;
+    const abort=()=>controller.abort();external?.addEventListener('abort',abort,{once:true});if(external?.aborted)controller.abort();
+    busy.current=true;setSeeking(true);setError(null);
+    try{const page=await fetchSeek(query,target,controller.signal);
+      if(controller.signal.aborted||id!==requestId.current||scope!==currentScope.current.scope||!currentScope.current.enabled)return null;
+      pageBounds.current=[page];setPages([page.moments]);setLandedScope(scope);cursorRef.current=page.nextCursor;setCursor(page.nextCursor);setHasPrevious(!!page.previousCursor);setTotal(page.total??null);setDropped(0);anchor.current=page.target??target;setNavigationTarget('month'in target?target:{month:page.moments[0]?.date?.slice(0,7)||'undated'});return page;
+    }catch(e){if(!controller.signal.aborted&&id===requestId.current&&scope===currentScope.current.scope){setError(e instanceof Error?e.message:'Memory unavailable. Reset to start.');if(refreshing){setPages([]);pageBounds.current=[];setHasPrevious(false);setCursor(null);cursorRef.current=null;}}return null;}
+    finally{external?.removeEventListener('abort',abort);if(id===requestId.current&&scope===currentScope.current.scope){busy.current=false;setSeeking(false);}}
+  },[fetchSeek,query,scope,enabled]);
   const refresh = useCallback(() => {
     setDropped(0);
+    if(anchor.current && fetchSeek){void seek(anchor.current,undefined,true);return;}
     setReloadToken(token => token + 1);
-  }, []);
+  }, [seek,fetchSeek]);
 
   return {
     items: enabled && landedScope === scope ? dedupeByIdentity(pages) : [],
@@ -227,6 +259,7 @@ export function useMomentFeed(options: {
     windowShifted: dropped > 0,
     loadedPages: pages.length,
     loadMore,
+    loadPrevious,hasPrevious,seeking,seek,navigationTarget,
     older,
     newer,
     refresh,

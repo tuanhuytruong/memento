@@ -18,7 +18,7 @@ test('POST reads and export pacing never consume content mutation allowance',()=
   if(!result.passed){assert.equal(result.res.statusCode,429);time+=Number(result.res.headers['Retry-After'])*1000;result=invoke(b.account,req);}
   assert(result.passed);
  }
- for(const path of ['/api/moments/query','/api/moments/facets','/api/moments/resurfacing','/api/discovery/blindbox','/api/discovery/postcard-picker'])assert(invoke(b.account,{...base,path}).passed);
+ for(const path of ['/api/moments/browse/months','/api/moments/browse/preview','/api/moments/seek','/api/moments/query','/api/moments/facets','/api/moments/resurfacing','/api/discovery/blindbox','/api/discovery/postcard-picker'])assert(invoke(b.account,{...base,path}).passed);
  assert(invoke(b.account,{...base,path:'/api/moments'}).passed);
  assert.equal(invoke(b.account,{...base,path:'/api/moments'}).res.statusCode,429);
 });

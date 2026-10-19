@@ -1,5 +1,8 @@
 import type { AccountOverview, EventTrack, MemoryReaction, PerspectivesPage, TimelineEvent } from '../types';
 
+export interface BrowsePreview {ownerId:string;id:string;eventId:string;date:string|null;time:string|null;title:string;excerpt:string;thumbUrl:string|null}
+export interface BrowseMonths {scope:string;years:{year:string;count:number}[];months:{key:string;count:number}[];undatedCount:number;nextCursor:string|null;previousCursor:string|null}
+export interface BrowsePage {scope:string;month:string;total:number;items:BrowsePreview[];nextCursor:string|null;previousCursor:string|null}
 const API = '/api';
 
 export class ApiError extends Error {
@@ -165,8 +168,11 @@ export const dataApi = {
   // so "on this day" means the day the user is looking at, not a UTC one.
   resurfacingCandidates: (today: string) =>
     request<{ moments: TimelineEvent[] }>('/moments/resurfacing', { method: 'POST', body: JSON.stringify({ today }) }),
+  browseMonths:(body:Record<string,unknown>,signal?:AbortSignal)=>request<BrowseMonths>('/moments/browse/months',{method:'POST',body:JSON.stringify(body),signal}),
+  browsePreview:(body:Record<string,unknown>,signal?:AbortSignal)=>request<BrowsePage>('/moments/browse/preview',{method:'POST',body:JSON.stringify(body),signal}),
+  seekMoments:(body:Record<string,unknown>,signal?:AbortSignal)=>request<import('./useMomentFeed').MomentFeedPage>('/moments/seek',{method:'POST',body:JSON.stringify(body),signal}),
   queryMoments: (body: Record<string, unknown>, signal?: AbortSignal) =>
-    request<{ moments: TimelineEvent[]; nextCursor: string | null; total?: number; facets?: Record<string, number> }>('/moments/query', { method: 'POST', body: JSON.stringify(body), signal }),
+    request<{ moments: TimelineEvent[]; nextCursor: string | null; previousCursor?:string|null; scope?:string; total?: number; facets?: Record<string, number> }>('/moments/query', { method: 'POST', body: JSON.stringify(body), signal }),
   savedMoments: async ({ limit = 40, cursor }: { limit?: number; cursor?: string } = {}) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (cursor) params.set('cursor', cursor);
