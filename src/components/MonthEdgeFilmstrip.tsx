@@ -12,6 +12,8 @@ export interface MonthEdgeFilmstripProps {
   /** Page-local index of the facing frame. */
   active: number;
   total: number;
+  /** Authoritative month total for idle tick geometry; null while metadata is pending. */
+  tickCount: number | null;
   month: string;
   previewWidth: number | null;
   disabled?: boolean;
@@ -36,13 +38,14 @@ export interface MonthEdgeFilmstripProps {
  * Decorative SVG is hidden from assistive tech; every visible target is a real button.
  */
 export const MonthEdgeFilmstrip: React.FC<MonthEdgeFilmstripProps> = ({
-  items, active, total, month, previewWidth, disabled, loading, error,
+  items, active, total, tickCount, month, previewWidth, disabled, loading, error,
   top, onOpenMonth, onBrowseItem, onHoverItem, onStep, onNextPage, onPreviousPage, onRetry,
   hasNext, hasPrevious, onExpandChange, expanded,
 }) => {
   const region = EDGE_SLOT_REGION;
   const shape = arcShape(region, EDGE_IDLE_WIDTH);
-  const slots = hitSlots(Math.min(items.length || 0, 5) || 5, region);
+  const idleSlotCount = tickCount === null ? 0 : Math.min(tickCount, 5);
+  const slots = hitSlots(items.length ? Math.min(items.length, 5) : idleSlotCount, region);
   const window = windowIndexes(items.length, active, slots.length);
   const activeItem = items[active];
   const monthLabel = railMonthLabel(month);
@@ -122,7 +125,7 @@ export const MonthEdgeFilmstrip: React.FC<MonthEdgeFilmstripProps> = ({
     </svg>
 
     <div className="absolute right-0" style={{ top: 0, height: region }}>
-      {slots.map((slot) => {
+      {items.length > 0 && slots.map((slot) => {
         const index = window[slot.index];
         if (index === undefined) return null;
         const item = items[index];
