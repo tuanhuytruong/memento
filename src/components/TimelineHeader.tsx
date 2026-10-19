@@ -6,7 +6,6 @@ import {
   Image as ImageIcon,
   Sparkles,
   MoreHorizontal,
-  ChevronDown,
 } from 'lucide-react';
 import { AccountOverview } from '../types';
 
@@ -39,8 +38,6 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
 }) => {
   const [accountOpen, setAccountOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  // All breakpoints share the compact global summary and optional details.
-  const [showMetrics, setShowMetrics] = useState(false);
 
   // Close dropdowns on outside click.
   useEffect(() => {
@@ -165,14 +162,14 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
         </div>
       </div>
 
-      <div id="memory-summary" data-summary className="mt-3 rounded-xl bg-stone-100/60 dark:bg-stone-800/40 px-3 py-1 text-xs text-stone-600 dark:text-stone-300">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          <span><strong>{totalEvents}</strong> memories</span>
-          <span><strong>{trackCount}</strong> timelines</span>
-          <span className="inline-flex items-center gap-1"><ImageIcon size={13} /><span><strong>{totalPhotos}</strong> photos</span></span>
-          <button type="button" id="toggle-metrics-details" aria-expanded={showMetrics} aria-controls="summary-details" onClick={() => setShowMetrics(v => !v)} className="min-h-11 inline-flex items-center gap-1 font-semibold ml-auto">Details<ChevronDown size={13} className={showMetrics ? 'rotate-180' : ''} /></button>
+      <div id="memory-summary" data-summary className="mt-3 rounded-xl bg-stone-100/60 dark:bg-stone-800/40 px-3 py-2 text-xs text-stone-600 dark:text-stone-300">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{totalEvents}</strong> {totalEvents === 1 ? 'memory' : 'memories'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{trackCount}</strong> {trackCount === 1 ? 'timeline' : 'timelines'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><ImageIcon size={13} /><span><strong>{totalPhotos}</strong> {totalPhotos === 1 ? 'photo' : 'photos'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{milestonesCount}</strong> {milestonesCount === 1 ? 'milestone' : 'milestones'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{uniquePlaces}</strong> {uniquePlaces === 1 ? 'place' : 'places'}</span></span>
         </div>
-        {showMetrics && <div id="summary-details" className="flex flex-wrap gap-4 pb-2"><span><strong>{milestonesCount}</strong> milestones</span><span><strong>{uniquePlaces}</strong> places</span></div>}
       </div>
     </header>
   );

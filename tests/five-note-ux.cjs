@@ -1,3 +1,4 @@
+const compactChecks=require('./compact-ui-assertions.cjs');
 // Controlled route-intercepted synthetic fixtures, NOT authenticated live-account E2E.
 // Run: NODE_PATH=<playwright installation>/node_modules node tests/ui-remediation.cjs
 let chromium;
@@ -229,8 +230,8 @@ async function logoutAndLogin(page){
   const f=await fixture(browser,{viewport,reduced:true});const {page,state}=f;
   if(dark)await page.evaluate(()=>document.documentElement.classList.add('dark'));
   await page.screenshot({path:path.join(artifacts,'debug-initial.png'),fullPage:true});console.log('initial',await page.title(),(await page.locator('body').innerText()).slice(0,1200));const summary=page.locator('[data-summary]');const box=await summary.boundingBox();assert(box.height<=(viewport.width<640?88:56),JSON.stringify(box));
-  assert.match(await summary.innerText(),/1 memories[\s\S]*1 timelines[\s\S]*4 photos/);
-  await page.locator('#toggle-metrics-details').click();assert.match(await summary.innerText(),/0 milestones[\s\S]*0 places/);await page.locator('#toggle-metrics-details').click();
+  assert.match(await summary.innerText(),/1 memory[\s\S]*1 timeline[\s\S]*4 photos[\s\S]*0 milestones[\s\S]*0 places/);
+  const beforeCompact=queryCount(state);report.geometry.push(await compactChecks(page));assert.equal(queryCount(state),beforeCompact);
   for(const id of ['view-compact-btn','view-gallery-btn','view-timeline-btn']){
    await page.locator('#'+id).click();await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
    const action=page.getByRole('button',{name:'Memory actions',exact:true});assert(await action.isVisible());
@@ -244,7 +245,7 @@ async function logoutAndLogin(page){
   await page.getByRole('button',{name:/^Date range/}).click();const editor=page.getByRole('dialog',{name:'Date range editor',exact:true});
   const n=queryCount(state);await editor.locator('#filter-date-from').fill('2024-02-29');await editor.locator('#filter-date-to').fill('2024-03-01');
   await editor.getByRole('button',{name:'Next month',exact:true}).click();await editor.getByRole('button',{name:'Previous month',exact:true}).click();
-  await editor.getByRole('button',{name:'Choose From',exact:true}).click();await editor.getByRole('button',{name:'Cancel',exact:true}).click();await delay(350);assert.equal(queryCount(state),n);
+  await editor.locator('#filter-date-from').click();await editor.getByRole('button',{name:'Cancel',exact:true}).click();await delay(350);assert.equal(queryCount(state),n);
   await page.getByRole('button',{name:/^Date range/}).click();assert.equal(await page.locator('#filter-date-from').inputValue(),'');
   await page.locator('#filter-date-from').fill('2024-02-30');assert(await page.getByRole('button',{name:'Apply',exact:true}).isDisabled());
   await page.locator('#filter-date-from').fill('2024-03-02');await page.locator('#filter-date-to').fill('2024-03-01');assert(await page.getByRole('button',{name:'Apply',exact:true}).isDisabled());

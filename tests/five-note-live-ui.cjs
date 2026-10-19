@@ -1,3 +1,4 @@
+const compactChecks=require('./compact-ui-assertions.cjs');
 // Authenticated deployed DEV browser QA. Real endpoints through nginx3091 -> PM2 API3092; disposable metadata, no R2.
 const {chromium}=require('playwright');
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),http=require('node:http'),crypto=require('node:crypto');
@@ -5,7 +6,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 require('dotenv').config({path:'.env.local',quiet:true});
 /* Target deployed nginx -> PM2; do not start API. */const {pool,qschema,hashSession}=await import('../memento-db.mjs');
 assert.equal(process.env.DB_SCHEMA,'memento_dev');
-const out=path.resolve('.hermes/evidence/search-optimization');fs.mkdirSync(out,{recursive:true});
+const out=path.resolve('.hermes/evidence/compact-ui-refinements');fs.mkdirSync(out,{recursive:true});
 const report={synthetic:false,scope:'Authenticated Chromium through disposable forwarding proxy -> deployed nginx3091 -> PM2 API3092; real temporary DEV PostgreSQL users/sessions/metadata; no fabricated product responses or R2.',checks:[],requests:[],pageerrors:[],cleanup:false};
 report.checks.push=(...items)=>{for(const item of items)console.log('CHECK',item);return Array.prototype.push.apply(report.checks,items);};
 const activeGates=[];
@@ -47,6 +48,14 @@ for(const u of users){
  await page.getByRole('button',{name:'Customize',exact:true}).waitFor();
  await page.keyboard.press('Escape');await page.getByRole('dialog').waitFor({state:'detached'});
  report.checks.push(`${u.role}: actual floating permissions, composer where allowed, automatic authorized reveal and cancel customization`);
+}
+for(const u of users)for(const size of [{width:320,height:900},{width:390,height:844},{width:667,height:375},{width:1280,height:900}])for(const dark of [false,true]){
+ const page=u.page;await page.setViewportSize(size);await page.evaluate(dark=>document.documentElement.classList.toggle('dark',dark),dark);
+ const before=report.requests.filter(r=>r.role===u.role&&r.path==='/api/moments/query').length;
+ const geometry=await compactChecks(page);(report.geometry??=[]).push({role:u.role,dark,...geometry});
+ await page.waitForTimeout(350);assert.equal(report.requests.filter(r=>r.role===u.role&&r.path==='/api/moments/query').length,before);
+ await page.screenshot({path:path.join(out,`compact-${u.role}-${size.width}-${dark?'dark':'light'}.png`),fullPage:false});
+ report.checks.push(`${u.role} ${size.width}x${size.height} ${dark?'dark':'light'}: five visible metrics rows, 48px FAB/20px icon, pill style/active parity, focus/click calendar endpoints, no draft requests, Cancel focus`);
 }
 for(const size of [{width:320,height:900},{width:390,height:844},{width:667,height:375},{width:1280,height:900}]){
  await p.setViewportSize(size);

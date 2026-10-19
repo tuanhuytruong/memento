@@ -378,7 +378,7 @@ async function logoutAndLogin(page){
    await page.getByRole('button',{name:'Retry image upload',exact:true}).dblclick();await page.getByRole('button',{name:'Retry timeline refresh',exact:true}).waitFor();assert.equal(state.uploadIds.length,3);assert.equal(state.uploadIds[1],state.uploadIds[2]);assert.notEqual(state.uploadIds[0],state.uploadIds[1]);
    await page.getByRole('button',{name:'Retry timeline refresh',exact:true}).click();await page.waitForTimeout(200);assert.equal(state.uploadIds.length,3);assert.equal(await page.getByRole('button',{name:'Retry timeline refresh',exact:true}).count(),0);results.push('partial uploads advance acknowledged queue; single-flight double retry; stable idempotency key; refresh-only retry PASS');await context.close();}
   {const gate=deferred(),started=deferred();const {page,state,context}=await fixture(browser,{reactionGate:gate,reactionStarted:started,reactionFailure:true});await page.locator('#event-card-A\\:qa-moment h3').click();const button=page.getByRole('button',{name:'React ❤️, 1 reactions',exact:true});await button.click();await started.promise;assert(await button.isDisabled());assert.equal(state.puts.length,1);gate.resolve();await page.getByText('Synthetic reaction failure',{exact:true}).waitFor();assert(!(await button.isDisabled()));assert.equal(await button.getAttribute('aria-pressed'),'false');results.push('reaction single-flight pending and stable error retry UI PASS');await context.close();}
-  {const {page,state,context}=await fixture(browser,{reduced:true});await page.getByRole('button',{name:'Open a random memory',exact:true}).click();await page.getByRole('button',{name:'Reveal a memory',exact:true}).click();await page.getByRole('button',{name:'Open in track',exact:false}).waitFor();await page.getByRole('button',{name:'Close',exact:true}).click();await page.waitForTimeout(200);await page.getByRole('button',{name:'Open a random memory',exact:true}).click();assert.equal(await page.getByRole('button',{name:'Open in track',exact:false}).count(),0);results.push('Blindbox close/reopen clears result snapshot PASS');await context.close();}
+  {const {page,state,context}=await fixture(browser,{reduced:true});await page.locator('#floating-memory-actions').click();await page.getByRole('button',{name:'Open a random memory',exact:true}).click();await page.getByRole('button',{name:'Open in track',exact:false}).waitFor();await page.getByRole('button',{name:'Close',exact:true}).click();await page.getByRole('dialog').waitFor({state:'detached'});await page.locator('#floating-memory-actions').click();await page.getByRole('button',{name:'Open a random memory',exact:true}).click();await page.getByRole('button',{name:'Open in track',exact:false}).waitFor();results.push('Blindbox close/reopen automatically reveals authorized result PASS');await context.close();}
   {const {page,state,context}=await fixture(browser);await page.locator('#event-card-A\\:qa-moment h3').click();await page.getByRole('button',{name:'Next detail photo',exact:true}).click();assert((await page.locator('#event-detail-card img').first().getAttribute('src')).includes('qa-1'));await page.keyboard.press('Escape');await page.locator('#event-card-A\\:qa-moment h3').click();assert((await page.locator('#event-detail-card img').first().getAttribute('src')).includes('qa-0'));results.push('detail close/reopen resets selected index PASS');await context.close();}
   for (const dismissal of [
    {name:'backdrop',action:page=>page.locator('#event-detail-backdrop').click({position:{x:2,y:2}})},
@@ -598,11 +598,10 @@ async function logoutAndLogin(page){
    results.push('zero-track account is offered Create your first track, not a dead Add moment PASS');await context.close();}
 
   {const {page,state,context,errors}=await fixture(browser,{viewport:{width:390,height:844}});
-   // Metrics collapse to one compact line; the full ribbon needs an explicit tap.
-   const details=page.locator('#toggle-metrics-details');
-   assert(await details.isVisible(),'compact metrics line with a Details toggle');
-   await hit(details);
-   assert(await page.getByText('Attached Photos',{exact:true}).isVisible(),'Details reveals the metrics');
+   // All full-scope metrics are always visible, with no Details disclosure.
+   assert.equal(await page.locator('#toggle-metrics-details').count(),0);
+   assert.equal(await page.locator('[data-summary-metric]').count(),5);
+   for(const metric of await page.locator('[data-summary-metric]').all()) assert(await metric.isVisible());
    // Footer: Save and Cancel are real, reachable controls at 390x844.
    await hit(page.locator('#open-create-event-modal'));
    await page.locator('#event-modal-backdrop').waitFor();
@@ -665,21 +664,20 @@ async function logoutAndLogin(page){
    await feedAction(page,()=>page.locator('#timeline-search-input').fill('huế'),q=>q.search==='huế');
    await cardCount(page,'qa-viet',0,'a non-matching needle matches nothing');
    await feedAction(page,()=>page.locator('#timeline-search-input').fill(''),q=>q.search==='');
-   // The range is inclusive on both bounds.
-   await feedAction(page,()=>page.locator('#filter-date-from').fill('2026-05-04'),q=>q.dateFrom==='2026-05-04');
+   // Confirmed date edits apply atomically, never from an input change.
+   const applyRange=async(from,to)=>{await page.locator('#date-range-trigger').click();await page.locator('#filter-date-from').fill(from);await page.locator('#filter-date-to').fill(to);await feedAction(page,()=>page.getByRole('button',{name:'Apply',exact:true}).click(),q=>q.dateFrom===from&&q.dateTo===to);};
+   await applyRange('2026-05-04','');
    await cardCount(page,'qa-viet',1,'the From bound is inclusive');
-   await feedAction(page,()=>page.locator('#filter-date-from').fill('2026-05-05'),q=>q.dateFrom==='2026-05-05');
+   await applyRange('2026-05-05','');
    await cardCount(page,'qa-viet',0,'a day before the From bound excludes it');
-   await feedAction(page,()=>page.locator('#filter-date-from').fill('2026-05-04'),q=>q.dateFrom==='2026-05-04');
-   await feedAction(page,()=>page.locator('#filter-date-to').fill('2026-05-04'),q=>q.dateTo==='2026-05-04');
+   await applyRange('2026-05-04','2026-05-04');
    await cardCount(page,'qa-viet',1,'a single day is a valid range');
-   // Choosing a year replaces the range instead of combining with it.
    await feedAction(page,()=>page.getByRole('button',{name:'2026',exact:true}).first().click(),q=>q.selectedYear==='2026'&&!q.dateFrom&&!q.dateTo);
-   assert.equal(await page.locator('#filter-date-from').inputValue(),'','selecting a year clears the From bound');
-   assert.equal(await page.locator('#filter-date-to').inputValue(),'','selecting a year clears the To bound');
+   await page.locator('#date-range-trigger').click();
+   assert.equal(await page.locator('#filter-date-from').inputValue(),'');assert.equal(await page.locator('#filter-date-to').inputValue(),'');
+   await page.getByRole('button',{name:'Cancel',exact:true}).click();
    await cardCount(page,'qa-viet',1,'the year still shows the memory');
-   // Entering a range clears the year, in the other direction.
-   await feedAction(page,()=>page.locator('#filter-date-to').fill('2026-05-04'),q=>q.dateTo==='2026-05-04');
+   await applyRange('','2026-05-04');
    assert.equal(await page.getByRole('button',{name:'2026',exact:true}).first().getAttribute('aria-pressed'),'false','entering a range clears the year');
    assert.deepEqual(errors,[]);
    results.push('search folds diacritics and đ; date range is inclusive and replaces the year in both directions PASS');await context.close();}
