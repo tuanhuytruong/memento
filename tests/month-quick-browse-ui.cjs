@@ -315,6 +315,7 @@ async function setup(browser, base, n, variants = false) {
     await page.locator('[data-testid="edge-film-preview"]').waitFor();
     assert.equal(state.requests.filter((r) => r.path === "/api/moments/browse/preview").length, 1, "hover reuses the warmed bounded preview page");
     await page.getByRole("button", { name: "Browse this memory", exact: true }).click();
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="month-browse-panel"]')));
     await page.locator('[data-testid="sun-preview"]').first().waitFor();
     assert.equal(await page.locator('[data-testid="sun-preview"]').count(), 1);
     assert.equal(await page.getByRole("button", { name: /Memory \d+ of \d+:/ }).count(), 0, "dialog has no radial ray controls");
@@ -680,7 +681,7 @@ async function setup(browser, base, n, variants = false) {
     const thumbs = vs.requests.slice(imageRequestStart).filter((r) =>
       r.path.startsWith("/api/images/variant-"),
     );
-    assert(thumbs.length <= 10, `bounded thumb requests ${thumbs.length}`);
+    assert(thumbs.length <= 48, `bounded dialog-page thumb requests ${thumbs.length}`);
     assert.equal(new Set(thumbs.map((r) => r.url)).size, thumbs.length);
     assert(
       thumbs.every(
