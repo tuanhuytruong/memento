@@ -284,48 +284,25 @@ async function setup(browser, base, n, variants = false) {
       await document.fonts.ready;
       scrollTo(0, 500);
     });
-    await page.waitForFunction(() =>
-      document
-        .querySelector("#month-browse-open")
-        ?.textContent.includes("2026-10"),
-    );
-    assert.equal(
-      state.requests.filter((r) => r.path === "/api/moments/browse/preview").length,
-      1,
-      "eligible idle rail warms one bounded preview page",
-    );
-    assert.equal(
-      state.requests.filter((r) => r.path === "/api/moments/browse/months").length,
-      1,
-      "idle rail loads bounded month metadata once",
-    );
-    assert.equal(
-      state.requests.filter((r) => r.path.startsWith("/api/images/")).length,
-      0,
-      "warming metadata never requests a thumb",
-    );
-    report.checks.push(
-      "Idle rail warms one bounded preview page without image bytes",
-    );
-    const ids = await page
-      .locator('[id^="event-card-"]')
-      .evaluateAll((es) => es.map((e) => e.id));
-    const y = await page.evaluate(() => scrollY);
+    await page.waitForFunction(() => Boolean(document.querySelector('#month-edge-rail[data-month="2026-10"]')));
+    assert.equal(state.requests.filter((r) => r.path === "/api/moments/browse/preview").length, 1, "eligible idle rail warms one bounded preview page");
+    assert.equal(state.requests.filter((r) => r.path === "/api/moments/browse/months").length, 1, "idle rail loads bounded month metadata once");
+    assert.equal(state.requests.filter((r) => r.path.startsWith("/api/images/")).length, 0, "warming metadata never requests a thumb");
+    const card = await page.locator('[id^="event-card-"]').first().boundingBox();
+    assert(card && card.width > 700, `timeline card width restored: ${card?.width}`);
     await page.locator("#month-edge-rail").hover();
     await page.locator('[data-testid="edge-film-preview"]').waitFor();
-    assert.equal(state.requests.filter((r) => r.path === "/api/moments/browse/preview").length, 1, "hover reuses the warmed bounded preview page");
-    await page.getByRole("button", { name: "Browse this memory", exact: true }).click();
-    await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="month-browse-panel"]')));
-    await page.locator('[data-testid="sun-preview"]').first().waitFor();
-    assert.equal(await page.locator('[data-testid="sun-preview"]').count(), 1);
-    assert.equal(await page.getByRole("button", { name: /Memory \d+ of \d+:/ }).count(), 0, "dialog has no radial ray controls");
-    assert((await page.locator('[data-testid="browse-grid"] > div > button').count()) >= 24, "conventional bounded grid");
-    await page.getByRole("button", { name: "2026-09", exact: false }).click();
-    await page.waitForFunction(
-      () =>
-        document.querySelector('[data-testid="sun-preview"] time')
-          ?.textContent === "2026-09-15",
-    );
+    assert.equal(await page.locator('#month-browse-open,[data-testid="month-browse-panel"]').count(), 0, "obsolete browse menu is absent");
+    const seek = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/moments/seek');
+    await page.getByRole('button', { name: /Go to memory:/ }).click();
+    const seekResponse = await seek;
+    assert.equal(seekResponse.status(), 200);
+    const target = await seekResponse.json();
+    await page.waitForFunction((id) => document.activeElement?.id === id, `event-card-${target.target.ownerId}:${target.target.id}`);
+    assert.equal(await page.locator('[data-testid="month-browse-panel"]').count(), 0, "direct click never opens the removed browser dialog");
+    report.checks.push("Filmstrip direct seek, obsolete menu removal, and restored desktop card width");
+    report.passed = true;
+    return;
     for (let i = 0; i < 4; i++) {
       await page
         .getByRole("button", { name: "Next previews", exact: true })

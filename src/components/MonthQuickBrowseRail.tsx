@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CalendarRange } from 'lucide-react';
 import { dataApi } from '../lib/api';
 import { monthKeyForDate } from '../lib/monthBrowse';
 import { EDGE_IDLE_WIDTH, EDGE_RAIL_HEIGHT, placeRail, previewWidthFor, railStep } from '../lib/monthEdgeFilmstrip';
@@ -7,17 +6,16 @@ import { useMonthRailPreview } from '../lib/useMonthRailPreview';
 import type { MomentFeedQuery } from '../lib/useMomentFeed';
 import { MonthEdgeFilmstrip } from './MonthEdgeFilmstrip';
 
-type Open = (month: string, preview?: { ownerId: string; id: string }) => void;
-
 /** Exterior rail controller. It measures the real content gutter before mounting and never
  * requests month metadata until a genuine hover/focus/wheel interaction begins. */
 export const MonthQuickBrowseRail: React.FC<{
-  onOpen: Open;
+  onNavigate: (item: import('../lib/api').BrowsePreview) => void;
+  disabled?: boolean;
   hidden: boolean;
   empty: boolean;
   query: MomentFeedQuery;
   generation: number;
-}> = ({ onOpen, hidden, empty, query, generation }) => {
+}> = ({ onNavigate, disabled, hidden, empty, query, generation }) => {
   // Suppress the rail until a rendered feed card resolves its visible month.
   // This prevents an initial-frame 'Undated' flash while the first page loads.
   const [month, setMonth] = useState<string | null>(null);
@@ -90,10 +88,9 @@ export const MonthQuickBrowseRail: React.FC<{
           ? Math.max(...cards.map((card) => card.getBoundingClientRect().right))
           : (main?.getBoundingClientRect().right ?? innerWidth);
         const gutter = Math.max(0, innerWidth - right);
-        const width = previewWidthFor(gutter);
-        // The timeline reserves this entire gutter (see App's `lg:pr-64`), so content
-        // controls cannot enter it. Only active overlays disable the rail above; avoid
-        // treating every normal main-content control as an exterior collision band.
+        // Preserve the timeline width: the edge preview may layer above the trailing
+        // whitespace/card edge rather than permanently reserving a 16rem feed gutter.
+        const width = previewWidthFor(Math.max(gutter, EDGE_IDLE_WIDTH + 8 + 128));
         const position = placeRail({ viewportHeight: innerHeight, railHeight: EDGE_RAIL_HEIGHT });
         const usable = width !== null && position !== null;
         setPreviewWidth(width);
@@ -157,12 +154,11 @@ export const MonthQuickBrowseRail: React.FC<{
     tickCount={monthCounts?.get(month) ?? null}
     month={month}
     previewWidth={previewWidth}
-    disabled={preview.loading && !preview.items.length}
+    disabled={disabled || (preview.loading && !preview.items.length)}
     loading={preview.loading}
     error={preview.error}
     top={top}
-    onOpenMonth={() => onOpen(month)}
-    onBrowseItem={(item) => onOpen(month, { ownerId: item.ownerId, id: item.id })}
+    onNavigateItem={onNavigate}
     onHoverItem={(index) => { useRail(); setActive(index); }}
     onStep={step}
     onNextPage={preview.nextPage}
@@ -174,12 +170,3 @@ export const MonthQuickBrowseRail: React.FC<{
     expanded={expanded}
   />;
 };
-
-/** Fallback entry for layouts that cannot mount a safe exterior rail. It is deliberately
- * conventional and has no radial affordance. This component remains out of the timeline
- * until a host supplies a compact toolbar location. */
-export const MonthBrowseFallback: React.FC<{ month: string; onOpen: () => void }> = ({ month, onOpen }) => (
-  <button type="button" onClick={onOpen} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-stone-200 bg-white px-3 text-xs font-semibold dark:border-stone-700 dark:bg-stone-900">
-    <CalendarRange size={16} aria-hidden="true" /> Browse {month === 'undated' ? 'Undated' : month}
-  </button>
-);

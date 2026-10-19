@@ -7,7 +7,6 @@ import { matchesMomentFilters, compareMoments, filterProjection, applyFilterPatc
 import { releaseAllMomentDrafts } from './lib/useMomentDraft';
 import { useMomentFeed, feedScopeHash } from './lib/useMomentFeed';
 import {MonthQuickBrowseRail} from './components/MonthQuickBrowseRail';
-const MonthQuickBrowse=lazy(()=>import('./components/MonthQuickBrowse').then(m=>({default:m.MonthQuickBrowse})));
 import { useDebouncedSearch } from './lib/useDebouncedSearch';
 import { LoadMoreMemories } from './components/LoadMoreMemories';
 import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation } from './lib/api';
@@ -59,9 +58,6 @@ export default function App() {
   const saveGeneration = useRef(0);
   const visitWrites = useRef(new Map<string, number>());
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
-  const [monthBrowseOpen,setMonthBrowseOpen]=useState(false);
-  const [browseInitialMonth,setBrowseInitialMonth]=useState('undated');
-  const [browseInitialPreview,setBrowseInitialPreview]=useState<{ownerId:string;id:string}|undefined>();
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const [perspectiveError, setPerspectiveError] = useState('');
   const authGenerationRef = useRef(0);
@@ -235,7 +231,6 @@ export default function App() {
 
   function resetSnapshots() {
     setShareTrack(null); setCollaborationInvitations([]); setIsBlindboxOpen(false);
-    setMonthBrowseOpen(false);
     setIsEventModalOpen(false); setEventToEdit(null); setEventToView(null);
     setIsEventTrackModalOpen(false); setTrackToEdit(null);
     setLightboxState({ images: [], index: 0, isOpen: false });
@@ -538,17 +533,16 @@ export default function App() {
   const filteredEvents = feed.items.map(item => events.find(local => momentIdentity(local) === momentIdentity(item) && (local.version??0)>=(item.version??0)) ?? item);
 
   const browseScope=feedScopeHash(feedQuery,authGenerationRef.current);
-  useEffect(()=>{setMonthBrowseOpen(false);},[browseScope,viewMode]);
   const pendingLanding=useRef<{ownerId:string;id:string;scope:string}|null>(null);
   const prependAnchor=useRef<{id:string;top:number;scope:string}|null>(null);
   useEffect(()=>{pendingLanding.current=null;prependAnchor.current=null;},[browseScope,viewMode]);
   const landBrowse=useCallback((page:import('./lib/useMomentFeed').MomentFeedPage)=>{
-    const target=page.target??(page.moments[0]?{ownerId:page.moments[0].resourceOwnerId!,id:page.moments[0].id}:null);pendingLanding.current=target?{...target,scope:browseScope}:null;setMonthBrowseOpen(false);
+    const target=page.target??(page.moments[0]?{ownerId:page.moments[0].resourceOwnerId!,id:page.moments[0].id}:null);pendingLanding.current=target?{...target,scope:browseScope}:null;
   },[browseScope]);
-  useEffect(()=>{if(monthBrowseOpen||!pendingLanding.current)return;let cancelled=false;let frame=0;const target=pendingLanding.current;const deadline=performance.now()+5000;
+  useEffect(()=>{if(!pendingLanding.current)return;let cancelled=false;let frame=0;const target=pendingLanding.current;const deadline=performance.now()+5000;
     const place=()=>{if(cancelled||target.scope!==browseScope||performance.now()>deadline){pendingLanding.current=null;return;}const card=document.getElementById(`event-card-${target.ownerId}:${target.id}`);if(!card){frame=requestAnimationFrame(place);return;}pendingLanding.current=null;card.scrollIntoView({block:'center',behavior:'instant'});card.setAttribute('tabindex','-1');card.focus({preventScroll:true});card.classList.add('ring-2','ring-amber-400');setTimeout(()=>card.classList.remove('ring-2','ring-amber-400'),1800);};
     void document.fonts.ready.then(()=>{if(!cancelled)frame=requestAnimationFrame(()=>{frame=requestAnimationFrame(place);});});return()=>{cancelled=true;cancelAnimationFrame(frame);};
-  },[monthBrowseOpen,feed.items.map(momentIdentity).join('|')]);
+  },[feed.items.map(momentIdentity).join('|')]);
   const pageWithAnchor=(action:()=>void)=>{
     const cards=Array.from(document.querySelectorAll<HTMLElement>('[id^="event-card-"]'));const card=cards.find(c=>c.getBoundingClientRect().bottom>120);const top=card?.getBoundingClientRect().top;const id=card?.id;
     if(id&&top!=null)prependAnchor.current={id,top,scope:browseScope};action();
@@ -694,7 +688,7 @@ export default function App() {
           onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
           canCreateEntry={canCreateEntry}
         />
-        <FloatingMemoryActions canCreate={canCreateEntry} onCreate={openCreateEntry} onDiscover={() => setIsBlindboxOpen(true)} hidden={monthBrowseOpen || isEventModalOpen || isEventTrackModalOpen || isBlindboxOpen || isPostcardOpen || !!eventToView || !!shareTrack || lightboxState.isOpen} />
+        <FloatingMemoryActions canCreate={canCreateEntry} onCreate={openCreateEntry} onDiscover={() => setIsBlindboxOpen(true)} hidden={isEventModalOpen || isEventTrackModalOpen || isBlindboxOpen || isPostcardOpen || !!eventToView || !!shareTrack || lightboxState.isOpen} />
         {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
         {selectedTrackKey === 'all' && (
           <MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} />
@@ -765,12 +759,11 @@ export default function App() {
           />
         </div>
 
-        <MonthQuickBrowseRail hidden={viewMode!=='timeline'||monthBrowseOpen||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} onOpen={(month,preview)=>{setBrowseInitialMonth(month);setBrowseInitialPreview(preview);setMonthBrowseOpen(true);}}/>
-        {monthBrowseOpen&&<Suspense fallback={<div role="status" className="fixed inset-0 z-[80] bg-stone-950/40 flex items-center justify-center">Loading month browser…</div>}><MonthQuickBrowse query={feedQuery} generation={authGenerationRef.current} initialMonth={browseInitialMonth} initialPreview={browseInitialPreview} onClose={()=>setMonthBrowseOpen(false)} onSeek={feed.seek} onLanded={landBrowse}/></Suspense>}
+        <MonthQuickBrowseRail hidden={viewMode!=='timeline'||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} disabled={feed.seeking} onNavigate={async (item)=>{const page=await feed.seek({ownerId:item.ownerId,id:item.id});if(page)landBrowse(page);}}/>
         {feed.navigationTarget&&<div className="mb-4 flex items-center gap-3 text-sm text-stone-500" role="status">Browsing from {'month'in feed.navigationTarget?feed.navigationTarget.month:'selected memory'}<button className="min-h-11 px-3 underline" onClick={feed.newer}>{filters.sortDirection==='oldest'?'Back to start':'Back to latest'}</button></div>}
         {feed.hasPrevious&&<div className="flex justify-center mb-4"><button id="feed-load-previous" disabled={feed.loading||feed.seeking} className="min-h-11 px-5 rounded-xl border border-stone-300 dark:border-stone-700" onClick={()=>pageWithAnchor(feed.loadPrevious)}>Load previous memories</button></div>}
         {/* View Switcher: Timeline, Compact List, or Gallery */}
-        <main className={viewMode==='timeline'?'lg:pr-64':undefined} aria-busy={search.pending || feed.loading}>
+        <main aria-busy={search.pending || feed.loading}>
           {(search.pending || (feed.loading && !feed.appendLoading)) && <div role="status" className="min-h-48 py-16 text-center">Updating memories…</div>}
           {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'timeline' && (
             <TimelineView
