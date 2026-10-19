@@ -36,13 +36,15 @@ async function fixture(browser, options={}) {
     const q=req.postDataJSON()||{};
     state.blindboxCalls=(state.blindboxCalls||[]).concat([q]);
     if(state.blindboxGate)await state.blindboxGate;
-    if(state.blindboxFailure){state.blindboxFailure=false;return route.fulfill({status:503,json:{error:'Synthetic reveal failure'}});}
+    // The page can abort this request (a closed dialog), so fulfilling may fail.
+    const settle=async response=>{try{return await route.fulfill(response);}catch{return;}};
+    if(state.blindboxFailure){state.blindboxFailure=false;return settle({status:503,json:{error:'Synthetic reveal failure'}});}
     // The fixture honours a round's seen identities the way the real query does:
     // composite identity, exclusion before selection, and null only on exhaustion.
     const seen=new Set((Array.isArray(q.seen)?q.seen:[]).map(item=>`${item?.ownerId}:${item?.id}`));
     const unseen=(state.blindboxPool||[]).filter(item=>!seen.has(`${item.resourceOwnerId}:${item.id}`));
-    if(!unseen.length)return route.fulfill({status:200,contentType:'application/json',body:'null'});
-    return route.fulfill({json:{event:unseen[0],fallback:false}});
+    if(!unseen.length)return settle({status:200,contentType:'application/json',body:'null'});
+    return settle({json:{event:unseen[0],fallback:false}});
   }
   if(url.pathname==='/api/discovery/postcard-picker') {
     const q=req.postDataJSON(); state.pickerRequests=(state.pickerRequests||[]).concat([q]);
@@ -346,6 +348,38 @@ async function logoutAndLogin(page){
    await hit(f.page.locator('#blindbox-empty').getByRole('button',{name:'Close',exact:true}));
    await dialog(f.page).waitFor({state:'detached'});
    passed.push('An account with nothing saved sees the first-visit scene, not exhaustion');
+   await f.context.close();}
+
+  // Closing while a reveal is in flight, then switching accounts, inherits nothing.
+  {const f=await fixture(browser,{viewport:{width:390,height:844},reduced:true,blindboxPool:round});
+   // The modal header close is a pre-existing 36px control, so this lifecycle journey
+   // reaches it by centre hit testing without claiming the 44px target.
+   const dismiss=async()=>{const close=dialog(f.page).getByRole('button',{name:'Close',exact:true});
+    await close.scrollIntoViewIfNeeded();
+    assert(await close.evaluate(el=>{const r=el.getBoundingClientRect();return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),'header close is centre-reachable');
+    await close.click();};
+   await openDiscovery(f.page);
+   await f.page.getByRole('heading',{name:'First discovery',exact:true}).waitFor();
+   const gate=deferred(); f.state.blindboxGate=gate.promise;
+   await f.page.getByRole('button',{name:'Another memory',exact:true}).click();
+   while(f.state.blindboxCalls.length<2)await delay(20);
+   await dismiss();
+   await dialog(f.page).waitFor({state:'detached'});
+   f.state.blindboxGate=null; gate.resolve(); await delay(250);
+   assert.equal(await dialog(f.page).count(),0,'a superseded reveal cannot reopen a closed dialog');
+   assert.equal(f.errors.length,0,f.errors.join(';'));
+   await openDiscovery(f.page);
+   await f.page.getByRole('heading',{name:'First discovery',exact:true}).waitFor();
+   assert.equal(f.state.blindboxCalls.at(-1).seen.length,0,'the aborted reveal consumed nothing, so the reopened round is fresh');
+   await dismiss();
+   await dialog(f.page).waitFor({state:'detached'});
+   await logoutAndLogin(f.page);
+   await openDiscovery(f.page);
+   await f.page.getByRole('heading',{name:'First discovery',exact:true}).waitFor();
+   assert.equal(f.state.blindboxCalls.at(-1).seen.length,0,'the next account inherits no round history');
+   assert.equal(await f.page.getByRole('heading',{name:'Every memory, revisited',exact:true}).count(),0,'the next account inherits no completion scene');
+   assert.equal(f.errors.length,0,f.errors.join(';'));
+   passed.push('Closing while pending, reopening and switching accounts inherits no round state');
    await f.context.close();}
 
   console.log(JSON.stringify({synthetic:true,journeys:passed.length,passed,cleanup:true}));
