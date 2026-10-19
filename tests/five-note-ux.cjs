@@ -268,6 +268,49 @@ async function logoutAndLogin(page){
   check(`${viewport.width}x${viewport.height} ${dark?'dark':'light'}: summary, 3 views floating hit-tests, Escape/focus, composer scroll, date draft/cancel/invalid/atomic apply/noop/clear, auto reveal/custom cancel/failure/repeat/reopen`);
   await f.context.close();
  }
+ // Geometry fixtures relocate the REAL trigger to deterministic viewport edges.
+ // Assert measured boxes, not heading visibility; responses remain synthetic.
+ {
+  const f=await fixture(browser,{viewport:{width:1280,height:900},reduced:true});
+  const {page,state}=f; const count=queryCount(state);
+  const trigger=page.locator('#date-range-trigger');
+  const editor=page.getByRole('dialog',{name:'Date range editor',exact:true});
+  const measure=async()=>({trigger:await trigger.boundingBox(),panel:await editor.boundingBox()});
+  const bounded=async()=>{
+   await page.waitForFunction(()=>{const p=document.querySelector('[aria-label="Date range editor"]')?.getBoundingClientRect();return p && p.width>0 && p.x>=7 && p.y>=7 && p.right<=innerWidth-7 && p.bottom<=innerHeight-7;});
+   const m=await measure();report.geometry.push({datePopover:true,viewport:page.viewportSize(),...m});return m;
+  };
+  const place=async(x,y)=>trigger.evaluate((el,{x,y})=>{el.style.cssText=`position:fixed;left:${x}px;top:${y}px;z-index:10`;},{x,y});
+  await place(140,100);await trigger.click();
+  await page.waitForFunction(()=>document.querySelector('[data-date-presentation="popover"]'));
+  let m=await bounded();assert(Math.abs(m.panel.x-m.trigger.x)<2);assert(Math.abs(m.panel.y-(m.trigger.y+m.trigger.height+8))<2);
+  assert(m.panel.width<=384 && m.panel.height<800,'desktop must be a bounded popover, not viewport dialog');
+  assert(await editor.evaluate(el=>getComputedStyle(el).position==='fixed'));
+  // Bottom-right flip and horizontal clamp on scroll, while preserving draft.
+  await editor.locator('#filter-date-from').fill('2024-02-29');
+  await place(1120,820);await page.evaluate(()=>window.dispatchEvent(new Event('scroll')));
+  await page.waitForFunction(()=>{const p=document.querySelector('[aria-label="Date range editor"]').getBoundingClientRect(),t=document.querySelector('#date-range-trigger').getBoundingClientRect();return Math.abs(p.bottom-(t.top-8))<2;});
+  m=await bounded();assert(Math.abs(m.panel.x+m.panel.width-1272)<2);assert(Math.abs(m.panel.y+m.panel.height-(m.trigger.y-8))<2);
+  // Left clamp after nested scroll capture; ResizeObserver catches trigger movement/size.
+  await place(0,100);await editor.locator('#filter-date-from').evaluate(el=>el.dispatchEvent(new Event('scroll',{bubbles:false})));
+  await page.waitForFunction(()=>Math.abs(document.querySelector('[aria-label="Date range editor"]').getBoundingClientRect().x-8)<2);
+  m=await bounded();assert(Math.abs(m.panel.y-(m.trigger.y+m.trigger.height+8))<2);
+  // Real document scroll must track a document-anchored trigger despite body lock.
+  await trigger.evaluate(el=>{el.style.position='absolute';el.style.left='140px';el.style.top=`${scrollY+200}px`;});
+  await page.evaluate(()=>scrollBy(0,50));
+  await page.waitForFunction(()=>{const p=document.querySelector('[aria-label="Date range editor"]').getBoundingClientRect(),t=document.querySelector('#date-range-trigger').getBoundingClientRect();return Math.abs(p.top-(t.bottom+8))<2;});await bounded();
+  await place(550,220);await page.setViewportSize({width:800,height:450});
+  await bounded();assert.equal(await editor.locator('#filter-date-from').inputValue(),'2024-02-29');
+  // Resizing across breakpoint retains draft and switches to bounded bottom sheet.
+  await page.setViewportSize({width:390,height:600});
+  await page.waitForFunction(()=>document.querySelector('[data-date-presentation="sheet"]'));
+  m=await bounded();assert(Math.abs(m.panel.y+m.panel.height-592)<2);assert(Math.abs(m.panel.x-8)<2);
+  await page.setViewportSize({width:1280,height:900});await place(140,100);await page.evaluate(()=>window.dispatchEvent(new Event('resize')));await bounded();
+  await page.keyboard.press('Escape');assert.equal(await editor.count(),0);assert.equal(await page.evaluate(()=>document.activeElement.id),'date-range-trigger');
+  await trigger.click();await page.mouse.click(20,20);await editor.waitFor({state:'detached'});assert.equal(await page.evaluate(()=>document.activeElement.id),'date-range-trigger');
+  assert.equal(queryCount(state),count);assert.deepEqual(f.errors,[]);
+  check('date geometry: trigger-aligned desktop, bottom-right flip/clamp, left clamp, captured nested/document scroll, resize, mobile sheet, draft retention, outside/Escape focus, zero queries');await f.context.close();
+ }
  for(const role of ['owner','editor','viewer','empty']){
   const f=await fixture(browser,{reduced:true,tracks:role==='empty'?[]:[{...track,accessRole:role}],moments:role==='empty'?[]:[moment]});await openActions(f.page);
   assert.equal(await f.page.locator('#memory-actions').getByRole('button',{name:'New entry',exact:true}).count(),['owner','editor'].includes(role)?1:0);

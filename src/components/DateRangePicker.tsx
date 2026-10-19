@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react';
 import { validateDateRange } from '../lib/momentFilters';
@@ -8,9 +9,10 @@ type Props = { dateFrom: string; dateTo: string; onChange: (range: { dateFrom: s
 const button = 'min-h-11 rounded-xl px-3 text-sm hover:bg-stone-100 dark:hover:bg-stone-800';
 export function DateRangePicker(props: Props) {
   const [open, setOpen] = useState(false);
-  return <><button type="button" id="date-range-trigger" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)} className={`${button} flex items-center gap-2 border border-stone-200 dark:border-stone-700`}><CalendarRange size={16} />{props.dateFrom || props.dateTo ? `Date range: ${props.dateFrom || 'Any time'} → ${props.dateTo || 'Any time'}` : 'Date range'}</button>{open && createPortal(<DateRangeEditor {...props} onClose={() => setOpen(false)} />, document.body)}</>;
+  const trigger = useRef<HTMLButtonElement>(null);
+  return <><button type="button" ref={trigger} id="date-range-trigger" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)} className={`${button} flex items-center gap-2 border border-stone-200 dark:border-stone-700`}><CalendarRange size={16} />{props.dateFrom || props.dateTo ? `Date range: ${props.dateFrom || 'Any time'} → ${props.dateTo || 'Any time'}` : 'Date range'}</button>{open && createPortal(<DateRangeEditor {...props} anchor={trigger} onClose={() => setOpen(false)} />, document.body)}</>;
 }
-function DateRangeEditor({ dateFrom, dateTo, onChange, onClose }: Props & { onClose: () => void }) {
+function DateRangeEditor({ dateFrom, dateTo, onChange, onClose, anchor }: Props & { onClose: () => void; anchor: RefObject<HTMLButtonElement | null> }) {
   const [from, setFrom] = useState(dateFrom);
   const [to, setTo] = useState(dateTo);
   const [bound, setBound] = useState<'from' | 'to'>('from');
@@ -19,14 +21,70 @@ function DateRangeEditor({ dateFrom, dateTo, onChange, onClose }: Props & { onCl
   const [year, setYear] = useState(Number(seed.slice(0,4)));
   const [month, setMonth] = useState(Number(seed.slice(5,7))-1);
   const modal = useModalLifecycle(true, onClose);
+  const [position, setPosition] = useState<{ left: number; top: number; width: number; maxHeight: number; desktop: boolean } | null>(null);
+  useLayoutEffect(() => {
+    const panel = modal.current;
+    const trigger = anchor.current;
+    if (!panel || !trigger) return;
+    let frame = 0;
+    const place = () => {
+      const desktop = window.matchMedia('(min-width: 640px)').matches;
+      const viewport = window.visualViewport;
+      const leftEdge = (viewport?.offsetLeft || 0) + 8;
+      const topEdge = (viewport?.offsetTop || 0) + 8;
+      const width = Math.min(384, (viewport?.width || innerWidth) - 16);
+      const bottomEdge = topEdge + (viewport?.height || innerHeight) - 16;
+      const rect = trigger.getBoundingClientRect();
+      const naturalHeight = panel.scrollHeight + 2;
+      const below = Math.max(0, bottomEdge - rect.bottom - 8);
+      const above = Math.max(0, rect.top - 8 - topEdge);
+      const flip = desktop && below < naturalHeight && above > below;
+      const maxHeight = desktop ? Math.min(bottomEdge - topEdge, flip ? above : below) : bottomEdge - topEdge;
+      const height = Math.min(naturalHeight, maxHeight);
+      const next = {
+        desktop, width, maxHeight,
+        left: desktop ? Math.max(leftEdge, Math.min(rect.left, leftEdge + (viewport?.width || innerWidth) - 16 - width)) : leftEdge + ((viewport?.width || innerWidth) - 16 - width) / 2,
+        top: desktop ? Math.max(topEdge, Math.min(flip ? rect.top - 8 - height : rect.bottom + 8, bottomEdge - height)) : bottomEdge - height,
+      };
+      setPosition(old => old && Object.keys(next).every(key => old[key as keyof typeof old] === next[key as keyof typeof next]) ? old : next);
+    };
+    const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(place); };
+    place();
+    const observer = new ResizeObserver(schedule);
+    observer.observe(panel); observer.observe(trigger);
+    window.addEventListener('resize', schedule);
+    window.addEventListener('scroll', schedule, true);
+    window.visualViewport?.addEventListener('resize', schedule);
+    window.visualViewport?.addEventListener('scroll', schedule);
+    return () => {
+      cancelAnimationFrame(frame); observer.disconnect();
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('scroll', schedule, true);
+      window.visualViewport?.removeEventListener('resize', schedule);
+      window.visualViewport?.removeEventListener('scroll', schedule);
+    };
+  }, [anchor, modal]);
+  useLayoutEffect(() => {
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !modal.current?.contains(event.target) && !anchor.current?.contains(event.target)) {
+        event.preventDefault(); // Keep pointer default focus from overriding lifecycle restoration.
+        onClose();
+      }
+    };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [anchor, modal, onClose]);
   const error = validateDateRange(from, to);
   const days = new Date(year, month+1, 0).getDate();
   const offset = new Date(year, month, 1).getDay();
   const literal = (day: number) => `${String(year).padStart(4,'0')}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
   const move = (delta: number) => { const next = new Date(year, month+delta, 1); if (next.getFullYear() < 100 || next.getFullYear() > 9999) return; setYear(next.getFullYear()); setMonth(next.getMonth()); };
   const choose = (day: number) => { if (bound === 'from') { setFrom(literal(day)); setBound('to'); } else setTo(literal(day)); };
-  return <div ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Date range editor" onMouseDown={onClose} className="fixed inset-0 z-[70] bg-stone-950/50 flex items-end sm:items-center justify-center p-2 sm:p-4">
-    <section onMouseDown={e => e.stopPropagation()} className="w-full max-w-sm max-h-[95dvh] overflow-y-auto rounded-2xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-800 dark:text-stone-100 p-4 shadow-xl">
+  return <>
+    <div aria-hidden="true" className="fixed inset-0 z-[69] bg-stone-950/50 sm:hidden" />
+    <div ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Date range editor" data-date-presentation={position?.desktop ? 'popover' : 'sheet'}
+      style={position ? { left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight } : { visibility: 'hidden' }}
+      className="fixed z-[70] overflow-y-auto rounded-2xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-800 dark:text-stone-100 p-4 shadow-xl">
       <h2 id="date-range-title" className="font-semibold text-lg">Date range</h2>
       <div className="grid grid-cols-2 gap-2 my-3">{(['from','to'] as const).map(key => <label key={key} className="text-xs font-semibold min-w-0">{key === 'from' ? 'From' : 'To'}<input id={`filter-date-${key}`} type="text" inputMode="numeric" placeholder="YYYY-MM-DD" aria-describedby={error ? 'date-draft-error' : undefined} value={key === 'from' ? from : to} onFocus={() => setBound(key)} onChange={e => key === 'from' ? setFrom(e.target.value) : setTo(e.target.value)} className={`mt-1 w-full min-w-0 rounded-xl border bg-stone-50 dark:bg-stone-800 p-2 min-h-11 ${bound === key ? 'border-amber-600' : 'border-stone-300 dark:border-stone-600'}`} /></label>)}</div>
       <div className="flex gap-2 mb-2">{(['from','to'] as const).map(key => <button key={key} type="button" aria-pressed={bound===key} onClick={() => setBound(key)} className={`${button} ${bound===key ? 'bg-amber-100 dark:bg-amber-950' : ''}`}>Choose {key==='from' ? 'From' : 'To'}</button>)}</div>
@@ -47,6 +105,6 @@ function DateRangeEditor({ dateFrom, dateTo, onChange, onClose }: Props & { onCl
         <button type="button" className={button} onClick={onClose}>Cancel</button>
         <button type="button" disabled={!!error} className={`${button} bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50`} onClick={() => { if(from!==dateFrom || to!==dateTo) onChange({dateFrom:from,dateTo:to}); onClose(); }}>Apply</button>
       </div>
-    </section>
-  </div>;
+    </div>
+  </>;
 }
