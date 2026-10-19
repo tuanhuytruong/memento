@@ -133,7 +133,7 @@ export const EventCard: React.FC<EventCardProps> = ({
           >
             <button
               onClick={() => onEdit(event)}
-              className="min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
+              className="inline-flex items-center justify-center min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
               title="Edit event"
             >
               <Edit2 className="w-3.5 h-3.5" />
@@ -144,7 +144,7 @@ export const EventCard: React.FC<EventCardProps> = ({
                   onDelete(event);
                 }
               }}
-              className="min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
+              className="inline-flex items-center justify-center min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
               title="Delete event"
             >
               <Trash2 className="w-3.5 h-3.5" />
