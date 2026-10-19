@@ -19,7 +19,7 @@ async function fixture(browser, options={}) {
  const page=await context.newPage(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
  // 2x2 opaque red PNG, decoded by the browser for preview and by tests for bytes.
  const postcardPng=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR42mP8z8Dwn4GBgYERABIcAgN2FBM+AAAAAElFTkSuQmCC','base64');
- const state={account:'A',requests:[],puts:[],uploadIds:[],deletes:0,moments:[structuredClone(moment)],tracks:[track],visits:[],visitWrites:[],perspectives:[],postcardRenders:[],postcardPng,saved:[],savedWrites:[],saveGate:null,saveStarted:null,saveFailure:false,failImages:false,perspectiveExportGate:null,perspectiveExportStarted:null,...options};
+ const state={account:'A',requests:[],puts:[],uploadIds:[],deletes:0,moments:[structuredClone(moment)],tracks:[track],visits:[],visitWrites:[],perspectives:[],postcardRenders:[],postcardPng,saved:[],savedWrites:[],saveGate:null,saveStarted:null,saveFailure:false,failImages:false,blindboxPool:[{...moment,id:'full-scope',title:'Outside loaded feed'}],perspectiveExportGate:null,perspectiveExportStarted:null,...options};
  if(options.resurfacing){
   const now=new Date();const yy=now.getFullYear();const pad=n=>String(n).padStart(2,'0');
   const otherDay=now.getDate()===15?16:15;
@@ -32,7 +32,18 @@ async function fixture(browser, options={}) {
  }
  await page.route('**/api/**',async route=>{
   const req=route.request(); const url=new URL(req.url());state.requests.push(url.pathname+url.search);
-  if(url.pathname==='/api/discovery/blindbox')return route.fulfill({json:{event:{...moment,id:'full-scope',title:'Outside loaded feed'},fallback:false}});
+  if(url.pathname==='/api/discovery/blindbox') {
+    const q=req.postDataJSON()||{};
+    state.blindboxCalls=(state.blindboxCalls||[]).concat([q]);
+    if(state.blindboxGate)await state.blindboxGate;
+    if(state.blindboxFailure){state.blindboxFailure=false;return route.fulfill({status:503,json:{error:'Synthetic reveal failure'}});}
+    // The fixture honours a round's seen identities the way the real query does:
+    // composite identity, exclusion before selection, and null only on exhaustion.
+    const seen=new Set((Array.isArray(q.seen)?q.seen:[]).map(item=>`${item?.ownerId}:${item?.id}`));
+    const unseen=(state.blindboxPool||[]).filter(item=>!seen.has(`${item.resourceOwnerId}:${item.id}`));
+    if(!unseen.length)return route.fulfill({status:200,contentType:'application/json',body:'null'});
+    return route.fulfill({json:{event:unseen[0],fallback:false}});
+  }
   if(url.pathname==='/api/discovery/postcard-picker') {
     const q=req.postDataJSON(); state.pickerRequests=(state.pickerRequests||[]).concat([q]);
     return route.fulfill({json:{moments:[{...moment,id:q.cursor?'second-page':'first-page',title:q.cursor?'Second page memory':'First page memory'}],nextCursor:q.cursor?null:'next'}});
@@ -210,24 +221,133 @@ async function logoutAndLogin(page){
 
 (async()=>{
  const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/opt/hermes/tools/chromium-1208/chrome-linux/chrome',args:['--no-sandbox']});
+ const passed=[];
+ const openDiscovery=async page=>{await page.getByRole('button',{name:'Memory actions',exact:true}).click();await page.getByRole('button',{name:'Open a random memory',exact:true}).click();};
+ const dialog=page=>page.getByRole('dialog',{name:'Blindbox memory'});
+ const round=[{...moment,id:'blindbox-1',title:'First discovery'},{...moment,id:'blindbox-2',title:'Second discovery'},{...moment,id:'blindbox-3',title:'Third discovery'}];
  try {
   const {page,state,context,errors}=await fixture(browser,{reduced:true});
-  await page.getByRole('button',{name:'Memory actions',exact:true}).click();await page.getByRole('button',{name:'Open a random memory',exact:true}).click();
+  await openDiscovery(page);
   await page.getByRole('heading',{name:'Outside loaded feed',exact:true}).waitFor();
   await page.getByRole('button',{name:'Close',exact:true}).click();
   await page.getByTitle('More actions',{exact:true}).click();
   await page.getByRole('menuitem',{name:'Create postcard',exact:true}).click();
-  const dialog=page.locator('#postcard-composer');
-  await dialog.locator('select').selectOption('A:qa-track');
-  await dialog.getByText('First page memory',{exact:true}).waitFor();
-  await dialog.locator('input[type=checkbox]').first().check();
-  await hit(dialog.getByRole('button',{name:'Next page',exact:true}));
-  await dialog.getByText('Second page memory',{exact:true}).waitFor();
-  await dialog.locator('input[type=checkbox]').first().check();
-  assert((await dialog.innerText()).includes('(2/6)'),'selection retained across pages');
+  const composer=page.locator('#postcard-composer');
+  await composer.locator('select').selectOption('A:qa-track');
+  await composer.getByText('First page memory',{exact:true}).waitFor();
+  await composer.locator('input[type=checkbox]').first().check();
+  await hit(composer.getByRole('button',{name:'Next page',exact:true}));
+  await composer.getByText('Second page memory',{exact:true}).waitFor();
+  await composer.locator('input[type=checkbox]').first().check();
+  assert((await composer.innerText()).includes('(2/6)'),'selection retained across pages');
   assert(state.pickerRequests.some(q=>q.cursor==='next'));
   assert.equal(errors.length,0,errors.join(';'));
-  console.log(JSON.stringify({synthetic:true,journeys:2,passed:['Blindbox outside feed winner','Postcard pagination + retained selection + mobile Next hit target']}));
+  passed.push('Blindbox outside feed winner');
+  passed.push('Postcard pagination + retained selection + mobile Next hit target');
   await context.close();
+
+  // A round never repeats a memory, then closes on the completion scene.
+  for(const viewport of [{width:1200,height:900},{width:390,height:844},{width:320,height:640}]){
+   const f=await fixture(browser,{viewport,reduced:true,blindboxPool:round});
+   const panel=dialog(f.page);
+   await openDiscovery(f.page);
+   await f.page.getByRole('heading',{name:'First discovery',exact:true}).waitFor();
+   await f.page.getByRole('button',{name:'Another memory',exact:true}).click();
+   await f.page.getByRole('heading',{name:'Second discovery',exact:true}).waitFor();
+   await f.page.getByRole('button',{name:'Another memory',exact:true}).click();
+   await f.page.getByRole('heading',{name:'Third discovery',exact:true}).waitFor();
+   await f.page.getByRole('button',{name:'Another memory',exact:true}).click();
+   await f.page.getByRole('heading',{name:'Every memory, revisited',exact:true}).waitFor();
+   assert.deepEqual(f.state.blindboxCalls.map(c=>c.seen.length),[0,1,2,3],'each reveal carries the identities already shown');
+   assert(f.state.blindboxCalls.every(c=>Array.isArray(c.seen)&&c.seen.every(s=>s&&Object.keys(s).length===2&&typeof s.ownerId==='string'&&typeof s.id==='string')),'seen payload is a composite identity list');
+   assert.equal(await f.page.getByRole('button',{name:'Another memory',exact:true}).count(),0,'exhaustion hides the repeat action');
+   assert((await panel.innerText()).includes("You've wandered through all your memories for now."),'completion copy');
+   assert((await panel.innerText()).includes("They'll be here for your next visit."),'completion copy keeps its invitation');
+   assert.equal(await f.page.getByRole('heading',{name:'Your story is just beginning',exact:true}).count(),0,'a finished round is not a first visit');
+   assert(await f.page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),`no horizontal overflow at ${viewport.width}px`);
+   const action=f.page.locator('#blindbox-completion').getByRole('button',{name:'Close',exact:true});
+   assert.equal(await action.evaluate(el=>el===document.activeElement),true,'the completion action receives focus');
+   await hit(action);
+   await dialog(f.page).waitFor({state:'detached'});
+   // Reopening starts a fresh round: the first request carries no seen history.
+   await openDiscovery(f.page);
+   await f.page.getByRole('heading',{name:'First discovery',exact:true}).waitFor();
+   assert.equal(f.state.blindboxCalls.at(-1).seen.length,0,'reopening begins an empty round');
+   if(viewport.width===1200)await f.page.keyboard.press('Escape');
+   else await f.page.mouse.click(4,4);
+   await dialog(f.page).waitFor({state:'detached'});
+   assert.equal(f.errors.length,0,f.errors.join(';'));
+   passed.push(`No-repeat round, completion scene, fresh reopen and dismiss at ${viewport.width}px`);
+   await f.context.close();
+  }
+
+  // Customization keeps the same round history.
+  {const f=await fixture(browser,{viewport:{width:390,height:844},reduced:true,blindboxPool:round});
+   await openDiscovery(f.page);
+   await f.page.getByRole('heading',{name:'First discovery',exact:true}).waitFor();
+   await f.page.getByRole('button',{name:'Customize',exact:true}).click();
+   await f.page.getByRole('button',{name:'Comfort',exact:true}).click();
+   await f.page.getByLabel('What are you looking for?').fill('binh yen');
+   await f.page.getByRole('button',{name:'Reveal a memory',exact:true}).click();
+   await f.page.getByRole('heading',{name:'Second discovery',exact:true}).waitFor();
+   const last=f.state.blindboxCalls.at(-1);
+   assert.equal(last.intent,'comfort'); assert.equal(last.query,'binh yen');
+   assert.equal(last.seen.length,1,'customize shares the round history instead of resetting it');
+   passed.push('Customize keeps the round history and never reintroduces a seen memory');
+   await f.context.close();}
+
+  // A failed request is retryable, is never exhaustion, and consumes nothing.
+  {const f=await fixture(browser,{viewport:{width:390,height:844},reduced:true,blindboxPool:round,blindboxFailure:true});
+   await openDiscovery(f.page);
+   const alert=f.page.getByRole('alert');
+   await alert.waitFor();
+   assert((await alert.innerText()).includes('Synthetic reveal failure'));
+   assert.equal(await f.page.getByRole('heading',{name:'Every memory, revisited',exact:true}).count(),0,'a failure is never exhaustion');
+   assert.equal(await f.page.getByRole('heading',{name:'Your story is just beginning',exact:true}).count(),0,'a failure is not an empty account');
+   await f.page.getByRole('button',{name:'Retry',exact:true}).click();
+   await f.page.getByRole('heading',{name:'First discovery',exact:true}).waitFor();
+   assert.deepEqual(f.state.blindboxCalls.map(c=>c.seen.length),[0,0],'a failed request consumed no memory');
+   passed.push('Network failure stays retryable, consumes nothing and is never exhaustion');
+   await f.context.close();}
+
+  // Rapid clicks cannot start overlapping selection requests.
+  {const f=await fixture(browser,{viewport:{width:390,height:844},reduced:true,blindboxPool:round});
+   await openDiscovery(f.page);
+   await f.page.getByRole('heading',{name:'First discovery',exact:true}).waitFor();
+   const before=f.state.blindboxCalls.length;
+   const gate=deferred(); f.state.blindboxGate=gate.promise;
+   await f.page.getByRole('button',{name:'Another memory',exact:true}).evaluate(el=>{el.click();el.click();});
+   await delay(200);
+   assert.equal(f.state.blindboxCalls.length-before,1,'rapid clicks start one selection request');
+   f.state.blindboxGate=null; gate.resolve();
+   await f.page.getByRole('heading',{name:'Second discovery',exact:true}).waitFor();
+   passed.push('Rapid clicks start exactly one selection request');
+   await f.context.close();}
+
+  // A one-memory account completes after its only memory.
+  {const f=await fixture(browser,{viewport:{width:390,height:844},reduced:true,blindboxPool:[round[0]]});
+   await openDiscovery(f.page);
+   await f.page.getByRole('heading',{name:'First discovery',exact:true}).waitFor();
+   await f.page.getByRole('button',{name:'Another memory',exact:true}).click();
+   await f.page.getByRole('heading',{name:'Every memory, revisited',exact:true}).waitFor();
+   assert.deepEqual(f.state.blindboxCalls.map(c=>c.seen.length),[0,1]);
+   await hit(f.page.locator('#blindbox-completion').getByRole('button',{name:'Close',exact:true}));
+   await dialog(f.page).waitFor({state:'detached'});
+   passed.push('A one-memory account completes after its only memory');
+   await f.context.close();}
+
+  // Nothing saved yet is a first visit, not a revisited round.
+  {const f=await fixture(browser,{viewport:{width:390,height:844},reduced:true,moments:[],blindboxPool:[]});
+   await openDiscovery(f.page);
+   await f.page.getByRole('heading',{name:'Your story is just beginning',exact:true}).waitFor();
+   assert.equal(await f.page.getByRole('heading',{name:'Every memory, revisited',exact:true}).count(),0,'an empty account never claims a revisited round');
+   assert.equal(f.state.blindboxCalls.length,1,'the empty state answers one honest request');
+   assert(await f.page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1));
+   await hit(f.page.locator('#blindbox-empty').getByRole('button',{name:'Close',exact:true}));
+   await dialog(f.page).waitFor({state:'detached'});
+   passed.push('An account with nothing saved sees the first-visit scene, not exhaustion');
+   await f.context.close();}
+
+  console.log(JSON.stringify({synthetic:true,journeys:passed.length,passed,cleanup:true}));
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
