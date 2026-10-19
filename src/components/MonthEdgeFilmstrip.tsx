@@ -121,6 +121,11 @@ export const MonthEdgeFilmstrip: React.FC<MonthEdgeFilmstripProps> = ({
       })}
     </svg>
 
+    <div aria-hidden="true" className="absolute bottom-0 right-0 flex h-11 w-14 flex-col items-center justify-center rounded-l-xl border border-r-0 border-stone-200 bg-white/95 text-[10px] font-semibold leading-tight text-stone-600 shadow-sm dark:border-stone-700 dark:bg-stone-900/95 dark:text-stone-300">
+      <span className="text-[11px] text-amber-700 dark:text-amber-300">{monthLabel.split(' ')[0]}</span>
+      <span>{monthLabel.split(' ')[1] ?? ''}</span>
+    </div>
+
     <div className="absolute right-0" style={{ top: 0, height: region }}>
       {items.length > 0 && slots.map((slot) => {
         const index = window[slot.index];
