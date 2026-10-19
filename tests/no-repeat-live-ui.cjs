@@ -17,7 +17,7 @@ const crypto = require('node:crypto');
   const app = deployed ? null : (await import('../server.mjs')).app;
   const out = path.resolve('.hermes/evidence/no-repeat');
   fs.mkdirSync(out, { recursive: true });
-  const report = { synthetic: false, target: deployed ? 'deployed DEV (nginx 3091 + PM2 API 3092)' : 'latest source app + latest dist', checks: [], blindbox: [], pageerrors: [], cleanup: false };
+  const report = { synthetic: false, target: deployed ? `deployed DEV via ${process.env.MEMENTO_DEPLOYED_URL || 'https://memento-dev.srv.io.vn'} (tunnel -> nginx 3091 -> PM2 API 3092)` : 'latest source app + latest dist', checks: [], blindbox: [], pageerrors: [], cleanup: false };
   const track = 'no-repeat-qa-track';
   const ownerIds = ['qa-round-1', 'qa-round-2', 'qa-round-3', 'qa-round-4'];
   const sharedId = 'qa-round-shared';
@@ -45,7 +45,11 @@ const crypto = require('node:crypto');
     await pool.query(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document) VALUES($1,$2,$3,$4)`, [stranger.id, 'qa-round-private', `${track}-private`, doc('qa-round-private', 'Private memory', `${track}-private`)]);
     await pool.query(`INSERT INTO ${qschema}.track_collaborators(id,owner_id,track_id,recipient_id,role,expires_at,accepted_at) VALUES($1,$2,$3,$4,$5,now()+interval '7 days',now())`, [crypto.randomUUID(), owner.id, track, viewer.id, 'viewer']);
     let base;
-    if (deployed) { base = 'http://127.0.0.1:3091'; }
+    // The deployed smoke drives the real public DEV hostname so the browser's own
+    // Origin matches the forwarded Host; loopback HTTP would be rejected by the app's
+    // origin validation (nginx forwards X-Forwarded-Proto https), and that rule must
+    // not be weakened for a harness.
+    if (deployed) { base = process.env.MEMENTO_DEPLOYED_URL || 'https://memento-dev.srv.io.vn'; }
     else {
       api = http.createServer(app); await listen(api);
       web = http.createServer((req, res) => {
@@ -62,7 +66,9 @@ const crypto = require('node:crypto');
     }
     const built = fs.readdirSync('dist/assets').filter((f) => /^index-.*\.js$/.test(f));
     report.dist_entry = `dist/assets/${built[0]}`;
-    const served = fs.readFileSync('dist/index.html', 'utf8').match(/src="([^"]+\.js)"/)[1];
+    const served = deployed
+      ? await fetch(`${base}/`).then((r) => r.text()).then((html) => html.match(/src="([^"]+\.js)"/)[1])
+      : fs.readFileSync('dist/index.html', 'utf8').match(/src="([^"]+\.js)"/)[1];
     report.served_entry = served;
     assert.equal(path.basename(served), path.basename(report.dist_entry), 'the served bundle is the freshly built one');
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/home/ubuntu/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux-arm64/chrome-headless-shell', args: ['--no-sandbox'] });
