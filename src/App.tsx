@@ -1,4 +1,5 @@
 import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import type { SaveProgress } from './components/EventModal';
 import { AccountOverview, TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
 import { buildCompleteBackup, downloadBackup } from './lib/exportBackup';
 import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
@@ -552,39 +553,26 @@ export default function App() {
     if(id&&top!=null)prependAnchor.current={id,top,scope:browseScope};action();
   };
   useEffect(()=>{if(feed.loading||feed.seeking||!prependAnchor.current)return;const anchor=prependAnchor.current;prependAnchor.current=null;let cancelled=false;void document.fonts.ready.then(()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{if(cancelled||anchor.scope!==browseScope)return;const node=document.getElementById(anchor.id);if(node)scrollBy(0,node.getBoundingClientRect().top-anchor.top);})));return()=>{cancelled=true;};},[feed.loading,feed.seeking,feed.items.map(momentIdentity).join('|')]);
-  // Save a moment server-side first; local state changes only after a confirmed response.
-  // expectedVersion is optional: the composer passes the version it displayed,
-  // or the freshly reviewed one after a conflict rebase.
-  const handleSaveEvent = async (
-    data: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>,
-    editId?: string,
-    imageFiles: File[] = [],
-    eventOwnerId?: string,
-    expectedVersion?: number
-  ) => {
+  // The modal is released only after create/edit, optional private uploads and feed reconciliation.
+  const handleSaveEvent = async (data: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles: File[] = [], eventOwnerId?: string, expectedVersion?: number, onProgress: (progress: SaveProgress) => void = () => {}) => {
     const generation = authGenerationRef.current;
     if (uploadBusy.current || (imageFiles.length && pendingImageRetry)) throw new Error('Finish or retry the previous photo upload before attaching more files. Your draft is preserved.');
-    // The loaded edit snapshot, NOT the freshest timeline, defines what this form was based on.
     if (editId && (!eventToEdit || eventToEdit.id !== editId)) throw new Error('This edit is no longer open. Close and reopen the form before saving. Your draft is unchanged.');
     const version = expectedVersion ?? eventToEdit?.version;
     if (editId && !Number.isInteger(version)) throw new Error('This edit has no version. Close and reopen the form before saving. Your draft is unchanged.');
-    const saved = editId
-      ? await dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!)
-      : await dataApi.createMoment(data, eventOwnerId!);
+    onProgress({ phase: 'writing' });
+    const saved = editId ? await dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!) : await dataApi.createMoment(data, eventOwnerId!);
     assertSession(generation);
-    // The confirmed moment is already authoritative enough to render. Do not
-    // hold the composer open behind optional local photo work or a refresh.
-    setEvents((prev) => editId ? prev.map((event) => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
-    if (imageFiles.length) {
-      const queue = { momentId: saved.id, ownerId: saved.resourceOwnerId!, files: imageFiles.map((file) => ({ file, uploadId: crypto.randomUUID() })) };
-      setPendingImageRetry(queue);
-      // The queue owns its own errors and final reconciliation. Its upload IDs
-      // are retained across a lost acknowledgement/retry, but it must never
-      // delay the successful create/edit promise consumed by EventModal.
-      void processImageQueue(queue, generation);
-    } else {
-      // Reconcile full-scope metadata without delaying the acknowledged save.
-      void loadData().catch(() => undefined);
+    setEvents(prev => editId ? prev.map(event => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
+    const queue = { momentId: saved.id, ownerId: saved.resourceOwnerId!, files: imageFiles.map(file => ({ file, uploadId: crypto.randomUUID() })) };
+    const reconcile = async () => { onProgress({ phase: 'reconciling' }); await loadData(); assertSession(generation); setFeedRevision(value => value + 1); await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); assertSession(generation); setPendingImageRetry(null); setDataError(''); onProgress({ phase: 'complete' }); };
+    try {
+      if (queue.files.length) { onProgress({ phase: 'preparing-images' }); setPendingImageRetry(queue); await processImageQueue(queue, generation, onProgress); }
+      await reconcile();
+    } catch (failure) {
+      const error = failure instanceof Error ? failure : new Error('Could not finish saving this memory.');
+      (error as Error & { retry?: () => Promise<void> }).retry = async () => { const remaining = pendingImageRetry?.momentId === queue.momentId ? pendingImageRetry.files : queue.files; if (remaining.length) await processImageQueue({ ...queue, files: remaining }, generation, onProgress); await reconcile(); };
+      throw error;
     }
   };
 
@@ -657,27 +645,13 @@ export default function App() {
     }
   };
 
-  async function processImageQueue(queue: NonNullable<typeof pendingImageRetry>, generation: number) {
-    if (uploadBusy.current) return;
-    uploadBusy.current = true; setUploadRunning(true);
-    let remaining = queue.files;
+  async function processImageQueue(queue: NonNullable<typeof pendingImageRetry>, generation: number, onProgress?: (progress: SaveProgress) => void) {
+    if (uploadBusy.current) throw new Error('Another photo upload is still running.');
+    uploadBusy.current = true; setUploadRunning(true); let remaining = queue.files;
     try {
-      while (remaining.length) {
-        assertSession(generation);
-        const { file, uploadId } = remaining[0];
-        await dataApi.uploadImage(file, queue.momentId, queue.ownerId, uploadId);
-        assertSession(generation);
-        remaining = remaining.slice(1);
-        setPendingImageRetry({ ...queue, files: remaining });
-      }
-      await loadData();
-      assertSession(generation);
-      setPendingImageRetry(null); setDataError('');
-    } catch (error) {
-      if (generation !== authGenerationRef.current) return;
-      setPendingImageRetry({ ...queue, files: remaining });
-      setDataError(remaining.length ? `Moment saved; ${remaining.length} image(s) remain. Retry resumes after acknowledged files: ${error instanceof Error ? error.message : 'upload failed'}` : 'Photos uploaded. Timeline refresh failed; retry refresh without re-uploading.');
-    } finally { if (generation === authGenerationRef.current) { uploadBusy.current = false; setUploadRunning(false); } }
+      while (remaining.length) { assertSession(generation); onProgress?.({ phase: 'uploading-images', acknowledged: queue.files.length - remaining.length, total: queue.files.length }); const { file, uploadId } = remaining[0]; await dataApi.uploadImage(file, queue.momentId, queue.ownerId, uploadId); assertSession(generation); remaining = remaining.slice(1); setPendingImageRetry({ ...queue, files: remaining }); }
+    } catch (error) { if (generation === authGenerationRef.current) setPendingImageRetry({ ...queue, files: remaining }); throw error; }
+    finally { if (generation === authGenerationRef.current) { uploadBusy.current = false; setUploadRunning(false); } }
   }
   const retryImageUploads = async () => {
     if (pendingImageRetry) await processImageQueue(pendingImageRetry, authGenerationRef.current);
