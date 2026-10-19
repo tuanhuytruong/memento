@@ -11,6 +11,17 @@ test('image/read/write quotas isolated per authenticated user; same IP independe
 });
 test('finite keys and expiring windows',()=>{let time=0;const b=createRequestBudgets({now:()=>time,maxKeys:2,windowMs:1000});for(const id of ['a','b'])assert.ok(invoke(b.account,{user:{id},method:'GET',path:'/api/moments'}).passed);assert.equal(invoke(b.account,{user:{id:'c'},method:'GET',path:'/api/moments'}).res.statusCode,429);time=1001;assert.ok(invoke(b.account,{user:{id:'c'},method:'GET',path:'/api/moments'}).passed);assert.equal(b.stats().keys,1);});
 
+for(const path of ['/api/moments/browse/months','/api/moments/browse/preview','/api/moments/seek'])test(`${path} consumes shared read quota, not write/image/export`,()=>{
+ const b=createRequestBudgets({limits:{read:2,write:1,image:1,export:1}}),base={user:{id:'browse-budget'},method:'POST'};
+ assert(invoke(b.account,{...base,path}).passed);
+ assert(invoke(b.account,{...base,path:'/api/moments/query'}).passed);
+ const denied=invoke(b.account,{...base,path});assert.equal(denied.res.statusCode,429);assert(Number(denied.res.headers['Retry-After'])>0);
+ assert(invoke(b.account,{...base,path:'/api/moments'}).passed);
+ assert(invoke(b.account,{...base,method:'GET',path:'/api/images/test'}).passed);
+ assert(invoke(b.account,{...base,path:'/api/export/page'}).passed);
+ assert(invoke(b.account,{...base,user:{id:'other'},path}).passed);
+});
+
 test('POST reads and export pacing never consume content mutation allowance',()=>{
  let time=0;const b=createRequestBudgets({now:()=>time,limits:{export:60,write:1}});const base={user:{id:'a'},method:'POST'};
  for(let i=0;i<121;i++){
