@@ -20,6 +20,7 @@ import { createImageDelivery } from './image-delivery.mjs';
 import { invalidateImageObject } from './image-cache.mjs';
 import { createRequestBudgets } from './request-budgets.mjs';
 import { createUploadAdmission } from './upload-admission.mjs';
+import { createUploadTiming, outcomeForResponse, logUploadDiagnostic } from './upload-timing.mjs';
 import { makeImageVariants, resolveVariant, VARIANT_CACHE_CONTROL } from './image-variants.mjs';
 import { listVisitState, recordVisit } from './track-visits.mjs';
 import { setSaved, listSaved, savedCount, savedIdentities, decodeSavedCursor } from './saved-moments.mjs';
@@ -672,9 +673,23 @@ function imageType(buffer){if(buffer.length>=3&&buffer[0]===0xff&&buffer[1]===0x
 // Admission runs after authentication but BEFORE Multer buffers the body:
 // overload is denied while zero multipart bytes are held in memory.
 export const uploadAdmission = createUploadAdmission();
-app.post('/api/images',auth,uploadAdmission.admit,upload.single('file'),async(req,res,next)=>{
+// Stage timing for this route only: closed labels, one terminal record per
+// request, no payload or identities (see upload-timing.mjs). The terminal
+// listener is what makes a client disconnect observable; the nginx access log
+// only lists requests that completed.
+const uploadTimingStart=(req,res,next)=>{const timing=createUploadTiming({log:logUploadDiagnostic});req.uploadTiming=timing;timing.begin('auth');const terminal=()=>timing.finish({outcome:outcomeForResponse(res,timing.hintedOutcome),statusCode:res.statusCode});res.once('finish',terminal);res.once('close',terminal);next();};
+const uploadTimingAuthDone=(req,res,next)=>{const timing=req.uploadTiming;if(timing){timing.end('auth');timing.begin('admission');}next();};
+const uploadTimingAdmitted=(req,res,next)=>{const timing=req.uploadTiming;if(timing){timing.end('admission');timing.begin('body');}next();};
+// Expose the same closed labels to the browser so a client can subtract origin
+// work from its own fetch time. up-total is a lower bound: serialization and the
+// network write happen after these headers are produced.
+const uploadTimingHeaders=(res,timing)=>{if(!timing||res.headersSent)return;try{res.set('Server-Timing',timing.serverTimingHeader());res.set('X-Upload-Diagnostic-Id',timing.diagnosticId);}catch{/* headers already flushed */}};
+app.post('/api/images',uploadTimingStart,auth,uploadTimingAuthDone,uploadAdmission.admit,uploadTimingAdmitted,upload.single('file'),async(req,res,next)=>{
   let jobId;
   req.uploadHandlerStarted = true;
+  // Multipart parsing is complete once the handler runs, so the body span ends here.
+  const timing = req.uploadTiming;
+  if(timing){timing.end('body');timing.begin('preflight');}
   try {
     if(!req.file||typeof req.body.momentId!=='string'||!validUuid(req.body.ownerId))throw new ApiError(400,'file, momentId and ownerId are required');
     const momentIdentity={ownerId:req.body.ownerId,id:req.body.momentId};
@@ -692,31 +707,49 @@ app.post('/api/images',auth,uploadAdmission.admit,upload.single('file'),async(re
     // Replays still require fresh authorization. Keys are scoped to authenticated uploader.
     const previous=await mutate(req,(userId,identity,client)=>exactMomentAccess(userId,identity,client),momentIdentity,async(c,current)=>{requireEditor(current);return replay(c,current);});
     const response=image=>({id:image.id,url:`/api/images/${image.id}`,momentId:image.moment_id,contentType:image.content_type,size:image.size});
-    if(previous)return res.status(200).json({image:response(previous),replayed:true});
+    timing?.end('preflight');
+    if(previous){timing?.markOutcome('replayed');timing?.begin('respond');uploadTimingHeaders(res,timing);return res.status(200).json({image:response(previous),replayed:true});}
     const imageId=id(),base=`${R2_PREFIX}${crypto.randomUUID()}/${imageId}`,objectKey=`${base}/original`;
-    const variants=await makeImageVariants(req.file.buffer,type);
+    timing?.begin('transform');
+    let variants;
+    try { variants=await makeImageVariants(req.file.buffer,type); } finally { timing?.end('transform'); }
+    if(timing){timing.note('received',req.file.size);timing.note('original',req.file.size);timing.note('thumb',variants.thumb?.size);timing.note('display',variants.display?.size);}
     const thumbKey=variants.thumb?`${base}/thumb.webp`:null,displayKey=variants.display?`${base}/display.webp`:null;
     const uploads=[{key:objectKey,body:req.file.buffer,contentType:type}];
     if(variants.thumb)uploads.push({key:thumbKey,body:variants.thumb.body,contentType:'image/webp'});
     if(variants.display)uploads.push({key:displayKey,body:variants.display.body,contentType:'image/webp'});
     // Persist all possible objects before the first PUT: crash/fault recovery needs no request continuation.
-    jobId=await cleanup.enqueue(pool,uploads.map(x=>x.key),{staged:true});
-    for(const item of uploads)await s3.send(new PutObjectCommand({Bucket:process.env.R2_BUCKET,Key:item.key,Body:item.body,ContentType:item.contentType,CacheControl:'private, no-store'}),{abortSignal:AbortSignal.timeout(60_000)});
-    const result=await mutate(req,(userId,identity,client)=>exactMomentAccess(userId,identity,client),momentIdentity,async(c,current)=>{
-      requireEditor(current);
-      // A move to another shared track must not let this staged upload silently follow it.
-      if(current.owner_id!==moment.owner_id||current.event_id!==moment.event_id)throw new ApiError(409,'Moment moved during upload');
-      const existing=await replay(c,current);if(existing)return {image:existing,replayed:true};
-      await cleanup.attach(c,jobId);
-      await c.query(`INSERT INTO ${qschema}.images(id,owner_id,moment_id,object_key,content_type,size,thumb_object_key,display_object_key,thumb_size,display_size,width,height,uploader_id,upload_key,upload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,[imageId,current.owner_id,current.id,objectKey,type,req.file.size,thumbKey,displayKey,variants.thumb?.size||null,variants.display?.size||null,variants.width,variants.height,req.user.id,uploadKey,uploadHash]);
-      const updated=await c.query(`UPDATE ${qschema}.moments SET version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2 RETURNING version`,[current.owner_id,current.id]);
-      return {image:{id:imageId,moment_id:current.id,content_type:type,size:req.file.size},version:updated.rows[0].version};
-    });
+    timing?.begin('staging');
+    try { jobId=await cleanup.enqueue(pool,uploads.map(x=>x.key),{staged:true}); } finally { timing?.end('staging'); }
+    for(const item of uploads){
+      const stageName=item.key===objectKey?'r2.original':item.key===thumbKey?'r2.thumb':'r2.display';
+      timing?.begin(stageName);
+      try { await s3.send(new PutObjectCommand({Bucket:process.env.R2_BUCKET,Key:item.key,Body:item.body,ContentType:item.contentType,CacheControl:'private, no-store'}),{abortSignal:AbortSignal.timeout(60_000)}); } finally { timing?.end(stageName); }
+    }
+    timing?.begin('commit');
+    let result;
+    try {
+      result=await mutate(req,(userId,identity,client)=>exactMomentAccess(userId,identity,client),momentIdentity,async(c,current)=>{
+        requireEditor(current);
+        // A move to another shared track must not let this staged upload silently follow it.
+        if(current.owner_id!==moment.owner_id||current.event_id!==moment.event_id)throw new ApiError(409,'Moment moved during upload');
+        const existing=await replay(c,current);if(existing)return {image:existing,replayed:true};
+        await cleanup.attach(c,jobId);
+        await c.query(`INSERT INTO ${qschema}.images(id,owner_id,moment_id,object_key,content_type,size,thumb_object_key,display_object_key,thumb_size,display_size,width,height,uploader_id,upload_key,upload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,[imageId,current.owner_id,current.id,objectKey,type,req.file.size,thumbKey,displayKey,variants.thumb?.size||null,variants.display?.size||null,variants.width,variants.height,req.user.id,uploadKey,uploadHash]);
+        const updated=await c.query(`UPDATE ${qschema}.moments SET version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2 RETURNING version`,[current.owner_id,current.id]);
+        return {image:{id:imageId,moment_id:current.id,content_type:type,size:req.file.size},version:updated.rows[0].version};
+      });
+    } finally { timing?.end('commit'); }
     if(result.replayed)await cleanup.abandon(jobId);jobId=null;
+    timing?.begin('respond');
+    uploadTimingHeaders(res,timing);
     res.status(result.replayed?200:201).json({image:response(result.image),version:result.version,replayed:!!result.replayed});
   } catch(error) {
     // If DB is unavailable, durable staged job remains recoverable after its lease expires.
     if(jobId)await cleanup.abandon(jobId).catch(()=>{});
+    // Denials and failures still report where the request stopped; the record
+    // never carries the error payload itself.
+    uploadTimingHeaders(res,timing);
     next(error);
   } finally {
     // The admitted capacity is held until transform/storage work has settled,

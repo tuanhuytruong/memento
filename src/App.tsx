@@ -9,7 +9,8 @@ import { useMomentFeed, feedScopeHash } from './lib/useMomentFeed';
 import {MonthQuickBrowseRail} from './components/MonthQuickBrowseRail';
 import { useDebouncedSearch } from './lib/useDebouncedSearch';
 import { LoadMoreMemories } from './components/LoadMoreMemories';
-import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation } from './lib/api';
+import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation, type RequestTiming } from './lib/api';
+import { clearUploadDiagnostics, describeUploadTiming, phaseDiagnostic, recordUploadDiagnostic } from './lib/uploadDiagnostics';
 import { CollaborationModal, SharedInvitations } from './components/CollaborationModal';
 import { AuthScreen } from './components/AuthScreen';
 import { TimelineHeader } from './components/TimelineHeader';
@@ -240,6 +241,7 @@ export default function App() {
     setIsPostcardOpen(false);
     // No private draft crosses an account or session boundary.
     releaseAllMomentDrafts().forEach((url) => { try { URL.revokeObjectURL(url); } catch { /* already revoked */ } });
+    clearUploadDiagnostics();
     setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', dateFrom: '', dateTo: '', milestonesOnly: false, hasImagesOnly: false, savedOnly: false }));
   }
 
@@ -556,11 +558,13 @@ export default function App() {
     const version = expectedVersion ?? eventToEdit?.version;
     if (editId && !Number.isInteger(version)) throw new Error('This edit has no version. Close and reopen the form before saving. Your draft is unchanged.');
     onProgress({ phase: 'writing' });
-    const saved = editId ? await dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!) : await dataApi.createMoment(data, eventOwnerId!);
+    // Timed so a slow save can be attributed to the write or to the photos after it.
+    const writeStartedAt = performance.now();
+    const saved = await (editId ? dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!) : dataApi.createMoment(data, eventOwnerId!)).finally(() => { recordUploadDiagnostic(phaseDiagnostic('moment-write', performance.now() - writeStartedAt)); });
     assertSession(generation);
     setEvents(prev => editId ? prev.map(event => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
     const queue = { momentId: saved.id, ownerId: saved.resourceOwnerId!, files: imageFiles.map(file => ({ file, uploadId: crypto.randomUUID() })) };
-    const reconcile = async () => { onProgress({ phase: 'reconciling' }); await loadData(); assertSession(generation); setFeedRevision(value => value + 1); await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); assertSession(generation); setPendingImageRetry(null); setDataError(''); onProgress({ phase: 'complete' }); };
+    const reconcile = async () => { onProgress({ phase: 'reconciling' }); const reconcileStartedAt = performance.now(); try { await loadData(); } finally { recordUploadDiagnostic(phaseDiagnostic('reconcile', performance.now() - reconcileStartedAt)); } assertSession(generation); setFeedRevision(value => value + 1); await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); assertSession(generation); setPendingImageRetry(null); setDataError(''); onProgress({ phase: 'complete' }); };
     try {
       if (queue.files.length) { onProgress({ phase: 'preparing-images' }); setPendingImageRetry(queue); await processImageQueue(queue, generation, onProgress); }
       await reconcile();
@@ -644,7 +648,23 @@ export default function App() {
     if (uploadBusy.current) throw new Error('Another photo upload is still running.');
     uploadBusy.current = true; setUploadRunning(true); let remaining = queue.files;
     try {
-      while (remaining.length) { assertSession(generation); onProgress?.({ phase: 'uploading-images', acknowledged: queue.files.length - remaining.length, total: queue.files.length }); const { file, uploadId } = remaining[0]; await dataApi.uploadImage(file, queue.momentId, queue.ownerId, uploadId); assertSession(generation); remaining = remaining.slice(1); setPendingImageRetry({ ...queue, files: remaining }); }
+      while (remaining.length) {
+        assertSession(generation);
+        onProgress?.({ phase: 'uploading-images', acknowledged: queue.files.length - remaining.length, total: queue.files.length });
+        const { file, uploadId } = remaining[0];
+        // Client elapsed minus the origin's own stages leaves the unattributed remainder:
+        // transport, queueing, or work that happened before this process saw the request.
+        const startedAt = performance.now();
+        const timing: { current: RequestTiming | null } = { current: null };
+        try {
+          await dataApi.uploadImage(file, queue.momentId, queue.ownerId, uploadId, (measured) => { timing.current = measured; });
+        } finally {
+          recordUploadDiagnostic(describeUploadTiming({ uploadId, clientMs: performance.now() - startedAt, timing: timing.current }));
+        }
+        assertSession(generation);
+        remaining = remaining.slice(1);
+        setPendingImageRetry({ ...queue, files: remaining });
+      }
     } catch (error) { if (generation === authGenerationRef.current) setPendingImageRetry({ ...queue, files: remaining }); throw error; }
     finally { if (generation === authGenerationRef.current) { uploadBusy.current = false; setUploadRunning(false); } }
   }
