@@ -187,16 +187,45 @@ export const EventCard: React.FC<EventCardProps> = ({
 
         {/* Attached image preview (single or multi-thumbnail) */}
         {event.images && event.images.length > 0 && (
+          // The shared photo container only paints a full-width panel for the multi-photo
+          // grid; a single photo brings its own compact frame.
           <div
-            className="mb-3 rounded-xl overflow-hidden bg-stone-100 dark:bg-stone-800"
-            onClick={(e) => {
+            className={event.images.length === 1 ? 'mb-3' : 'mb-3 rounded-xl overflow-hidden bg-stone-100 dark:bg-stone-800'}
+            onClick={event.images.length === 1 ? undefined : (e) => {
               e.stopPropagation();
               onOpenImageLightbox(event.images, 0);
             }}
           >
             {event.images.length === 1 ? (
-              <div className="relative group/img max-h-60 overflow-hidden">
-                <PrivateImage src={event.images[0]} variant="thumb" loading="lazy" alt={event.title} className="h-48 sm:h-56 hover:scale-103 transition-transform duration-500" />
+              // A single photo gets a bounded 4:3 frame instead of a full-width strip:
+              // stretching the 480px thumb across the card is what made it soft.
+              // The display derivative (1280px) stays sharp at this size and on 2x screens.
+              // Pointer and keyboard reach the same existing lightbox handler.
+              <div
+                role="button"
+                tabIndex={0}
+                aria-label="Open photo preview"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenImageLightbox(event.images, 0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onOpenImageLightbox(event.images, 0);
+                }}
+                className="relative max-w-[360px] overflow-hidden rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60"
+              >
+                <div className="aspect-[4/3] w-full">
+                  <PrivateImage
+                    src={event.images[0]}
+                    variant="display"
+                    loading="lazy"
+                    alt={event.title}
+                    className="h-full w-full"
+                  />
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-3 gap-1.5 max-h-40 overflow-hidden p-1">
