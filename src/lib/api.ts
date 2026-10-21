@@ -17,16 +17,37 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+/**
+ * Timings a caller may inspect for one request. `headerMs` is measured until the
+ * response headers arrive (so it includes upload transit and origin work);
+ * `bodyMs` covers reading the response body. Request bodies and private data are
+ * never part of this shape.
+ */
+export interface RequestTiming {
+  headerMs: number;
+  bodyMs: number;
+  status: number;
+  serverTiming: string | null;
+  diagnosticId: string | null;
+}
+
+function now(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+}
+
+async function request<T>(path: string, init: RequestInit = {}, onTiming?: (timing: RequestTiming) => void): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
+  const startedAt = now();
   const response = await fetch(`${API}${path}`, {
     ...init,
     headers,
     credentials: 'include',
   });
+  const headerMs = now() - startedAt;
+  const parseStartedAt = now();
   const contentType = response.headers.get('content-type') || '';
   let payload: unknown;
   if (response.status !== 204) {
@@ -34,6 +55,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       payload = await response.json().catch(() => undefined);
     } else {
       payload = await response.text().catch(() => '');
+    }
+  }
+  if (onTiming) {
+    try {
+      onTiming({
+        headerMs,
+        bodyMs: now() - parseStartedAt,
+        status: response.status,
+        serverTiming: response.headers.get('Server-Timing'),
+        diagnosticId: response.headers.get('X-Upload-Diagnostic-Id'),
+      });
+    } catch {
+      // Observation must never change request behaviour.
     }
   }
   if (!response.ok) {
@@ -237,13 +271,13 @@ export const dataApi = {
   collaborationInvitations: async () => unwrapList<CollaborationInvitation>(await request('/collaboration-invitations'), ['invitations']),
   acceptCollaborationInvitation: (id: string) => request(`/collaboration-invitations/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
   usernameMatches: async (query: string) => unwrapList<string>(await request(`/users/search?q=${encodeURIComponent(query)}`), ['usernames']),
-  uploadImage: async (file: File, momentId: string, ownerId: string, uploadId: string) => {
+  uploadImage: async (file: File, momentId: string, ownerId: string, uploadId: string, onTiming?: (timing: RequestTiming) => void) => {
     const form = new FormData();
     form.append('file', file);
     form.append('momentId', momentId);
     form.append('ownerId', ownerId);
     try {
-      return await request('/images', { method: 'POST', headers: { 'Idempotency-Key': uploadId }, body: form });
+      return await request('/images', { method: 'POST', headers: { 'Idempotency-Key': uploadId }, body: form }, onTiming);
     } catch (error) {
       if (error instanceof ApiError && error.status === 413) {
         throw new ApiError(`"${file.name}" is too large for upload. Try a smaller photo.`, 413);

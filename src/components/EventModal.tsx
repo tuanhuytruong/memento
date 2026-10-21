@@ -26,6 +26,7 @@ import { localCalendarDate, localClockTime } from '../lib/localDate';
 import { EMOTIONS, DEFAULT_TAGS } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { compressImage } from '../lib/images';
+import { phaseDiagnostic, recordUploadDiagnostic } from '../lib/uploadDiagnostics';
 import {
   draftScopeKey,
   readMomentDraft,
@@ -314,7 +315,10 @@ export const EventModal: React.FC<EventModalProps> = ({
       const ready: File[] = [];
       for (const file of picked) {
         try {
-          const prepared = await compressImage(file);
+          // Preparation time is browser-side work: it explains a pending save that has
+          // not produced a request yet, so it is measured separately from the upload.
+          const prepareStartedAt = performance.now();
+          const prepared = await compressImage(file).finally(() => { recordUploadDiagnostic(phaseDiagnostic('prepare', performance.now() - prepareStartedAt)); });
           if (!alive.current) return;
           ready.push(prepared);
         } catch (error) {

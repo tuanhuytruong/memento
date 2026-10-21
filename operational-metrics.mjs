@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks';
 // Closed labels and fixed histograms only. Never accept request URLs, identities,
 // errors or arbitrary labels. Snapshots are operator-local, never an HTTP API.
 const BOUNDS = Object.freeze([5, 20, 50, 100, 250, 1000, 5000, 30000]);
-const ROUTES = new Set(['/health', '/api/moments/query', '/api/moments/overview', '/api/moments/resurfacing', '/api/moments', '/api/moments/:id', '/api/images/:id', '/api/postcards/render']);
+const ROUTES = new Set(['/health', '/api/moments/query', '/api/moments/overview', '/api/moments/resurfacing', '/api/moments', '/api/moments/:id', '/api/images', '/api/images/:id', '/api/postcards/render']);
 const COUNTERS = new Set(['image.hit', 'image.miss', 'image.coalesced', 'image.bypass', 'image.ok', 'image.error', 'image.not-modified', 'budget.rejected']);
 const GAUGES = new Set(['db.total', 'db.idle', 'db.waiting', 'image.active', 'image.queued', 'image.inflight', 'image.waiters', 'image.bytes', 'render.active', 'render.queued', 'cleanup.pending', 'cleanup.oldestSeconds', 'expiry.sessions', 'expiry.invites']);
 export function createOperationalMetrics({ now = () => performance.now() } = {}) {
