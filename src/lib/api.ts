@@ -18,6 +18,51 @@ export class ApiError extends Error {
 }
 
 /**
+ * A photo upload that hit its deadline or the page going away. Distinct from
+ * `ApiError` because nothing was decided by the server: the attempt is retryable
+ * and the queued blob stays in the local outbox.
+ */
+export class UploadAbortedError extends Error {
+  timeout: boolean;
+
+  constructor(timeout: boolean, message?: string) {
+    super(message ?? (timeout ? 'The photo upload took too long and was retried.' : 'The photo upload was interrupted.'));
+    this.name = 'UploadAbortedError';
+    this.timeout = timeout;
+  }
+}
+
+/** One upload attempt may occupy the save gate for this long and no longer. */
+export const UPLOAD_DEADLINE_MS = 30_000;
+
+/**
+ * Combine the caller's signal with a deadline. `AbortSignal.any` is available on
+ * current engines; the manual fallback keeps older WebKit honest without pulling
+ * in a polyfill.
+ */
+function withDeadline(signal: AbortSignal | undefined, ms: number) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, ms);
+  const forward = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', forward, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    dispose: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', forward);
+    },
+  };
+}
+
+/**
  * Timings a caller may inspect for one request. `headerMs` is measured until the
  * response headers arrive (so it includes upload transit and origin work);
  * `bodyMs` covers reading the response body. Request bodies and private data are
@@ -271,14 +316,20 @@ export const dataApi = {
   collaborationInvitations: async () => unwrapList<CollaborationInvitation>(await request('/collaboration-invitations'), ['invitations']),
   acceptCollaborationInvitation: (id: string) => request(`/collaboration-invitations/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
   usernameMatches: async (query: string) => unwrapList<string>(await request(`/users/search?q=${encodeURIComponent(query)}`), ['usernames']),
-  uploadImage: async (file: File, momentId: string, ownerId: string, uploadId: string, onTiming?: (timing: RequestTiming) => void) => {
+  uploadImage: async (file: File, momentId: string, ownerId: string, uploadId: string, onTiming?: (timing: RequestTiming) => void, signal?: AbortSignal) => {
     const form = new FormData();
     form.append('file', file);
     form.append('momentId', momentId);
     form.append('ownerId', ownerId);
+    // A stalled body must fail the attempt instead of holding the save gate open
+    // forever: WebKit kills the request when the user switches apps, and the
+    // local outbox retries it later with the same uploadId.
+    const deadline = withDeadline(signal, UPLOAD_DEADLINE_MS);
     try {
-      return await request('/images', { method: 'POST', headers: { 'Idempotency-Key': uploadId }, body: form }, onTiming);
+      return await request('/images', { method: 'POST', headers: { 'Idempotency-Key': uploadId }, body: form, signal: deadline.signal }, onTiming);
     } catch (error) {
+      if (deadline.signal.aborted) throw new UploadAbortedError(deadline.timedOut());
+      if (error instanceof DOMException && error.name === 'AbortError') throw new UploadAbortedError(false);
       if (error instanceof ApiError && error.status === 413) {
         throw new ApiError(`"${file.name}" is too large for upload. Try a smaller photo.`, 413);
       }
@@ -286,6 +337,8 @@ export const dataApi = {
         throw new ApiError(`"${file.name}" is not a supported image (JPEG/PNG/GIF/WebP only).`, 415);
       }
       throw error;
+    } finally {
+      deadline.dispose();
     }
   },
 };
