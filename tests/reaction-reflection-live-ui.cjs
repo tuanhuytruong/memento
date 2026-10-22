@@ -8,17 +8,14 @@ const crypto = require('node:crypto');
 (async () => {
   require('dotenv').config({ path: '.env.local', quiet: true });
   assert.equal(process.env.DB_SCHEMA, 'memento_dev');
-  const { app } = await import('../server.mjs');
   const { pool, qschema, hashSession } = await import('../memento-db.mjs');
   const out = path.resolve('.hermes/evidence/reaction-reflection-live'); fs.mkdirSync(out, { recursive: true });
-  const report = { synthetic: false, scope: 'Authenticated Chromium against current local DEV build and real DEV PostgreSQL/API; disposable user/track/moment/perspective/reaction; no R2.', checks: [], requests: [], pageerrors: [], cleanup: false };
+  const report = { synthetic: false, scope: 'Authenticated Chromium through deployed DEV hostname/nginx/PM2 against DEV PostgreSQL; disposable user/track/moment/perspective/reaction; no R2.', checks: [], requests: [], pageerrors: [], cleanup: false };
   const owner = { id: crypto.randomUUID(), username: `qa_reaction_${crypto.randomBytes(6).toString('hex')}`, token: crypto.randomBytes(32).toString('hex') };
   const track = `qa_track_${crypto.randomBytes(6).toString('hex')}`;
   const moment = `qa_moment_${crypto.randomBytes(6).toString('hex')}`;
-  let api, web, browser;
+  let browser;
   const contexts = [];
-  const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const close = server => server ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
   try {
     await pool.query(`INSERT INTO ${qschema}.users(id,username,password_hash) VALUES($1,$2,$3)`, [owner.id, owner.username, 'unused-qa-fixture']);
     await pool.query(`INSERT INTO ${qschema}.sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 hour')`, [hashSession(owner.token), owner.id]);
@@ -26,20 +23,10 @@ const crypto = require('node:crypto');
     await pool.query(`INSERT INTO ${qschema}.tracks(owner_id,id,document) VALUES($1,$2,$3)`, [owner.id, track, trackDoc]);
     const momentDoc = { id: moment, resourceOwnerId: owner.id, eventId: track, title: 'Reaction reflection live QA', date: '2026-10-15', time: null, description: 'Original content remains unchanged.', idea: null, location: null, tags: [], images: [], emotion: 'joy', emotionIntensity: 2, isMilestone: false, version: 1, createdAt: '2026-10-15', updatedAt: '2026-10-15' };
     await pool.query(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document) VALUES($1,$2,$3,$4)`, [owner.id, moment, track, momentDoc]);
-    api = http.createServer(app); await listen(api);
-    web = http.createServer((req, res) => {
-      if (req.url.startsWith('/api/') || req.url === '/health') {
-        const upstream = http.request({ hostname: '127.0.0.1', port: api.address().port, path: req.url, method: req.method, headers: req.headers }, r => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
-        upstream.on('error', () => { res.statusCode = 502; res.end(); }); req.pipe(upstream); return;
-      }
-      let file = path.join(process.cwd(), 'dist', decodeURIComponent(req.url.split('?')[0]));
-      if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(process.cwd(), 'dist/index.html');
-      const ext = path.extname(file); res.setHeader('Content-Type', ext === '.js' ? 'text/javascript' : ext === '.css' ? 'text/css' : 'text/html'); res.end(fs.readFileSync(file));
-    }); await listen(web);
-    const base = `http://127.0.0.1:${web.address().port}`;
+    const base = 'https://memento-dev.srv.io.vn';
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/home/ubuntu/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux-arm64/chrome-headless-shell', args: ['--no-sandbox'] });
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' }); contexts.push(context);
-    await context.addCookies([{ name: 'memento_session', value: owner.token, url: base, httpOnly: true, sameSite: 'Lax' }]);
+    await context.addCookies([{ name: 'memento_session', value: owner.token, url: base, httpOnly: true, sameSite: 'Lax', secure: true }]);
     const page = await context.newPage(); page.on('pageerror', error => report.pageerrors.push(error.message));
     page.on('response', response => { const url = new URL(response.url()); if (url.pathname.startsWith('/api/')) report.requests.push({ method: response.request().method(), path: url.pathname, status: response.status() }); });
     await page.goto(base);
@@ -54,7 +41,7 @@ const crypto = require('node:crypto');
     assert.equal(await react.getAttribute('aria-pressed'), 'true');
     const reflection = detail.getByRole('button', { name: 'Bây giờ nghĩ lại…', exact: true }); await reflection.click();
     const composer = page.getByRole('dialog', { name: 'Bây giờ nghĩ lại…' }); await composer.waitFor();
-    const textarea = composer.locator('textarea'); assert.equal(await textarea.evaluate(el => document.activeElement === el), true);
+    const textarea = composer.locator('textarea'); await textarea.waitFor(); await page.waitForFunction(() => document.activeElement?.tagName === 'TEXTAREA'); assert.equal(await textarea.evaluate(el => document.activeElement === el), true);
     await textarea.fill('Verified reflection on DEV'); await composer.getByRole('button', { name: 'Save', exact: true }).click();
     await detail.locator('ol li').filter({ hasText: 'Verified reflection on DEV' }).waitFor();
     assert.equal((await detail.locator('h1').innerText()).trim(), 'Reaction reflection live QA');
@@ -69,7 +56,7 @@ const crypto = require('node:crypto');
   } catch (error) { report.passed = false; report.error = error.stack; process.exitCode = 1; }
   finally {
     for (const context of contexts) await context.close().catch(() => {});
-    if (browser) await browser.close(); await close(web); await close(api);
+    if (browser) await browser.close();
     if (owner.id) await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`, [owner.id]);
     const count = await pool.query(`SELECT count(*)::int AS count FROM ${qschema}.users WHERE id=$1`, [owner.id]); report.cleanup = count.rows[0].count === 0;
     assert.equal(report.cleanup, true, 'temporary user cascades deleted');
