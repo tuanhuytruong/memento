@@ -286,7 +286,7 @@ export const dataApi = {
     } while (cursor);
     return all;
   },
-  setReaction: async (momentId: string, ownerId: string, emoji: MemoryReaction['emoji'], active: boolean) => request<{ reactions: MemoryReaction[]; selectedEmojis: string[] }>(`/moments/${encodeURIComponent(momentId)}/reactions`, { method: 'PUT', body: JSON.stringify({ ownerId, emoji, active }) }),
+  setReaction: async (momentId: string, ownerId: string, emoji: MemoryReaction['emoji'], active: boolean, signal?: AbortSignal) => request<{ reactions: MemoryReaction[]; selectedEmojis: string[] }>(`/moments/${encodeURIComponent(momentId)}/reactions`, { method: 'PUT', body: JSON.stringify({ ownerId, emoji, active }), signal }),
   createMoment: async (moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, eventOwnerId: string) =>
     requireResource<TimelineEvent>(await request('/moments', { method: 'POST', body: JSON.stringify({ ...moment, eventOwnerId }) }), ['moment'], 'moment'),
   updateMoment: async (id: string, ownerId: string, moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, expectedVersion: number, eventOwnerId: string) =>

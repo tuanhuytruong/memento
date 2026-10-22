@@ -3,6 +3,7 @@ import type { SaveProgress } from './components/EventModal';
 import { AccountOverview, TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
 import { buildCompleteBackup, downloadBackup } from './lib/exportBackup';
 import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
+import { setReactionState } from './lib/reactionState';
 import { matchesMomentFilters, compareMoments, filterProjection, applyFilterPatch } from './lib/momentFilters';
 import { releaseAllMomentDrafts } from './lib/useMomentDraft';
 import { useMomentFeed, feedScopeHash } from './lib/useMomentFeed';
@@ -603,18 +604,28 @@ export default function App() {
     await loadData();
   };
 
-  const handleToggleReaction = async (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉') => {
+  const handleToggleReaction = async (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉', desiredActive?: boolean, signal?: AbortSignal) => {
     const generation = authGenerationRef.current;
     const identity = momentIdentity(event);
     if (reactionPending.current.has(identity)) return;
     reactionPending.current.add(identity);
+    const confirmed = event.reactions || [];
+    const active = desiredActive ?? !confirmed.find((item) => item.emoji === emoji)?.selected;
+    const project = (reactions: typeof confirmed) => (item: TimelineEvent) => momentIdentity(item) === identity ? { ...item, reactions } : item;
+    const optimistic = setReactionState(confirmed, emoji, active);
+    setEvents((previous) => previous.map(project(optimistic)));
+    setEventToView((previous) => previous && momentIdentity(previous) === identity ? project(optimistic)(previous) : previous);
     try {
-      const active = !event.reactions?.find((item) => item.emoji === emoji)?.selected;
-      const response = await dataApi.setReaction(event.id, event.resourceOwnerId || user.id, emoji, active);
+      const response = await dataApi.setReaction(event.id, event.resourceOwnerId || user.id, emoji, active, signal);
       assertSession(generation);
-      const apply = (item: TimelineEvent) => momentIdentity(item) === identity ? { ...item, reactions: response.reactions } : item;
-      setEvents((prev) => prev.map(apply));
-      setEventToView((prev) => prev && momentIdentity(prev) === identity ? apply(prev) : prev);
+      setEvents((previous) => previous.map(project(response.reactions)));
+      setEventToView((previous) => previous && momentIdentity(previous) === identity ? project(response.reactions)(previous) : previous);
+    } catch (failure) {
+      if (generation === authGenerationRef.current) {
+        setEvents((previous) => previous.map(project(confirmed)));
+        setEventToView((previous) => previous && momentIdentity(previous) === identity ? project(confirmed)(previous) : previous);
+      }
+      throw failure;
     } finally { if (generation === authGenerationRef.current) reactionPending.current.delete(identity); }
   };
 
@@ -1042,6 +1053,7 @@ export default function App() {
         onDeletePerspective={handleDeletePerspective}
         sessionGeneration={authGenerationRef.current}
         currentUserId={user.id}
+        currentUsername={user.username}
         isSaved={eventToView ? savedKeys.has(`${eventToView.resourceOwnerId}:${eventToView.id}`) : false}
         saveState={saveState}
         onToggleSave={handleToggleSave}
