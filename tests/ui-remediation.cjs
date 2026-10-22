@@ -257,7 +257,7 @@ async function logoutAndLogin(page){
     const reaction=detail.getByRole('button',{name:/React ❤️/});
     const before=Date.now();await reaction.click();
     await page.waitForFunction(()=>[...document.querySelectorAll('#event-detail-card button[aria-label^="React ❤️"]')].some(b=>b.getAttribute('aria-pressed')==='true'));
-    const paintMs=Date.now()-before;assert(paintMs<1000,`reaction paint should not await held network; ${paintMs}ms`);assert(await reaction.isDisabled());await started.promise;gate.resolve();await page.waitForFunction(()=>!document.querySelector('#event-detail-card button[aria-label^="React ❤️"]')?.disabled);
+    const paintMs=Date.now()-before;assert(paintMs<1000,`reaction paint should not await held network; ${paintMs}ms`);assert.equal(await reaction.isDisabled(),false);assert.equal(await reaction.evaluate(el=>getComputedStyle(el).opacity),'1');await started.promise;gate.resolve();await page.waitForFunction(()=>document.querySelector('#event-detail-card button[aria-label^="React ❤️"]')?.getAttribute('aria-busy')==='false');
     const reflection=detail.getByRole('button',{name:'Bây giờ nghĩ lại…',exact:true});await reflection.click();
     const popup=page.getByRole('dialog',{name:'Bây giờ nghĩ lại…'});await popup.waitFor();const textarea=popup.locator('textarea');assert.equal(await textarea.evaluate(el=>document.activeElement===el),true);assert.equal(await popup.evaluate(el=>!document.querySelector('#event-detail-card')?.contains(el)),true,'composer portal is outside detail dialog');
     await page.keyboard.press('Escape');await popup.waitFor({state:'detached'});assert.equal(await detail.count(),1,'Escape closes only topmost popup');

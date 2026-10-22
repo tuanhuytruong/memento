@@ -3,7 +3,7 @@ import type { SaveProgress } from './components/EventModal';
 import { AccountOverview, TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
 import { buildCompleteBackup, downloadBackup } from './lib/exportBackup';
 import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
-import { setReactionState } from './lib/reactionState';
+import { createReactionQueue } from './lib/reactionQueue';
 import { matchesMomentFilters, compareMoments, filterProjection, applyFilterPatch } from './lib/momentFilters';
 import { releaseAllMomentDrafts } from './lib/useMomentDraft';
 import { useMomentFeed, feedScopeHash } from './lib/useMomentFeed';
@@ -69,7 +69,7 @@ export default function App() {
   // Which card opened the detail view, so closing can return focus and scroll.
   const detailOpenerKey = useRef<string | null>(null);
   const uploadBusy = useRef(false);
-  const reactionPending = useRef(new Set<string>());
+  const reactionPending = useRef(new Map<string, ReturnType<typeof createReactionQueue>>());
   const assertSession = (generation: number) => { if (generation !== authGenerationRef.current) throw new Error('Session changed. Request result discarded.'); };
 
   const loadData = useCallback(async () => {
@@ -604,29 +604,26 @@ export default function App() {
     await loadData();
   };
 
-  const handleToggleReaction = async (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉', desiredActive?: boolean, signal?: AbortSignal) => {
+  const handleToggleReaction = async (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉', desiredActive?: boolean) => {
     const generation = authGenerationRef.current;
     const identity = momentIdentity(event);
-    if (reactionPending.current.has(identity)) return;
-    reactionPending.current.add(identity);
-    const confirmed = event.reactions || [];
-    const active = desiredActive ?? !confirmed.find((item) => item.emoji === emoji)?.selected;
-    const project = (reactions: typeof confirmed) => (item: TimelineEvent) => momentIdentity(item) === identity ? { ...item, reactions } : item;
-    const optimistic = setReactionState(confirmed, emoji, active);
-    setEvents((previous) => previous.map(project(optimistic)));
-    setEventToView((previous) => previous && momentIdentity(previous) === identity ? project(optimistic)(previous) : previous);
-    try {
-      const response = await dataApi.setReaction(event.id, event.resourceOwnerId || user.id, emoji, active, signal);
-      assertSession(generation);
-      setEvents((previous) => previous.map(project(response.reactions)));
-      setEventToView((previous) => previous && momentIdentity(previous) === identity ? project(response.reactions)(previous) : previous);
-    } catch (failure) {
-      if (generation === authGenerationRef.current) {
-        setEvents((previous) => previous.map(project(confirmed)));
-        setEventToView((previous) => previous && momentIdentity(previous) === identity ? project(confirmed)(previous) : previous);
-      }
-      throw failure;
-    } finally { if (generation === authGenerationRef.current) reactionPending.current.delete(identity); }
+    let queue = reactionPending.current.get(identity);
+    if (!queue || queue.idle) {
+      const valid = () => generation === authGenerationRef.current;
+      queue = createReactionQueue(event.reactions || [], async (emoji, active) => {
+        const controller = new AbortController();
+        const deadline = window.setTimeout(() => controller.abort(), 10_000);
+        try { return (await dataApi.setReaction(event.id, event.resourceOwnerId || user.id, emoji, active, controller.signal)).reactions; }
+        catch (failure) { if (controller.signal.aborted) throw new Error('The server may have saved this reaction, but confirmation timed out. Retry is safe.'); throw failure; }
+        finally { window.clearTimeout(deadline); }
+      }, reactions => {
+        const project = (item: TimelineEvent) => momentIdentity(item) === identity ? { ...item, reactions } : item;
+        setEvents(previous => valid() ? previous.map(project) : previous);
+        setEventToView(previous => valid() && previous ? project(previous) : previous);
+      }, valid, user.username);
+      reactionPending.current.set(identity, queue);
+    }
+    await queue.enqueue(emoji, desiredActive);
   };
 
   const handleAddCustomTag = async (name: string) => {
