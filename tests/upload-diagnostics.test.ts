@@ -122,3 +122,29 @@ test('snapshot is a copy: mutating it cannot corrupt the ring', () => {
   assert.equal(diagnostics.snapshot()[0].clientMs, 900);
   assert.equal(diagnostics.snapshot()[0].stages?.['up-total'], 400);
 });
+
+test('the local-first lifecycle is recorded with closed labels only', () => {
+  const diagnostics = enabled();
+  for (const kind of ['upload-start', 'upload-abort-timeout', 'upload-abort-session', 'upload-failed', 'upload-resume', 'upload-committed'] as const) {
+    const record = diagnostics.record(phaseDiagnostic(kind, 0, 'upload-abc123'));
+    assert.ok(record, `${kind} must be accepted`);
+    assert.equal(record?.kind, kind);
+    assert.equal(record?.uploadId, 'upload-abc123');
+    // Nothing about the photo itself: no name, no size, no caption.
+    assert.equal(JSON.stringify(record).includes('jpg'), false);
+  }
+  assert.equal(diagnostics.snapshot().length, 6);
+  // An id that is not a plain token is dropped, and the record keeps its label.
+  const unsafe = diagnostics.record(phaseDiagnostic('upload-abort-timeout', 0, '../../etc/passwd'));
+  assert.equal(unsafe?.kind, 'upload-abort-timeout');
+  assert.equal(unsafe?.uploadId, null, 'an unsafe correlation id is dropped instead of stored');
+});
+
+test('an aborted attempt and a committed attempt are distinguishable in the snapshot', () => {
+  const diagnostics = enabled();
+  diagnostics.record(phaseDiagnostic('upload-abort-timeout', 0, 'one'));
+  diagnostics.record(describeUploadTiming({ uploadId: 'one', clientMs: 30_010, timing: { headerMs: 30_000, bodyMs: 2, status: 0, serverTiming: null, diagnosticId: null } }));
+  diagnostics.record(phaseDiagnostic('upload-committed', 0, 'two'));
+  const kinds = diagnostics.snapshot().map((entry) => entry.kind);
+  assert.deepEqual(kinds, ['upload-abort-timeout', 'image-upload', 'upload-committed']);
+});

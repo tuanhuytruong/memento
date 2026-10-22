@@ -15,7 +15,19 @@ export const DIAGNOSTIC_LIMIT = 25;
 export const STAGE_LABEL_LIMIT = 16;
 export const ENV_FLAG = 'VITE_UPLOAD_DIAGNOSTICS';
 
-export type UploadDiagnosticKind = 'prepare' | 'moment-write' | 'image-upload' | 'reconcile';
+export type UploadDiagnosticKind =
+  | 'prepare'
+  | 'moment-write'
+  | 'image-upload'
+  | 'reconcile'
+  // Lifecycle of one upload attempt. A photo that never leaves the device is the
+  // case the server log can never show, so the client records it here.
+  | 'upload-start'
+  | 'upload-abort-timeout'
+  | 'upload-abort-session'
+  | 'upload-failed'
+  | 'upload-resume'
+  | 'upload-committed';
 
 export interface UploadDiagnostic {
   kind: UploadDiagnosticKind;
@@ -32,7 +44,18 @@ export interface UploadDiagnostic {
   stages: Record<string, number> | null;
 }
 
-const KINDS = new Set<UploadDiagnosticKind>(['prepare', 'moment-write', 'image-upload', 'reconcile']);
+const KINDS = new Set<UploadDiagnosticKind>([
+  'prepare',
+  'moment-write',
+  'image-upload',
+  'reconcile',
+  'upload-start',
+  'upload-abort-timeout',
+  'upload-abort-session',
+  'upload-failed',
+  'upload-resume',
+  'upload-committed',
+]);
 const METRIC = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,64}$/;
 const MAX_MS = 600_000;

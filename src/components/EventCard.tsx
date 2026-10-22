@@ -16,6 +16,7 @@ import { getEmotionMeta } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { formatDateDisplay, getRelativeTime } from '../lib/storage';
 import { PrivateImage } from './PrivateImage';
+import { useLocalPhotos } from '../lib/localPhoto';
 import { momentIdentity } from '../lib/resourceIdentity';
 
 interface EventCardProps {
@@ -40,6 +41,9 @@ export const EventCard: React.FC<EventCardProps> = ({
   onTagClick,
   onOpenImageLightbox,
 }) => {
+  // A photo the owner just attached can still be local-only while the upload runs.
+  const pendingPhotos = useLocalPhotos(event.id);
+  const photoCount = event.images.length + pendingPhotos.length;
   const emotionMeta = getEmotionMeta(event.emotion);
   const relativeTime = getRelativeTime(event.date);
   const trackTheme = track ? getEventTheme(track.color) : null;
@@ -186,17 +190,32 @@ export const EventCard: React.FC<EventCardProps> = ({
         )}
 
         {/* Attached image preview (single or multi-thumbnail) */}
-        {event.images && event.images.length > 0 && (
+        {photoCount > 0 && (
           // The shared photo container only paints a full-width panel for the multi-photo
           // grid; a single photo brings its own compact frame.
           <div
-            className={event.images.length === 1 ? 'mb-3' : 'mb-3 rounded-xl overflow-hidden bg-stone-100 dark:bg-stone-800'}
-            onClick={event.images.length === 1 ? undefined : (e) => {
+            className={photoCount === 1 ? 'mb-3' : 'mb-3 rounded-xl overflow-hidden bg-stone-100 dark:bg-stone-800'}
+            onClick={photoCount === 1 || event.images.length === 0 ? undefined : (e) => {
               e.stopPropagation();
               onOpenImageLightbox(event.images, 0);
             }}
           >
-            {event.images.length === 1 ? (
+            {event.images.length === 0 && pendingPhotos.length === 1 ? (
+              // Local-first: the saved moment shows its photo immediately, while the
+              // upload continues in the background. The chip must never claim success.
+              <div className="relative max-w-[360px] overflow-hidden rounded-xl">
+                <div className="aspect-[4/3] w-full">
+                  <img src={pendingPhotos[0].url} alt={event.title} className="h-full w-full object-cover" />
+                </div>
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="absolute bottom-1.5 left-1.5 rounded-md bg-black/65 px-1.5 py-0.5 text-[10px] font-medium text-white"
+                >
+                  {pendingPhotos[0].status}
+                </span>
+              </div>
+            ) : event.images.length === 1 ? (
               // A single photo gets a bounded 4:3 frame instead of a full-width strip:
               // stretching the 480px thumb across the card is what made it soft.
               // The display derivative (1280px) stays sharp at this size and on 2x screens.
@@ -244,6 +263,18 @@ export const EventCard: React.FC<EventCardProps> = ({
                         +{event.images.length - 3} more
                       </div>
                     )}
+                  </div>
+                ))}
+                {pendingPhotos.slice(0, Math.max(0, 3 - event.images.length)).map((photo) => (
+                  <div key={photo.uploadId} className="relative h-28 rounded-lg overflow-hidden bg-stone-200 dark:bg-stone-700">
+                    <img src={photo.url} alt="Photo uploading" className="h-full w-full object-cover" />
+                    <span
+                      role="status"
+                      aria-live="polite"
+                      className="absolute bottom-1 left-1 rounded bg-black/65 px-1 py-0.5 text-[9px] font-medium text-white"
+                    >
+                      {photo.status}
+                    </span>
                   </div>
                 ))}
               </div>

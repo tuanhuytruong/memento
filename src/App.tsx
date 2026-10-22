@@ -9,7 +9,10 @@ import { useMomentFeed, feedScopeHash } from './lib/useMomentFeed';
 import {MonthQuickBrowseRail} from './components/MonthQuickBrowseRail';
 import { useDebouncedSearch } from './lib/useDebouncedSearch';
 import { LoadMoreMemories } from './components/LoadMoreMemories';
-import { authApi, ApiError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation, type RequestTiming } from './lib/api';
+import { authApi, ApiError, UploadAbortedError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation, type RequestTiming } from './lib/api';
+import { outboxEvictExpired, outboxLoad, outboxOldestUncommitted, outboxPurgeAll, outboxPut, outboxUpdate } from './lib/photoOutbox';
+import { LocalPhotoProvider } from './lib/localPhoto';
+import { setImageCacheOwner } from './lib/imageCache';
 import { clearUploadDiagnostics, describeUploadTiming, phaseDiagnostic, recordUploadDiagnostic } from './lib/uploadDiagnostics';
 import { CollaborationModal, SharedInvitations } from './components/CollaborationModal';
 import { AuthScreen } from './components/AuthScreen';
@@ -110,6 +113,9 @@ export default function App() {
     authApi.me().then(async (currentUser) => {
       if (!active || generation !== authGenerationRef.current) return;
       setUser(currentUser);
+      // The image cache is only meaningful for one account: name it before the feed
+      // renders, not in an effect that runs after the first paint.
+      setImageCacheOwner(currentUser.id);
       setAuthStatus('authenticated');
       try {
         await loadData();
@@ -141,6 +147,7 @@ export default function App() {
     const currentUser = await authApi.me();
     assertSession(generation);
     setUser(currentUser);
+    setImageCacheOwner(currentUser.id);
     setAuthStatus('authenticated');
     setDataReady(false);
     setEventTracks([]);
@@ -177,6 +184,9 @@ export default function App() {
       const currentUser = await authApi.me();
       assertSession(generation);
       setUser(currentUser);
+      // The image cache is only meaningful for one account: name it before the feed
+      // renders, not in an effect that runs after the first paint.
+      setImageCacheOwner(currentUser.id);
       setAuthStatus('authenticated');
       await loadData();
     } catch (error) {
@@ -242,6 +252,10 @@ export default function App() {
     // No private draft crosses an account or session boundary.
     releaseAllMomentDrafts().forEach((url) => { try { URL.revokeObjectURL(url); } catch { /* already revoked */ } });
     clearUploadDiagnostics();
+    // Photo bytes on this device belong to the session that wrote them: a logout or
+    // an account switch both drop the outbox and every cached variant.
+    void outboxPurgeAll();
+    setImageCacheOwner(null);
     setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', dateFrom: '', dateTo: '', milestonesOnly: false, hasImagesOnly: false, savedOnly: false }));
   }
 
@@ -553,7 +567,10 @@ export default function App() {
   // The modal is released only after create/edit, optional private uploads and feed reconciliation.
   const handleSaveEvent = async (data: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles: File[] = [], eventOwnerId?: string, expectedVersion?: number, onProgress: (progress: SaveProgress) => void = () => {}) => {
     const generation = authGenerationRef.current;
-    if (uploadBusy.current || (imageFiles.length && pendingImageRetry)) throw new Error('Finish or retry the previous photo upload before attaching more files. Your draft is preserved.');
+    // Only a photo that is still in flight may block this save: a photo that already
+    // failed stays queued in the outbox and resumes on its own or from the banner,
+    // so the user is never trapped behind a dead upload.
+    if (uploadBusy.current || (imageFiles.length && uploadRunning && pendingImageRetry)) throw new Error('A photo from the previous save is still uploading. Wait a moment, or retry it from the banner before adding more.');
     if (editId && (!eventToEdit || eventToEdit.id !== editId)) throw new Error('This edit is no longer open. Close and reopen the form before saving. Your draft is unchanged.');
     const version = expectedVersion ?? eventToEdit?.version;
     if (editId && !Number.isInteger(version)) throw new Error('This edit has no version. Close and reopen the form before saving. Your draft is unchanged.');
@@ -644,33 +661,134 @@ export default function App() {
     }
   };
 
+  /** One photo attempt may occupy the gate for 30s; a second attempt is the last. */
+  const UPLOAD_MAX_ATTEMPTS = 2;
+
   async function processImageQueue(queue: NonNullable<typeof pendingImageRetry>, generation: number, onProgress?: (progress: SaveProgress) => void) {
     if (uploadBusy.current) throw new Error('Another photo upload is still running.');
-    uploadBusy.current = true; setUploadRunning(true); let remaining = queue.files;
+    uploadBusy.current = true; setUploadRunning(true);
+    let remaining = [...queue.files];
+    // The blob becomes durable before the first attempt: switching apps, killing the
+    // tab or losing the network can no longer lose the photo or wedge this gate.
+    for (const item of queue.files) {
+      await outboxPut({
+        uploadId: item.uploadId,
+        ownerId: queue.ownerId,
+        momentId: queue.momentId,
+        blob: item.file,
+        name: item.file.name,
+        type: item.file.type,
+        bytes: item.file.size,
+        state: 'pending',
+      }).catch(() => undefined);
+    }
     try {
       while (remaining.length) {
         assertSession(generation);
-        onProgress?.({ phase: 'uploading-images', acknowledged: queue.files.length - remaining.length, total: queue.files.length });
         const { file, uploadId } = remaining[0];
-        // Client elapsed minus the origin's own stages leaves the unattributed remainder:
-        // transport, queueing, or work that happened before this process saw the request.
-        const startedAt = performance.now();
-        const timing: { current: RequestTiming | null } = { current: null };
-        try {
-          await dataApi.uploadImage(file, queue.momentId, queue.ownerId, uploadId, (measured) => { timing.current = measured; });
-        } finally {
-          recordUploadDiagnostic(describeUploadTiming({ uploadId, clientMs: performance.now() - startedAt, timing: timing.current }));
+        onProgress?.({ phase: 'uploading-images', acknowledged: queue.files.length - remaining.length, total: queue.files.length });
+        let lastError: unknown = null;
+        for (let attempt = 1; attempt <= UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+          assertSession(generation);
+          await outboxUpdate(queue.ownerId, uploadId, { state: 'uploading', attempts: attempt, lastAttemptAt: Date.now() }).catch(() => null);
+          recordUploadDiagnostic(phaseDiagnostic('upload-start', 0, uploadId));
+          const startedAt = performance.now();
+          // Client elapsed minus the origin's own stages leaves the unattributed remainder:
+          // transport, queueing, or work that happened before this process saw the request.
+          const timing: { current: RequestTiming | null } = { current: null };
+          try {
+            await dataApi.uploadImage(file, queue.momentId, queue.ownerId, uploadId, (measured) => { timing.current = measured; });
+            lastError = null;
+          } catch (error) {
+            lastError = error;
+            const aborted = error instanceof UploadAbortedError;
+            recordUploadDiagnostic(phaseDiagnostic(aborted ? (error.timeout ? 'upload-abort-timeout' : 'upload-abort-session') : 'upload-failed', 0, uploadId));
+            await outboxUpdate(queue.ownerId, uploadId, { state: 'failed' }).catch(() => null);
+            // An interrupted attempt is worth one immediate retry; anything the server
+            // rejected on purpose is not.
+            if (aborted && attempt < UPLOAD_MAX_ATTEMPTS && navigator.onLine !== false) continue;
+            break;
+          } finally {
+            recordUploadDiagnostic(describeUploadTiming({ uploadId, clientMs: performance.now() - startedAt, timing: timing.current }));
+          }
+          break;
         }
-        assertSession(generation);
+        if (lastError) {
+          if (generation === authGenerationRef.current) setPendingImageRetry({ ...queue, files: remaining });
+          throw lastError;
+        }
+        await outboxUpdate(queue.ownerId, uploadId, { state: 'committed' }).catch(() => null);
+        recordUploadDiagnostic(phaseDiagnostic('upload-committed', 0, uploadId));
+        await outboxEvictExpired(queue.ownerId).catch(() => 0);
         remaining = remaining.slice(1);
-        setPendingImageRetry({ ...queue, files: remaining });
+        setPendingImageRetry(remaining.length ? { ...queue, files: remaining } : null);
       }
-    } catch (error) { if (generation === authGenerationRef.current) setPendingImageRetry({ ...queue, files: remaining }); throw error; }
-    finally { if (generation === authGenerationRef.current) { uploadBusy.current = false; setUploadRunning(false); } }
+    } catch (error) {
+      if (generation === authGenerationRef.current) setPendingImageRetry({ ...queue, files: remaining });
+      throw error;
+    } finally {
+      if (generation === authGenerationRef.current) { uploadBusy.current = false; setUploadRunning(false); }
+    }
   }
   const retryImageUploads = async () => {
-    if (pendingImageRetry) await processImageQueue(pendingImageRetry, authGenerationRef.current);
+    if (!pendingImageRetry) return;
+    const generation = authGenerationRef.current;
+    try {
+      await processImageQueue(pendingImageRetry, generation);
+      // A photo that lands from the banner was never part of a completed save, so the
+      // feed still does not know about it: reconcile before the retry looks done.
+      await loadData();
+      assertSession(generation);
+      setFeedRevision((value) => value + 1);
+    } catch {
+      // The banner still owes the photo and says so.
+    }
   };
+
+  /**
+   * Anything the server never acknowledged is retried when the app opens, when the
+   * network returns, and when the tab comes back. WebKit has no background sync, so
+   * these are the only windows a photo has.
+   */
+  const resumePendingPhotos = useCallback(async () => {
+    const owner = user?.id;
+    if (!owner || uploadBusy.current || authStatus !== 'authenticated' || !dataReady) return;
+    const queue = outboxOldestUncommitted(owner);
+    if (!queue) return;
+    const generation = authGenerationRef.current;
+    recordUploadDiagnostic(phaseDiagnostic('upload-resume', 0, queue.files[0]?.uploadId ?? null));
+    try {
+      setPendingImageRetry(queue);
+      await processImageQueue(queue, generation);
+      await loadData();
+      assertSession(generation);
+      setFeedRevision((value) => value + 1);
+    } catch {
+      // The banner and the retry control already describe the failure.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, authStatus, dataReady]);
+
+  useEffect(() => {
+    if (!user) return;
+    // Ask the engine to keep this origin's storage; a refusal is fine, the outbox is
+    // still better than no copy at all.
+    void navigator.storage?.persist?.().catch(() => false);
+    void outboxLoad(user.id).then(() => outboxEvictExpired(user.id)).catch(() => undefined);
+  }, [user]);
+
+  useEffect(() => {
+    if (!dataReady || authStatus !== 'authenticated') return;
+    const resume = () => { void resumePendingPhotos(); };
+    const onVisible = () => { if (document.visibilityState === 'visible') resume(); };
+    window.addEventListener('online', resume);
+    document.addEventListener('visibilitychange', onVisible);
+    resume();
+    return () => {
+      window.removeEventListener('online', resume);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [dataReady, authStatus, resumePendingPhotos]);
 
   if (authStatus === 'checking') {
     return <main className="min-h-screen bg-stone-50 dark:bg-stone-950 flex items-center justify-center text-stone-500">Checking your session…</main>;
@@ -686,9 +804,11 @@ export default function App() {
   }
 
   return (
+    <LocalPhotoProvider ownerId={user.id}>
     <div className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
         {uploadRunning && pendingImageRetry && <div role="status" aria-live="polite" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">Moment saved · Saving {pendingImageRetry.files.length} photo{pendingImageRetry.files.length === 1 ? '' : 's'} in the background…</div>}
+        {!uploadRunning && pendingImageRetry && <div role="status" aria-live="polite" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200"><span>{pendingImageRetry.files.length === 1 ? '1 photo has not reached the server yet. It is kept on this device.' : `${pendingImageRetry.files.length} photos have not reached the server yet. They are kept on this device.`}</span><button className="font-semibold underline" onClick={() => void retryImageUploads()}>Retry photo upload</button></div>}
         {dataError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200"><span>{dataError}</span><span className="flex gap-3">{pendingImageRetry && <button disabled={uploadRunning} className="font-semibold underline disabled:opacity-50" onClick={() => void retryImageUploads()}>{uploadRunning ? 'Uploading…' : pendingImageRetry.files.length ? 'Retry image upload' : 'Retry timeline refresh'}</button>}<button className="font-semibold underline" onClick={() => setDataError('')}>Dismiss</button></span></div>}
         <SharedInvitations invitations={collaborationInvitations} onAccept={(id) => runMutation(() => acceptInvitation(id))} />
         {/* Header Ribbon & Global Stats */}
@@ -956,5 +1076,6 @@ export default function App() {
       />}
       </Suspense></DeferredUiBoundary>
     </div>
+    </LocalPhotoProvider>
   );
 }
