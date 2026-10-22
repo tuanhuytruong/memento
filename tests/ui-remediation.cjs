@@ -247,29 +247,45 @@ async function logoutAndLogin(page){
 (async()=>{
  const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/opt/hermes/tools/chromium-1208/chrome-linux/chrome',args:['--no-sandbox']});const results=[];
  try {
+  if(process.env.MEMENTO_REACTION_REFLECTION_ONLY==='1') {
+   {const {page,state,context}=await fixture(browser,{reactionFailure:true});await page.locator('#event-card-A\\:qa-moment h3').click();const button=page.getByRole('button',{name:/React ❤️/});await button.click();await page.getByRole('alert').filter({hasText:'Synthetic reaction failure'}).waitFor();assert.equal(await button.getAttribute('aria-pressed'),'false');state.reactionFailure=false;await page.getByRole('button',{name:'Retry reaction',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#event-detail-card button[aria-label^="React ❤️"]')?.getAttribute('aria-pressed')==='true');assert.equal(state.puts.length,2);assert.equal(state.puts[0].active,true);assert.equal(state.puts[1].active,true,'retry sends same desired active state');results.push('failure rollback + explicit idempotent desired-state retry PASS');await context.close();}
+   for(const [width,height] of [[320,740],[390,844],[1280,800]]) {
+    const gate=deferred(),started=deferred();
+    const {page,state,context,errors}=await fixture(browser,{viewport:{width,height},reactionGate:gate,reactionStarted:started});
+    await page.locator('#event-card-A\\:qa-moment h3').click();
+    const detail=page.locator('#event-detail-card');await detail.waitFor();
+    const reaction=detail.getByRole('button',{name:/React ❤️/});
+    const before=Date.now();await reaction.click();
+    await page.waitForFunction(()=>[...document.querySelectorAll('#event-detail-card button[aria-label^="React ❤️"]')].some(b=>b.getAttribute('aria-pressed')==='true'));
+    const paintMs=Date.now()-before;assert(paintMs<1000,`reaction paint should not await held network; ${paintMs}ms`);assert.equal(await reaction.isDisabled(),false);assert.equal(await reaction.evaluate(el=>getComputedStyle(el).opacity),'1');await started.promise;gate.resolve();await page.waitForFunction(()=>document.querySelector('#event-detail-card button[aria-label^="React ❤️"]')?.getAttribute('aria-busy')==='false');
+    const reflection=detail.getByRole('button',{name:'Bây giờ nghĩ lại…',exact:true});await reflection.click();
+    const popup=page.getByRole('dialog',{name:'Bây giờ nghĩ lại…'});await popup.waitFor();const textarea=popup.locator('textarea');assert.equal(await textarea.evaluate(el=>document.activeElement===el),true);assert.equal(await popup.evaluate(el=>!document.querySelector('#event-detail-card')?.contains(el)),true,'composer portal is outside detail dialog');
+    await page.keyboard.press('Escape');await popup.waitFor({state:'detached'});assert.equal(await detail.count(),1,'Escape closes only topmost popup');
+    await reflection.click();const popup2=page.getByRole('dialog',{name:'Bây giờ nghĩ lại…'});await popup2.waitFor();const field=popup2.locator('textarea');await field.fill('Reflection from focused dialog');
+    const asks=[];const dismiss=async d=>{asks.push(d.message());await d.dismiss();};page.on('dialog',dismiss);await popup2.getByRole('button',{name:'Cancel',exact:true}).click();page.off('dialog',dismiss);assert.equal(asks.length,1);assert.equal(await field.inputValue(),'Reflection from focused dialog');
+    await popup2.getByRole('button',{name:'Save',exact:true}).click();await page.locator('#event-detail-card ol li').filter({hasText:'Reflection from focused dialog'}).waitFor();assert.equal(state.perspectives.length,1);assert.equal(state.perspectives[0].kind,'reflection');assert.equal(state.puts.length,1,'reaction PUT only; story not overwritten');assert.deepEqual(errors,[]);
+    results.push(`${width}x${height}: optimistic reaction painted in ${paintMs}ms before held PUT; popup focus/portal, Escape isolation, dirty retention, save PASS`);await context.close();
+   }
+   console.log(JSON.stringify({kind:'controlled-route browser QA; latest local DEV dist, not live persistence',results},null,2));return;
+  }
   if(process.env.MEMENTO_UI_DRAFT_ONLY==='1') {
    const cases=[
-    {name:'backdrop',action:page=>page.locator('#event-detail-backdrop').click({position:{x:2,y:2}})},
+    {name:'backdrop',action:page=>page.locator('#perspective-dialog-title').locator('xpath=../../../..').click({position:{x:2,y:2}})},
     {name:'Escape',action:page=>page.keyboard.press('Escape')},
-    {name:'header close',action:page=>page.getByRole('button',{name:'Close memory details',exact:true}).click()},
-    {name:'track navigation',action:page=>page.locator('#event-detail-card').locator('button[title^="Filter to"]').click()},
-    {name:'edit navigation',action:page=>page.locator('#event-detail-card').getByTitle('Edit event',{exact:true}).click()},
-    {name:'delete',action:page=>page.locator('#event-detail-card').getByTitle('Delete event',{exact:true}).click(),delete:true},
+    {name:'Cancel button',action:page=>page.getByRole('button',{name:'Cancel',exact:true}).click()},
    ];
    for(const dismissal of cases) {
     const {page,state,context}=await fixture(browser);
     await page.locator('#event-card-A\\:qa-moment h3').click();
     await page.getByRole('button',{name:'Add your perspective',exact:true}).click();
-    const textarea=page.locator('#event-detail-card textarea');await textarea.fill('Unsent synthetic perspective');
+    const textarea=page.getByRole('dialog',{name:/perspective|reflection/i}).locator('textarea');await textarea.fill('Unsent synthetic perspective');
     const decisions=[];const cancel=async dialog=>{decisions.push(dialog.message());await dialog.dismiss();};
     page.on('dialog',cancel);await dismissal.action(page);if(dismissal.delete)await page.waitForTimeout(100);page.off('dialog',cancel);
     assert.equal(decisions.length,1,`${dismissal.name}: expected confirmation`);if(dismissal.delete)assert.match(decisions[0],/discard your unsaved perspective/);
     assert.equal(await page.locator('#event-detail-card').count(),1,`${dismissal.name}: cancel should keep detail open`);
     assert.equal(await textarea.inputValue(),'Unsent synthetic perspective',`${dismissal.name}: cancel should retain draft`);
     const accept=async dialog=>dialog.accept();page.on('dialog',accept);await dismissal.action(page);page.off('dialog',accept);
-    if(dismissal.delete) {assert.equal(state.deletes,1,'delete proceeds after both confirmations');assert.equal(await page.locator('#event-detail-card').count(),0);}
-    else if(dismissal.name==='edit navigation') {await page.locator('#event-modal-backdrop').waitFor();assert.equal(await page.locator('#event-detail-card').count(),0);}
-    else assert.equal(await page.locator('#event-detail-card').count(),0,`${dismissal.name}: accepted discard should close`);
+    assert.equal(await page.locator('#event-detail-card').count(),1,`${dismissal.name}: closing the topmost editor must preserve detail`);
     results.push(`${dismissal.name}: nonempty draft confirm/cancel retention and confirmed dismissal PASS`);
     await context.close();
    }
@@ -308,7 +324,7 @@ async function logoutAndLogin(page){
    const {page,state,errors,context}=await fixture(browser,{viewport:{width,height}});
    await page.locator('#event-card-A\\:qa-moment h3').click();
    for(const name of ['Edit event','Delete event'])assert(await page.locator('#event-detail-card').getByTitle(name,{exact:true}).evaluate(el=>{const r=el.getBoundingClientRect();return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),`detail ${name} covered at ${width}`);
-   const react=page.getByRole('button',{name:'React ❤️, 1 reactions',exact:true});await hit(react);await page.waitForFunction(()=>document.querySelector('[aria-label="React ❤️, 1 reactions"]')?.getAttribute('aria-pressed')==='true');
+   const react=page.getByRole('button',{name:/React ❤️/});await hit(react);await page.waitForFunction(()=>[...document.querySelectorAll('button[aria-label^="React ❤️"]')].some(button=>button.getAttribute('aria-pressed')==='true'));
    assert.equal(state.puts[0].method,'PUT'); assert.equal(state.puts[0].active,true);
    await page.getByRole('button',{name:'Who reacted?',exact:true}).click();assert(await page.getByText('❤️ synthetic-actor',{exact:true}).isVisible());
    await page.getByTitle('Enlarge photo',{exact:true}).click();
@@ -360,7 +376,7 @@ async function logoutAndLogin(page){
    await page.getByTitle('More actions',{exact:true}).click();await page.getByRole('menuitem',{name:/Export backup/}).click();await started.promise;await logoutAndLogin(page);gate.resolve();await delay(300);
    assert.equal(await page.getByRole('alert').count(),0,'previous-account export error must not appear after session switch');assert.deepEqual(errors,[]);
    results.push('deferred account-A export rejection after login account-B is fenced and stale error cleared PASS');await context.close();}
-  {const gate=deferred(),started=deferred();const {page,state,context,errors}=await fixture(browser,{reactionGate:gate,reactionStarted:started});await page.locator('#event-card-A\\:qa-moment h3').click();await page.getByRole('button',{name:'React ❤️, 1 reactions',exact:true}).click();await started.promise;await logoutAndLogin(page);gate.resolve();await delay(300);assert.equal(await page.locator('#event-card-A\\:qa-moment').count(),0);assert.equal(await page.locator('#event-detail-card').count(),0);assert(!(await page.locator('body').innerText()).includes('synthetic-actor'));assert.deepEqual(errors,[]);results.push('deferred A reaction success after logout/login B discarded PASS');await context.close();}
+  {const gate=deferred(),started=deferred();const {page,state,context,errors}=await fixture(browser,{reactionGate:gate,reactionStarted:started});await page.locator('#event-card-A\\:qa-moment h3').click();await page.getByRole('button',{name:/React ❤️/}).click();await started.promise;await logoutAndLogin(page);gate.resolve();await delay(300);assert.equal(await page.locator('#event-card-A\\:qa-moment').count(),0);assert.equal(await page.locator('#event-detail-card').count(),0);assert(!(await page.locator('body').innerText()).includes('synthetic-actor'));assert.deepEqual(errors,[]);results.push('deferred A reaction success after logout/login B discarded PASS');await context.close();}
   {const gate=deferred(),started=deferred();const {page,state,context,errors}=await fixture(browser,{createGate:gate,createStarted:started});await page.locator('#open-create-event-modal').click();await page.locator('#event-modal-backdrop input[type="text"]').first().waitFor();const fields=page.locator('#event-modal-backdrop input');const inputs=await fields.evaluateAll(xs=>xs.map(x=>({type:x.type,value:x.value})));const ti=inputs.findIndex(x=>x.type==='text' && x.value==='');await fields.nth(ti).fill('Previous-account mutation');await page.locator('#save-event-button').click();await started.promise;
    // Phase 1 guard: a pending save blocks every dismissal path, so the account menu is unreachable until it settles.
    assert(await page.locator('#close-event-modal').isDisabled());
@@ -372,11 +388,11 @@ async function logoutAndLogin(page){
    results.push('pending create blocks dismissal; successful create closes modal; no A content after logout/login B PASS');await context.close();}
   {const gate=deferred(),started=deferred();const {page,state,context,errors}=await fixture(browser,{uploadGate:gate,uploadStarted:started});await page.locator('#open-create-event-modal').click();await page.locator('#event-modal-backdrop input[type="text"]').first().waitFor();const fields=page.locator('#event-modal-backdrop input');const inputs=await fields.evaluateAll(xs=>xs.map(x=>({type:x.type,value:x.value})));await fields.nth(inputs.findIndex(x=>x.type==='text' && x.value==='')).fill('Background upload save');const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');await page.locator('#event-modal-backdrop input[type="file"]').setInputFiles({name:'slow.png',mimeType:'image/png',buffer:png});await page.locator('#save-event-button').click();await started.promise;await page.getByText('Placing each photo with care…',{exact:true}).waitFor();assert.equal(await page.locator('#event-modal-backdrop').count(),1,'modal remains through the held upload');assert.equal(state.uploadIds.length,1);gate.resolve();await page.locator('#event-modal-backdrop').waitFor({state:'detached'});assert.deepEqual(errors,[]);results.push('narrated modal remains through held photo upload and closes only after reconciliation PASS');await context.close();}
   {const {page,state,context}=await fixture(browser,{uploadFailure:true,uploadRefresh:true});await page.locator('#open-create-event-modal').click();await page.locator('#event-modal-backdrop input[type="text"]').first().waitFor();const fields=page.locator('#event-modal-backdrop input');const inputs=await fields.evaluateAll(xs=>xs.map(x=>({type:x.type,value:x.value})));await fields.nth(inputs.findIndex(x=>x.type==='text'&&x.value==='')).fill('Synthetic upload queue');const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');await page.locator('#event-modal-backdrop input[type="file"]').setInputFiles([{name:'one.png',mimeType:'image/png',buffer:png},{name:'two.png',mimeType:'image/png',buffer:png}]);await page.locator('#save-event-button').click();await page.locator('#retry-save-event').waitFor();assert.equal(await page.locator('#event-modal-backdrop').count(),1,'upload failure keeps narrated modal available for retry');assert.equal(state.uploadIds.length,2);results.push('upload failure holds modal and offers explicit narrated retry PASS');await context.close();}
-  {const gate=deferred(),started=deferred();const {page,state,context}=await fixture(browser,{reactionGate:gate,reactionStarted:started,reactionFailure:true});await page.locator('#event-card-A\\:qa-moment h3').click();const button=page.getByRole('button',{name:'React ❤️, 1 reactions',exact:true});await button.click();await started.promise;assert(await button.isDisabled());assert.equal(state.puts.length,1);gate.resolve();await page.getByText('Synthetic reaction failure',{exact:true}).waitFor();assert(!(await button.isDisabled()));assert.equal(await button.getAttribute('aria-pressed'),'false');results.push('reaction single-flight pending and stable error retry UI PASS');await context.close();}
+  {const gate=deferred(),started=deferred();const {page,state,context}=await fixture(browser,{reactionGate:gate,reactionStarted:started,reactionFailure:true});await page.locator('#event-card-A\\:qa-moment h3').click();const button=page.getByRole('button',{name:/React ❤️/});await button.click();await started.promise;assert(await button.isDisabled());assert.equal(state.puts.length,1);gate.resolve();await page.getByRole('alert').filter({hasText:'Synthetic reaction failure'}).waitFor();assert(!(await button.isDisabled()));assert.equal(await button.getAttribute('aria-pressed'),'false');results.push('reaction single-flight pending and stable error retry UI PASS');await context.close();}
   {const {page,state,context}=await fixture(browser,{reduced:true});await page.locator('#floating-memory-actions').click();await page.getByRole('button',{name:'Open a random memory',exact:true}).click();await page.getByRole('button',{name:'Open in track',exact:false}).waitFor();await page.getByRole('button',{name:'Close',exact:true}).click();await page.getByRole('dialog').waitFor({state:'detached'});await page.locator('#floating-memory-actions').click();await page.getByRole('button',{name:'Open a random memory',exact:true}).click();await page.getByRole('button',{name:'Open in track',exact:false}).waitFor();results.push('Blindbox close/reopen automatically reveals authorized result PASS');await context.close();}
-  {const {page,state,context}=await fixture(browser);await page.locator('#event-card-A\\:qa-moment h3').click();await page.getByRole('button',{name:'Next detail photo',exact:true}).click();assert((await page.locator('#event-detail-card img').first().getAttribute('src')).includes('qa-1'));await page.keyboard.press('Escape');await page.locator('#event-card-A\\:qa-moment h3').click();assert((await page.locator('#event-detail-card img').first().getAttribute('src')).includes('qa-0'));results.push('detail close/reopen resets selected index PASS');await context.close();}
+  {const {page,state,context}=await fixture(browser);await page.locator('#event-card-A\\:qa-moment h3').click();await page.getByRole('button',{name:'Next detail photo',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#event-detail-card img')?.getAttribute('src')?.includes('qa-1'));assert((await page.locator('#event-detail-card img').first().getAttribute('src')).includes('qa-1'));await page.keyboard.press('Escape');await page.locator('#event-card-A\\:qa-moment h3').click();assert((await page.locator('#event-detail-card img').first().getAttribute('src')).includes('qa-0'));results.push('detail close/reopen resets selected index PASS');await context.close();}
   for (const dismissal of [
-   {name:'backdrop',action:page=>page.locator('#event-detail-backdrop').click({position:{x:2,y:2}})},
+   {name:'backdrop',action:page=>page.locator('#perspective-dialog-title').locator('xpath=../../../..').click({position:{x:2,y:2}})},
    {name:'Escape',action:page=>page.keyboard.press('Escape')},
    {name:'header close',action:page=>page.getByRole('button',{name:'Close memory details',exact:true}).click()},
    {name:'track navigation',action:page=>page.locator('#event-detail-card').locator('button[title^="Filter to"]').click()},
@@ -384,7 +400,8 @@ async function logoutAndLogin(page){
    {name:'delete',action:page=>page.locator('#event-detail-card').getByTitle('Delete event',{exact:true}).click(),delete:true},
   ]) {
    const {page,state,context}=await fixture(browser);await page.locator('#event-card-A\\:qa-moment h3').click();await page.getByRole('button',{name:'Add your perspective',exact:true}).click();
-   const textarea=page.locator('#event-detail-card textarea');await textarea.fill('Unsent synthetic perspective');
+   const composer=page.getByRole('dialog',{name:'Add your perspective',exact:true}); await composer.waitFor();
+   const textarea=composer.locator('textarea');await textarea.fill('Unsent synthetic perspective');
    const decisions=[];const cancel=async dialog=>{decisions.push(dialog.message());await dialog.dismiss();};
    page.on('dialog',cancel);await dismissal.action(page);page.off('dialog',cancel);
    assert.equal(decisions.length,1,`${dismissal.name}: expected confirmation`);if(dismissal.delete)assert.match(decisions[0],/discard your unsaved perspective/);assert.equal(await page.locator('#event-detail-card').count(),1,`${dismissal.name}: cancel should keep detail open`);assert.equal(await textarea.inputValue(),'Unsent synthetic perspective',`${dismissal.name}: cancel should retain draft`);
@@ -447,11 +464,11 @@ async function logoutAndLogin(page){
    const reflect=page.getByRole('button',{name:'Bây giờ nghĩ lại…',exact:true});
    await reflect.waitFor();
    await reflect.click();
-   const textarea=page.locator('#event-detail-card textarea');
+   const textarea=page.getByRole('dialog',{name:/perspective|reflection/i}).locator('textarea');
    await textarea.waitFor();
    assert.equal(await page.getByText('Looking back · written today',{exact:true}).count(),1,'dated reflection composer label');
    await textarea.fill('Nhìn lại sau một năm');
-   await page.getByRole('button',{name:'Save perspective',exact:true}).click();
+   await page.getByRole('button',{name:'Save',exact:true}).click();
    await page.getByText('Nhìn lại sau một năm',{exact:true}).waitFor();
    assert.equal(state.perspectives.length,1);
    // Wait for the refetched LIST item specifically — the closing composer also

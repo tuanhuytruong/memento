@@ -24,6 +24,7 @@ import { formatDateDisplay, getRelativeTime } from '../lib/storage';
 import { usePhotoPrefetch } from '../lib/usePhotoPrefetch';
 import { useModalLifecycle } from '../lib/useModalLifecycle';
 import { PrivateImage } from './PrivateImage';
+import { setReactionState } from '../lib/reactionState';
 
 interface EventDetailModalProps {
   event: TimelineEvent | null;
@@ -35,12 +36,13 @@ interface EventDetailModalProps {
   onDelete: (event: TimelineEvent) => Promise<void>;
   onTagClick?: (tag: string) => void;
   onOpenImageLightbox: (images: string[], index: number) => void;
-  onToggleReaction: (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉') => Promise<void>;
+  onToggleReaction: (event: TimelineEvent, emoji: '❤️' | '🥹' | '😂' | '✨' | '🙌' | '🎉', active?: boolean, signal?: AbortSignal) => Promise<void>;
   onCreatePerspective: (event: TimelineEvent, kind: 'perspective' | 'reflection', body: string, clientRequestId: string) => Promise<void>;
   onUpdatePerspective: (id: string, body: string, expectedVersion: number) => Promise<void>;
   onDeletePerspective: (id: string) => Promise<void>;
   sessionGeneration: number;
   currentUserId: string;
+  currentUsername: string;
   /** Caller's own save state for this memory, from the server. */
   isSaved: boolean;
   /** 'idle' while settled, 'pending' during the request, 'error' if it failed. */
@@ -61,12 +63,19 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
   onOpenImageLightbox,
   onToggleReaction,
   onCreatePerspective, onUpdatePerspective, onDeletePerspective, sessionGeneration, currentUserId,
-  isSaved, saveState, onToggleSave,
+  isSaved, saveState, onToggleSave, currentUsername,
 }) => {
   const [imageIndex, setActiveImageIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [showActors, setShowActors] = useState(false);
+  const reactionClicks = useRef(new Map<string, number>());
+  const reactionLocal = useRef(event?.reactions || []);
+  reactionLocal.current = event?.reactions || [];
+  const reactionCount = useRef(0);
+  const [reactionPending, setReactionPending] = useState(false);
+  const [reactionError, setReactionError] = useState('');
+  const [reactionRetry, setReactionRetry] = useState<{ emoji: NonNullable<TimelineEvent['reactions']>[number]['emoji']; active: boolean } | null>(null);
   const draftDirty = useRef(false);
   const [canContribute, setCanContribute] = useState(false);
   const [reflectionSignal, setReflectionSignal] = useState(0);
@@ -92,6 +101,25 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
     finally { if (alive.current) { pending.current = false; setBusy(false); } }
   };
   if (!isOpen || !event) return null;
+  const reactions = event.reactions || [];
+  const persistReaction = async (emoji: NonNullable<TimelineEvent['reactions']>[number]['emoji'], active: boolean) => {
+    const sequence = (reactionClicks.current.get(emoji) || 0) + 1;
+    reactionClicks.current.set(emoji, sequence);
+    reactionLocal.current = setReactionState(reactionLocal.current, emoji, active, currentUsername);
+    reactionCount.current += 1;
+    setReactionPending(true); setReactionError(''); setReactionRetry(null);
+    try { await onToggleReaction(event, emoji, active); }
+    catch (failure) {
+      if (alive.current && reactionClicks.current.get(emoji) === sequence) {
+        setReactionError(failure instanceof Error ? failure.message : 'Could not save your reaction.');
+        setReactionRetry({ emoji, active });
+      }
+    } finally {
+      reactionCount.current -= 1;
+      if (alive.current) setReactionPending(reactionCount.current > 0);
+    }
+  };
+  const toggleReaction = (emoji: NonNullable<TimelineEvent['reactions']>[number]['emoji']) => persistReaction(emoji, !reactionLocal.current.find(item => item.emoji === emoji)?.selected);
   const emotionMeta = getEmotionMeta(event.emotion);
   const relativeTime = getRelativeTime(event.date);
 
@@ -328,11 +356,13 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
           <section className="flex flex-wrap items-center gap-2 border-t border-stone-100 pt-4 dark:border-stone-800">
             <span className="mr-1 text-xs font-semibold text-stone-500">React</span>
             {(['❤️', '🥹', '😂', '✨', '🙌', '🎉'] as const).map((emoji) => {
-              const reaction = event.reactions?.find((item) => item.emoji === emoji);
-              return <button key={emoji} type="button" title={reaction?.usernames?.length ? reaction.usernames.join(', ') : `React ${emoji}`} disabled={busy} aria-pressed={!!reaction?.selected} aria-label={`React ${emoji}${reaction?.count ? `, ${reaction.count} reactions` : ''}`} onClick={() => void mutate(() => onToggleReaction(event, emoji))} className={`min-h-11 min-w-11 disabled:opacity-50 rounded-full border px-2 text-sm transition ${reaction?.selected ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/30' : 'border-stone-200 hover:bg-stone-100 dark:border-stone-700 dark:hover:bg-stone-800'}`}>{emoji}{reaction?.count ? <span className="ml-1 text-xs font-semibold">{reaction.count}</span> : null}</button>;
+              const reaction = reactions.find((item) => item.emoji === emoji);
+              return <button key={emoji} type="button" title={reaction?.usernames?.length ? reaction.usernames.join(', ') : `React ${emoji}`} aria-busy={reactionPending} aria-pressed={!!reaction?.selected} aria-label={`React ${emoji}${reaction?.count ? `, ${reaction.count} reactions` : ''}`} onClick={() => void toggleReaction(emoji)} className={`min-h-11 min-w-11 rounded-full border px-2 text-sm transition ${reaction?.selected ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/30' : 'border-stone-200 hover:bg-stone-100 dark:border-stone-700 dark:hover:bg-stone-800'}`}>{emoji}{reaction?.count ? <span className="ml-1 text-xs font-semibold">{reaction.count}</span> : null}</button>;
             })}
+            <span className="sr-only" role="status" aria-live="polite">{reactionPending ? 'Saving reactions' : ''}</span>
             <button type="button" className="min-h-11 px-2 text-xs underline" onClick={() => setShowActors(!showActors)} aria-expanded={showActors}>Who reacted?</button>
-            {showActors && <ul className="w-full text-xs text-stone-500">{event.reactions?.filter((item) => item.count).map((item) => <li key={item.emoji}>{item.emoji} {item.usernames.join(', ')}</li>)}</ul>}
+            {reactionError && <div className="flex w-full items-center gap-2 text-xs text-rose-700 dark:text-rose-300" role="alert"><span>{reactionError}</span>{reactionRetry && <button type="button" className="min-h-11 rounded-lg px-3 underline" disabled={reactionPending} onClick={() => void persistReaction(reactionRetry.emoji, reactionRetry.active)}>Retry reaction</button>}</div>}
+            {showActors && <ul className="w-full text-xs text-stone-500">{reactions.filter((item) => item.count).map((item) => <li key={item.emoji}>{item.emoji} {item.usernames.join(', ')}</li>)}</ul>}
           </section>
 
           {/* Dedicated Idea / Key Takeaway Card */}

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, dataApi } from '../lib/api';
 import type { MomentPerspective, TimelineEvent } from '../types';
+import { PerspectiveComposerDialog } from './PerspectiveComposerDialog';
 
 interface Props {
   event: TimelineEvent;
@@ -114,6 +115,13 @@ export function MomentPerspectives({ event, currentUserId, initialKind = 'perspe
     setKind('reflection'); setComposerOpen(true);
   }, [reflectionSignal, canWrite, busy, editingId, draft]);
 
+  const closeComposer = () => {
+    if (busy) return;
+    const dirty = editingId ? draft.trim() !== initialDraft.current : draft.trim().length > 0;
+    if (dirty && !window.confirm('Discard your unsaved perspective?')) return;
+    initialDraft.current = ''; setComposerOpen(false); setDraft(''); setEditingId(null); setConflictVersion(null); setConflictLatestText(''); requestId.current = null;
+  };
+
   const save = async () => {
     if (requestPending.current || busy) return;
     if (editingId && conflictVersion !== null) { setError('Resolve the version conflict before saving.'); return; }
@@ -175,11 +183,14 @@ export function MomentPerspectives({ event, currentUserId, initialKind = 'perspe
     </ol>
     {canRead && !canWrite && <p className="text-xs text-stone-500">Editor access is needed to add a perspective.</p>}
     {nextCursor && <button type="button" disabled={loading} className="min-h-11 rounded-lg px-3 text-sm underline disabled:opacity-50" onClick={() => void load(nextCursor, true)}>{loading ? 'Loading…' : 'Load more'}</button>}
-    {composerOpen && canWrite && <div className="space-y-2 rounded-xl bg-amber-50/70 p-3 dark:bg-amber-950/20">
-      {conflictVersion !== null && <div role="alert" className="space-y-2 rounded-lg border border-amber-300 p-3 text-sm dark:border-amber-800"><p>This story changed while you were editing. Compare the latest saved words before choosing what to do.</p><p className="whitespace-pre-wrap break-words rounded bg-white/70 p-2 dark:bg-black/20">{conflictLatestText}</p><div className="flex flex-wrap gap-2"><button type="button" className="min-h-11 underline" onClick={() => { initialDraft.current = ''; setDraft(conflictLatestText); setConflictVersion(null); setConflictLatestText(''); setEditingId(null); setComposerOpen(false); }}>Use latest and discard my draft</button><button type="button" className="min-h-11 underline" onClick={() => { if (window.confirm('Replace the latest saved words with your draft?')) setConflictVersion(null); }}>Replace latest with my draft</button></div></div>}
-      <label className="block text-xs font-semibold text-stone-600 dark:text-stone-300">{editingId ? 'Edit your words' : kind === 'reflection' ? 'Looking back · written today' : 'What do you remember?'}<textarea value={draft} maxLength={2000} rows={4} onChange={event => setDraft(event.target.value)} className="mt-1 w-full min-w-0 resize-y rounded-lg border border-stone-300 bg-white p-3 text-sm leading-relaxed dark:border-stone-700 dark:bg-stone-950" placeholder="Write your own memory; the original story stays unchanged." /></label>
-      {!editingId && <p className="text-xs text-stone-500">If sharing access ends, your words remain with this memory, but you can no longer view it.</p>}
-      <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-stone-500">{draft.length}/2,000</span><div className="flex gap-2"><button type="button" disabled={busy} className="min-h-11 rounded-lg px-3 text-sm text-stone-600 underline disabled:opacity-50" onClick={() => { if (busy) return; const dirty = editingId ? draft.trim() !== initialDraft.current : draft.trim().length > 0; if (dirty && !window.confirm('Discard your unsaved perspective?')) return; initialDraft.current = ''; setComposerOpen(false); setDraft(''); setEditingId(null); setConflictVersion(null); setConflictLatestText(''); requestId.current = null; }}>Cancel</button><button type="button" disabled={busy || !draft.trim()} className="min-h-11 rounded-lg bg-amber-700 px-4 text-sm font-semibold text-white disabled:opacity-50" onClick={() => void save()}>{busy ? 'Saving…' : editingId ? 'Save changes' : 'Save perspective'}</button></div></div>
-    </div>}
+    <PerspectiveComposerDialog
+      open={composerOpen && canWrite}
+      title={editingId ? 'Edit perspective' : kind === 'reflection' ? 'Bây giờ nghĩ lại…' : 'Add your perspective'}
+      kind={kind} editing={!!editingId} draft={draft} busy={busy} error={error}
+      conflict={conflictVersion === null ? null : { version: conflictVersion, latestText: conflictLatestText }}
+      onDraft={setDraft} onCancel={closeComposer} onSave={() => void save()}
+      onUseLatest={() => { initialDraft.current = ''; setDraft(conflictLatestText); setConflictVersion(null); setConflictLatestText(''); setEditingId(null); setComposerOpen(false); }}
+      onReplaceLatest={() => { if (window.confirm('Replace the latest saved words with your draft?')) setConflictVersion(null); }}
+    />
   </section>;
 }
