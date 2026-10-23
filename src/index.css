@@ -41,3 +41,17 @@ body {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0ms !important; scroll-behavior: auto !important; }
   [id^="event-card-"] *, #gallery-view-grid * { transform: none !important; }
 }
+
+/* Shared action feedback: no scaling, layout shift or pending-state opacity. */
+.ui-action {
+  transition-property: color, background-color, border-color, box-shadow;
+  transition-duration: var(--motion-press);
+  transition-timing-function: var(--motion-ease);
+}
+.ui-action:focus-visible { outline: 2px solid #d97706; outline-offset: 2px; }
+.ui-action:enabled:active { box-shadow: inset 0 0 0 2px rgb(217 119 6 / 35%); }
+.private-image {
+  transition-property: opacity;
+  transition-duration: var(--motion-content);
+  transition-timing-function: var(--motion-ease);
+}

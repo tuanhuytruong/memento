@@ -84,7 +84,7 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
                           e.stopPropagation();
                           if (onSelectTrack) onSelectTrack(track);
                         }}
-                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition ${theme.badgeClass} hover:opacity-80`}
+                        className={`ui-action inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition ${theme.badgeClass} `}
                         title={`Filter to ${track.title} timeline`}
                       >
                         <TrackIcon className="w-3 h-3" />
@@ -140,7 +140,7 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
                             e.stopPropagation();
                             onTagClick(tag);
                           }}
-                          className="px-2 py-0.5 rounded text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-amber-100 dark:hover:bg-amber-900 transition"
+                          className="ui-action px-2 py-0.5 rounded text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-amber-100 dark:hover:bg-amber-900 transition"
                         >
                           #{tag}
                         </button>
@@ -182,8 +182,8 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
                       className="inline-flex items-center gap-1"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <button onClick={() => onEdit(evt)} className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition" title="Edit event"><Edit2 className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => { if (window.confirm('Delete this event?')) onDelete(evt); }} className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition" title="Delete event"><Trash2 className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => onEdit(evt)} className="ui-action inline-flex items-center justify-center min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition" title="Edit event"><Edit2 className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => { if (window.confirm('Delete this event?')) onDelete(evt); }} className="ui-action inline-flex items-center justify-center min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition" title="Delete event"><Trash2 className="w-3.5 h-3.5" /></button>
                     </div>}
                   </td>
                 </tr>

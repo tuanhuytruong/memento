@@ -118,7 +118,7 @@ export const EventCard: React.FC<EventCardProps> = ({
                   e.stopPropagation();
                   if (onSelectTrack) onSelectTrack(track);
                 }}
-                className={`max-w-full min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border transition ${trackTheme.badgeClass} hover:scale-102`}
+                className={`ui-action max-w-full min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border transition ${trackTheme.badgeClass}`}
                 title={`View ${track.title} timeline`}
               >
                 <TrackIcon className="w-3 h-3" />
@@ -134,7 +134,7 @@ export const EventCard: React.FC<EventCardProps> = ({
           >
             <button
               onClick={() => onEdit(event)}
-              className="inline-flex items-center justify-center min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
+              className="ui-action inline-flex items-center justify-center min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
               title="Edit event"
             >
               <Edit2 className="w-3.5 h-3.5" />
@@ -145,7 +145,7 @@ export const EventCard: React.FC<EventCardProps> = ({
                   onDelete(event);
                 }
               }}
-              className="inline-flex items-center justify-center min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
+              className="ui-action inline-flex items-center justify-center min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
               title="Delete event"
             >
               <Trash2 className="w-3.5 h-3.5" />
@@ -310,7 +310,7 @@ export const EventCard: React.FC<EventCardProps> = ({
                   e.stopPropagation();
                   onTagClick(tag);
                 }}
-                className="max-w-full min-w-0 truncate inline-block items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-amber-100 hover:text-amber-900 dark:hover:bg-amber-950/60 dark:hover:text-amber-300 transition"
+                className="ui-action max-w-full min-w-0 truncate inline-block items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-amber-100 hover:text-amber-900 dark:hover:bg-amber-950/60 dark:hover:text-amber-300 transition"
               >
                 #{tag}
               </button>
