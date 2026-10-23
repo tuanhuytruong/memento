@@ -1,3 +1,5 @@
+import { motion } from 'motion/react';
+import { useOverlayMotion } from './ModalTransition';
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Check, Trash2, Plus } from 'lucide-react';
 import { EventTrack } from '../types';
@@ -23,6 +25,7 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
   onSave,
   onDelete,
 }) => {
+  const overlayMotion = useOverlayMotion();
   const [isSaving, setIsSaving] = useState(false);
   const closeTrackForm = () => { if (!isSaving) onClose(); };
   const modal = useModalLifecycle(isOpen, closeTrackForm);
@@ -102,13 +105,13 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div
+    <motion.div {...overlayMotion.backdrop}
       ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Edit track"
       id="event-track-modal-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm p-3 sm:p-5 overflow-y-auto"
       onClick={closeTrackForm}
     >
-      <div
+      <motion.div {...overlayMotion.panel}
         id="event-track-modal-card"
         onClick={(e) => e.stopPropagation()}
         className="relative w-full max-w-lg bg-white dark:bg-stone-900 rounded-2xl shadow-2xl border border-stone-200 dark:border-stone-800 overflow-hidden my-6 flex flex-col max-h-[90vh]"
@@ -343,7 +346,7 @@ export const EventTrackModal: React.FC<EventTrackModalProps> = ({
             </div>
           </div>
         </form>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 };

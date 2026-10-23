@@ -1,3 +1,5 @@
+import { motion } from 'motion/react';
+import { useOverlayMotion } from './ModalTransition';
 import React, { useCallback, useState, useEffect, useRef } from 'react';
 import {
   X,
@@ -65,6 +67,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
   onCreatePerspective, onUpdatePerspective, onDeletePerspective, sessionGeneration, currentUserId,
   isSaved, saveState, onToggleSave, currentUsername,
 }) => {
+  const overlayMotion = useOverlayMotion();
   const [imageIndex, setActiveImageIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -139,13 +142,13 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
     : null;
 
   return (
-    <div
+    <motion.div {...overlayMotion.backdrop}
       ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Memory details"
       id="event-detail-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm p-3 sm:p-5 overflow-y-auto"
       onClick={requestClose}
     >
-      <div
+      <motion.div {...overlayMotion.panel}
         id="event-detail-card"
         onClick={(e) => e.stopPropagation()}
         className="relative w-full max-w-3xl bg-white dark:bg-stone-900 rounded-2xl shadow-2xl border border-stone-200 dark:border-stone-800 overflow-hidden my-6 flex flex-col max-h-[92vh]"
@@ -434,7 +437,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
             ))}
           </div>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 };

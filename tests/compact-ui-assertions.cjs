@@ -32,6 +32,7 @@ module.exports = async function compactChecks(page) {
  await to.focus();await editor.getByRole('button',{name:'2026-10-15',exact:true}).click();assert.equal(await to.inputValue(),'2026-10-15');assert.equal(await from.inputValue(),'2026-10-13');
  await from.focus();await from.fill('2026-10-11');await from.press('Tab');assert.equal(await to.evaluate(el=>document.activeElement===el),true);
  await editor.getByRole('button',{name:'Cancel',exact:true}).click();
+ await editor.waitFor({state:'detached'}); // Focus restores after the retained exit, not on close intent.
  assert.equal(await trigger.getAttribute('aria-pressed'),'false');assert.equal(await page.evaluate(()=>document.activeElement.id),'date-range-trigger');
  return {viewport:page.viewportSize(),rows,metrics,fab,pill:inactive,dateGeometry};
 };

@@ -1,3 +1,5 @@
+import { motion } from 'motion/react';
+import { ModalTransition, useOverlayMotion } from './ModalTransition';
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { createPortal } from 'react-dom';
@@ -10,9 +12,10 @@ const button = 'min-h-11 rounded-xl px-3 text-sm hover:bg-stone-100 dark:hover:b
 export function DateRangePicker(props: Props) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
-  return <><button type="button" ref={trigger} id="date-range-trigger" aria-haspopup="dialog" aria-expanded={open} aria-pressed={Boolean(open || props.dateFrom || props.dateTo)} onClick={() => setOpen(true)} className={`px-3 py-1 min-h-11 rounded-full text-xs font-medium transition flex items-center gap-1 shrink-0 ${open || props.dateFrom || props.dateTo ? 'bg-amber-500 text-white shadow-xs' : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'}`}><CalendarRange size={12} />{props.dateFrom || props.dateTo ? `Date range: ${props.dateFrom || 'Any time'} → ${props.dateTo || 'Any time'}` : 'Date range'}</button>{open && createPortal(<DateRangeEditor {...props} anchor={trigger} onClose={() => setOpen(false)} />, document.body)}</>;
+  return <><button type="button" ref={trigger} id="date-range-trigger" aria-haspopup="dialog" aria-expanded={open} aria-pressed={Boolean(open || props.dateFrom || props.dateTo)} onClick={() => setOpen(true)} className={`px-3 py-1 min-h-11 rounded-full text-xs font-medium transition flex items-center gap-1 shrink-0 ${open || props.dateFrom || props.dateTo ? 'bg-amber-500 text-white shadow-xs' : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'}`}><CalendarRange size={12} />{props.dateFrom || props.dateTo ? `Date range: ${props.dateFrom || 'Any time'} → ${props.dateTo || 'Any time'}` : 'Date range'}</button>{createPortal(<ModalTransition>{open && <DateRangeEditor {...props} anchor={trigger} onClose={() => setOpen(false)} />}</ModalTransition>, document.body)}</>;
 }
 function DateRangeEditor({ dateFrom, dateTo, onChange, onClose, anchor }: Props & { onClose: () => void; anchor: RefObject<HTMLButtonElement | null> }) {
+  const overlayMotion = useOverlayMotion();
   const [from, setFrom] = useState(dateFrom);
   const [to, setTo] = useState(dateTo);
   const [bound, setBound] = useState<'from' | 'to'>('from');
@@ -85,8 +88,8 @@ function DateRangeEditor({ dateFrom, dateTo, onChange, onClose, anchor }: Props 
   const move = (delta: number) => { const next = new Date(year, month+delta, 1); if (next.getFullYear() < 100 || next.getFullYear() > 9999) return; setYear(next.getFullYear()); setMonth(next.getMonth()); };
   const choose = (day: number) => { if (bound === 'from') { setFrom(literal(day)); setBound('to'); } else setTo(literal(day)); };
   return <>
-    <div aria-hidden="true" className="fixed inset-0 z-[69] bg-stone-950/50 sm:hidden" />
-    <div ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Date range editor" data-date-presentation={position?.desktop ? 'popover' : 'sheet'}
+    <motion.div {...overlayMotion.backdrop} aria-hidden="true" className="fixed inset-0 z-[69] bg-stone-950/50 sm:hidden" />
+    <motion.div {...overlayMotion.panel} ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Date range editor" data-date-presentation={position?.desktop ? 'popover' : 'sheet'}
       style={position ? { left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight } : { visibility: 'hidden' }}
       className="fixed z-[70] overflow-y-auto rounded-2xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-800 dark:text-stone-100 p-2 shadow-xl">
       <div data-date-content>
@@ -111,6 +114,6 @@ function DateRangeEditor({ dateFrom, dateTo, onChange, onClose, anchor }: Props 
         <button type="button" disabled={!!error} className={`${button} bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50`} onClick={() => { if(from!==dateFrom || to!==dateTo) onChange({dateFrom:from,dateTo:to}); onClose(); }}>Apply</button>
       </div>
       </div>
-    </div>
+    </motion.div>
   </>;
 }

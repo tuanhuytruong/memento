@@ -1,3 +1,4 @@
+import { ModalTransition } from './components/ModalTransition';
 import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { SaveProgress } from './components/EventModal';
 import { AccountOverview, TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
@@ -66,6 +67,7 @@ export default function App() {
   const [saveState, setSaveState] = useState<'idle' | 'pending' | 'error'>('idle');
   const saveGeneration = useRef(0);
   const visitWrites = useRef(new Map<string, number>());
+  const [overlayEpoch, setOverlayEpoch] = useState(0);
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const [perspectiveError, setPerspectiveError] = useState('');
@@ -369,13 +371,7 @@ export default function App() {
     const key = detailOpenerKey.current;
     detailOpenerKey.current = null;
     setEventToView(null);
-    if (!key) return;
-    window.requestAnimationFrame(() => {
-      const card = document.getElementById(`event-card-${key}`);
-      if (!card) return;
-      card.focus({ preventScroll: true });
-      card.scrollIntoView({ block: 'nearest' });
-    });
+
   };
 
   /** Suggestion open: exact identity, no unrelated filter may hide its track. */
@@ -549,7 +545,7 @@ export default function App() {
     try { return await dataApi.queryMoments({ ...query, cursor, navigation, includeTotal: cursor === null }, signal); }
     catch (error) {
       if (generation === authGenerationRef.current && !signal.aborted && error instanceof ApiError && [401,403,404].includes(error.status)) {
-        setEventToView(null);setEventToEdit(null);setIsEventModalOpen(false);setLightboxState({images:[],index:0,isOpen:false});
+        setOverlayEpoch(value => value + 1);setEventToView(null);setEventToEdit(null);setIsEventModalOpen(false);setLightboxState({images:[],index:0,isOpen:false});
         if (error.status === 401) {
           authGenerationRef.current += 1;resetSnapshots();setUser(null);setAuthStatus('anonymous');setDataReady(false);
           setEventTracks([]);setEvents([]);setOverview(null);setApiTags([]);
@@ -563,7 +559,7 @@ export default function App() {
     try { return await dataApi.seekMoments({...query,target},signal); }
     catch(error) {
       if(generation===authGenerationRef.current&&!signal.aborted&&error instanceof ApiError&&[401,403,404].includes(error.status)) {
-        setEventToView(null);setEventToEdit(null);setIsEventModalOpen(false);setLightboxState({images:[],index:0,isOpen:false});
+        setOverlayEpoch(value => value + 1);setEventToView(null);setEventToEdit(null);setIsEventModalOpen(false);setLightboxState({images:[],index:0,isOpen:false});
         if(error.status===401){authGenerationRef.current+=1;resetSnapshots();setUser(null);setAuthStatus('anonymous');setDataReady(false);setEventTracks([]);setEvents([]);setOverview(null);setApiTags([]);}
       }
       throw error;
@@ -1035,9 +1031,9 @@ export default function App() {
         onLoadMore={()=>pageWithAnchor(feed.loadMore)} onNewer={feed.newer} onRefresh={feed.refresh} />
       </div>
       <div aria-hidden="true" className="h-24" />
-      <DeferredUiBoundary key={`${user.id}:${authGenerationRef.current}`}><Suspense fallback={<div role="status" className="fixed bottom-4 left-4 z-[100] rounded-lg bg-white p-3 text-sm shadow-lg dark:bg-stone-900">Opening…</div>}>
+      <DeferredUiBoundary key={`${user.id}:${authGenerationRef.current}:${overlayEpoch}`}>
       {/* Create / Edit Event Track Modal */}
-      {isEventTrackModalOpen && <EventTrackModal key={`${user.id}:${authGenerationRef.current}`}
+      <ModalTransition>{isEventTrackModalOpen && <EventTrackModal key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isEventTrackModalOpen}
         trackToEdit={trackToEdit}
         onClose={() => {
@@ -1046,10 +1042,10 @@ export default function App() {
         }}
         onSave={(track, editTrack) => handleSaveTrack(track, editTrack)}
         onDelete={handleDeleteTrack}
-      />}
+      />}</ModalTransition>
 
       {/* Create / Edit Timeline Moment Modal */}
-      {isEventModalOpen && <EventModal key={`${user.id}:${authGenerationRef.current}`}
+      <ModalTransition>{isEventModalOpen && <EventModal key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isEventModalOpen}
         eventToEdit={eventToEdit}
         tracks={eventTracks}
@@ -1067,10 +1063,10 @@ export default function App() {
           setIsEventTrackModalOpen(true);
         }}
         onAddCustomTag={handleAddCustomTag}
-      />}
+      />}</ModalTransition>
 
       {/* Event Details View Modal */}
-      {!!eventToView && <EventDetailModal key={`${user.id}:${authGenerationRef.current}`}
+      <ModalTransition>{!!eventToView && <EventDetailModal key={`${user.id}:${authGenerationRef.current}`}
         event={eventToView}
         tracks={eventTracks}
         onSelectTrack={handleSelectTrack}
@@ -1093,9 +1089,9 @@ export default function App() {
         isSaved={eventToView ? savedKeys.has(`${eventToView.resourceOwnerId}:${eventToView.id}`) : false}
         saveState={saveState}
         onToggleSave={handleToggleSave}
-      />}
+      />}</ModalTransition>
 
-      {!!shareTrack && <CollaborationModal key={`${user.id}:${authGenerationRef.current}`}
+      <ModalTransition>{!!shareTrack && <CollaborationModal key={`${user.id}:${authGenerationRef.current}`}
         track={shareTrack}
         isOpen={!!shareTrack}
         onClose={() => setShareTrack(null)}
@@ -1105,24 +1101,24 @@ export default function App() {
         onSearchUsernames={dataApi.usernameMatches}
         invitations={collaborationInvitations}
         onAccept={acceptInvitation}
-      />}
-      {isBlindboxOpen && <BlindboxMemory key={authGenerationRef.current} currentUserId={user.id} open={isBlindboxOpen} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}
+      />}</ModalTransition>
+      <ModalTransition>{isBlindboxOpen && <BlindboxMemory key={authGenerationRef.current} currentUserId={user.id} open={isBlindboxOpen} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}</ModalTransition>
       {/* Image Lightbox viewer */}
-      {lightboxState.isOpen && <ImageLightbox
+      <ModalTransition>{lightboxState.isOpen && <ImageLightbox
         images={lightboxState.images}
         currentIndex={lightboxState.index}
         isOpen={lightboxState.isOpen}
         onClose={() => setLightboxState((prev) => ({ ...prev, isOpen: false }))}
         onNavigate={(newIndex) => setLightboxState((prev) => ({ ...prev, index: newIndex }))}
-      />}
-      {isPostcardOpen && <PostcardComposer
+      />}</ModalTransition>
+      <ModalTransition>{isPostcardOpen && <PostcardComposer
         key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isPostcardOpen}
         tracks={eventTracks}
         currentUserId={user.id}
         onClose={() => setIsPostcardOpen(false)}
-      />}
-      </Suspense></DeferredUiBoundary>
+      />}</ModalTransition>
+      </DeferredUiBoundary>
     </div>
     </LocalPhotoProvider>
   );
