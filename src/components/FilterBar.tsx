@@ -111,7 +111,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
               type="button"
               aria-label="Clear search"
               onClick={() => onFilterChange({ search: '' })}
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 min-h-11 min-w-11 flex items-center justify-center text-stone-400 hover:text-stone-600"
+              className="ui-action absolute right-1.5 top-1/2 -translate-y-1/2 min-h-11 min-w-11 flex items-center justify-center text-stone-400 hover:text-stone-600"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -128,7 +128,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
               aria-pressed={viewMode === 'timeline'}
               aria-label="Timeline view"
               onClick={() => onViewModeChange('timeline')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
+              className={`ui-action flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
                 viewMode === 'timeline'
                   ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
@@ -145,7 +145,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
               aria-pressed={viewMode === 'compact'}
               aria-label="Compact list view"
               onClick={() => onViewModeChange('compact')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
+              className={`ui-action flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
                 viewMode === 'compact'
                   ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
@@ -162,7 +162,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
               aria-pressed={viewMode === 'gallery'}
               aria-label="Gallery view"
               onClick={() => onViewModeChange('gallery')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
+              className={`ui-action flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
                 viewMode === 'gallery'
                   ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
@@ -184,7 +184,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                 sortDirection: filters.sortDirection === 'newest' ? 'oldest' : 'newest',
               })
             }
-            className="flex items-center gap-1 px-3 py-2 min-h-11 rounded-xl text-xs font-medium border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:border-stone-300"
+            className="ui-action flex items-center gap-1 px-3 py-2 min-h-11 rounded-xl text-xs font-medium border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:border-stone-300"
             title="Sort direction"
           >
             <ArrowUpDown className="w-3.5 h-3.5 text-stone-500" />
@@ -199,7 +199,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             type="button"
             aria-expanded={showAdvanced}
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className={`flex items-center gap-1 px-3 py-2 min-h-11 rounded-xl text-xs font-medium transition ${
+            className={`ui-action flex items-center gap-1 px-3 py-2 min-h-11 rounded-xl text-xs font-medium transition ${
               showAdvanced || activeFiltersCount > 0
                 ? 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-800'
                 : 'border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:border-stone-300'
@@ -225,7 +225,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           type="button"
           aria-pressed={filters.selectedYear === 'all'}
           onClick={() => onFilterChange({ selectedYear: 'all' })}
-          className={`px-3 py-1 min-h-11 rounded-full font-medium transition shrink-0 ${
+          className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition shrink-0 ${
             filters.selectedYear === 'all'
               ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900'
               : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -239,7 +239,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             type="button"
             aria-pressed={filters.selectedYear === yr}
             onClick={() => onFilterChange({ selectedYear: yr })}
-            className={`px-3 py-1 min-h-11 rounded-full font-medium transition shrink-0 ${
+            className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition shrink-0 ${
               filters.selectedYear === yr
                 ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900'
                 : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -260,7 +260,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           type="button"
           aria-pressed={filters.milestonesOnly}
           onClick={() => onFilterChange({ milestonesOnly: !filters.milestonesOnly })}
-          className={`px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
+          className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
             filters.milestonesOnly
               ? 'bg-amber-500 text-white shadow-xs'
               : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -276,7 +276,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           id="filter-saved-only"
           aria-pressed={filters.savedOnly}
           onClick={() => onFilterChange({ savedOnly: !filters.savedOnly })}
-          className={`px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
+          className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
             filters.savedOnly
               ? 'bg-amber-500 text-white shadow-xs'
               : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -290,7 +290,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           type="button"
           aria-pressed={filters.hasImagesOnly}
           onClick={() => onFilterChange({ hasImagesOnly: !filters.hasImagesOnly })}
-          className={`px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
+          className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
             filters.hasImagesOnly
               ? 'bg-sky-600 text-white shadow-xs'
               : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
@@ -304,7 +304,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             type="button"
             aria-label="Reset all filters"
             onClick={onResetFilters}
-            className="text-stone-500 hover:text-rose-600 text-xs ml-auto shrink-0 flex items-center gap-1 hover:underline px-2 min-h-11"
+            className="ui-action text-stone-500 hover:text-rose-600 text-xs ml-auto shrink-0 flex items-center gap-1 hover:underline px-2 min-h-11"
           >
             <X className="w-3 h-3" /> Reset all
           </button>
@@ -330,7 +330,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
               {filters.selectedTags.length > 0 && (
                 <button
                   onClick={() => onFilterChange({ selectedTags: [] })}
-                  className="text-[11px] text-stone-400 hover:text-stone-600"
+                  className="ui-action text-[11px] text-stone-400 hover:text-stone-600"
                 >
                   Clear tags
                 </button>
@@ -343,7 +343,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                   <button
                     key={tagObj.name}
                     onClick={() => toggleTag(tagObj.name)}
-                    className={`max-w-full break-all px-2.5 py-1 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${
+                    className={`ui-action max-w-full break-all px-2.5 py-1 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${
                       isSelected
                         ? 'bg-amber-600 text-white shadow-xs'
                         : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-700'
@@ -375,7 +375,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
               {filters.selectedEmotions.length > 0 && (
                 <button
                   onClick={() => onFilterChange({ selectedEmotions: [] })}
-                  className="text-[11px] text-stone-400 hover:text-stone-600"
+                  className="ui-action text-[11px] text-stone-400 hover:text-stone-600"
                 >
                   Clear emotions
                 </button>
@@ -388,7 +388,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                   <button
                     key={emo.key}
                     onClick={() => toggleEmotion(emo.key)}
-                    className={`max-w-full break-all px-2.5 py-1 rounded-lg text-xs font-medium transition flex items-center gap-1.5 border ${
+                    className={`ui-action max-w-full break-all px-2.5 py-1 rounded-lg text-xs font-medium transition flex items-center gap-1.5 border ${
                       isSelected
                         ? `${emo.badgeBg} ${emo.badgeText} ${emo.borderColor} shadow-xs font-semibold`
                         : 'bg-stone-50 dark:bg-stone-800/60 border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:border-stone-300'

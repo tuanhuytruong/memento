@@ -1,3 +1,4 @@
+import { ModalTransition } from './components/ModalTransition';
 import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { SaveProgress } from './components/EventModal';
 import { AccountOverview, TimelineEvent, EventTrack, FilterState, ViewMode } from './types';
@@ -9,6 +10,9 @@ import { releaseAllMomentDrafts } from './lib/useMomentDraft';
 import { useMomentFeed, feedScopeHash } from './lib/useMomentFeed';
 import {MonthQuickBrowseRail} from './components/MonthQuickBrowseRail';
 import { useDebouncedSearch } from './lib/useDebouncedSearch';
+import { FeedLoadingState } from './components/FeedLoadingState';
+import { motion, useReducedMotion } from 'motion/react';
+import { contentMotion } from './lib/uiMotion';
 import { LoadMoreMemories } from './components/LoadMoreMemories';
 import { authApi, ApiError, UploadAbortedError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation, type RequestTiming } from './lib/api';
 import { outboxEvictExpired, outboxLoad, outboxOldestUncommitted, outboxPurgeAll, outboxPut, outboxUpdate } from './lib/photoOutbox';
@@ -36,6 +40,7 @@ import type { MemoryVisit } from './lib/memoryResurfacing';
 import { DeferredUiBoundary } from './components/DeferredUiBoundary';
 
 export default function App() {
+  const reducedMotion = useReducedMotion();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authStatus, setAuthStatus] = useState<'checking' | 'anonymous' | 'authenticated' | 'error'>('checking');
   const [sessionError, setSessionError] = useState('');
@@ -62,6 +67,7 @@ export default function App() {
   const [saveState, setSaveState] = useState<'idle' | 'pending' | 'error'>('idle');
   const saveGeneration = useRef(0);
   const visitWrites = useRef(new Map<string, number>());
+  const [overlayEpoch, setOverlayEpoch] = useState(0);
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const [perspectiveError, setPerspectiveError] = useState('');
@@ -365,13 +371,7 @@ export default function App() {
     const key = detailOpenerKey.current;
     detailOpenerKey.current = null;
     setEventToView(null);
-    if (!key) return;
-    window.requestAnimationFrame(() => {
-      const card = document.getElementById(`event-card-${key}`);
-      if (!card) return;
-      card.focus({ preventScroll: true });
-      card.scrollIntoView({ block: 'nearest' });
-    });
+
   };
 
   /** Suggestion open: exact identity, no unrelated filter may hide its track. */
@@ -540,13 +540,38 @@ export default function App() {
   const search = useDebouncedSearch(filters.search, authGenerationRef.current);
   const feedQuery = useMemo(() => ({ ...filterProjection(filters), search: search.value, sortDirection: filters.sortDirection,
     trackKey: selectedTrackKey === 'all' ? null : selectedTrackKey, limit: 40 }), [filters, selectedTrackKey, search.value]);
-  const fetchFeedPage = useCallback(({ cursor, navigation, query, signal }: any) =>
-    dataApi.queryMoments({ ...query, cursor, navigation, includeTotal: cursor === null }, signal), []);
-  const fetchFeedSeek=useCallback((query:any,target:any,signal:AbortSignal)=>dataApi.seekMoments({...query,target},signal),[]);
+  const fetchFeedPage = useCallback(async ({ cursor, navigation, query, signal }: any) => {
+    const generation = authGenerationRef.current;
+    try { return await dataApi.queryMoments({ ...query, cursor, navigation, includeTotal: cursor === null }, signal); }
+    catch (error) {
+      if (generation === authGenerationRef.current && !signal.aborted && error instanceof ApiError && [401,403,404].includes(error.status)) {
+        setOverlayEpoch(value => value + 1);setEventToView(null);setEventToEdit(null);setIsEventModalOpen(false);setLightboxState({images:[],index:0,isOpen:false});
+        if (error.status === 401) {
+          authGenerationRef.current += 1;resetSnapshots();setUser(null);setAuthStatus('anonymous');setDataReady(false);
+          setEventTracks([]);setEvents([]);setOverview(null);setApiTags([]);
+        }
+      }
+      throw error;
+    }
+  }, []);
+  const fetchFeedSeek=useCallback(async (query:any,target:any,signal:AbortSignal)=>{
+    const generation=authGenerationRef.current;
+    try { return await dataApi.seekMoments({...query,target},signal); }
+    catch(error) {
+      if(generation===authGenerationRef.current&&!signal.aborted&&error instanceof ApiError&&[401,403,404].includes(error.status)) {
+        setOverlayEpoch(value => value + 1);setEventToView(null);setEventToEdit(null);setIsEventModalOpen(false);setLightboxState({images:[],index:0,isOpen:false});
+        if(error.status===401){authGenerationRef.current+=1;resetSnapshots();setUser(null);setAuthStatus('anonymous');setDataReady(false);setEventTracks([]);setEvents([]);setOverview(null);setApiTags([]);}
+      }
+      throw error;
+    }
+  },[]);
   const feed = useMomentFeed({ query: feedQuery, generation: authGenerationRef.current,
-    enabled: !!user && dataReady && !search.pending, fetchPage: fetchFeedPage, fetchSeek:fetchFeedSeek, maxRetainedPages: 5 });
+    enabled: !!user && dataReady, paused: search.pending, fetchPage: fetchFeedPage, fetchSeek:fetchFeedSeek, maxRetainedPages: 5 });
   useEffect(() => { feed.refresh(); }, [feedRevision]);
   useEffect(() => { setEvents(feed.items); }, [feed.items.map(item=>`${momentIdentity(item)}:${item.version??0}`).join('|'), feed.loading, feed.seeking]);
+  const snapshot = feed.snapshot || search.pending;
+  const waiting = search.pending || feed.loading || (!feed.settled && !feed.error);
+  const initialWaiting = !feed.items.length && waiting;
   const filteredEvents = feed.items.map(item => events.find(local => momentIdentity(local) === momentIdentity(item) && (local.version??0)>=(item.version??0)) ?? item);
 
   const browseScope=feedScopeHash(feedQuery,authGenerationRef.current);
@@ -556,10 +581,11 @@ export default function App() {
   const landBrowse=useCallback((page:import('./lib/useMomentFeed').MomentFeedPage)=>{
     const target=page.target??(page.moments[0]?{ownerId:page.moments[0].resourceOwnerId!,id:page.moments[0].id}:null);pendingLanding.current=target?{...target,scope:browseScope}:null;
   },[browseScope]);
-  useEffect(()=>{if(!pendingLanding.current)return;let cancelled=false;let frame=0;const target=pendingLanding.current;const deadline=performance.now()+5000;
+  useEffect(()=>{if(feed.retryLanding&&feed.settled&&!snapshot)landBrowse(feed.retryLanding.page);},[feed.retryLanding,landBrowse,feed.settled,snapshot]);
+  useEffect(()=>{if(!feed.settled||snapshot){pendingLanding.current=null;return;}if(!pendingLanding.current)return;let cancelled=false;let frame=0;const target=pendingLanding.current;const deadline=performance.now()+5000;
     const place=()=>{if(cancelled||target.scope!==browseScope||performance.now()>deadline){pendingLanding.current=null;return;}const card=document.getElementById(`event-card-${target.ownerId}:${target.id}`);if(!card){frame=requestAnimationFrame(place);return;}pendingLanding.current=null;card.scrollIntoView({block:'center',behavior:'instant'});card.setAttribute('tabindex','-1');card.focus({preventScroll:true});card.classList.add('ring-2','ring-amber-400');setTimeout(()=>card.classList.remove('ring-2','ring-amber-400'),1800);};
     void document.fonts.ready.then(()=>{if(!cancelled)frame=requestAnimationFrame(()=>{frame=requestAnimationFrame(place);});});return()=>{cancelled=true;cancelAnimationFrame(frame);};
-  },[feed.items.map(momentIdentity).join('|')]);
+  },[feed.items.map(momentIdentity).join('|'),feed.retryLanding,feed.settled,snapshot,browseScope]);
   const pageWithAnchor=(action:()=>void)=>{
     const cards=Array.from(document.querySelectorAll<HTMLElement>('[id^="event-card-"]'));const card=cards.find(c=>c.getBoundingClientRect().bottom>120);const top=card?.getBoundingClientRect().top;const id=card?.id;
     if(id&&top!=null)prependAnchor.current={id,top,scope:browseScope};action();
@@ -799,7 +825,7 @@ export default function App() {
   }, [dataReady, authStatus, resumePendingPhotos]);
 
   if (authStatus === 'checking') {
-    return <main className="min-h-screen bg-stone-50 dark:bg-stone-950 flex items-center justify-center text-stone-500">Checking your session…</main>;
+    return <main className="min-h-screen bg-stone-50 dark:bg-stone-950 flex items-center justify-center text-stone-500"><div role="status" className="text-center"><h1 className="font-display text-2xl text-stone-800 dark:text-stone-200 mb-3">Memento</h1>Checking your session…</div></main>;
   }
   if (authStatus === 'error') {
     return <main className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 flex items-center justify-center p-4"><section className="max-w-md rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 p-6"><h1 className="text-xl font-bold mb-2">Memento is temporarily unavailable</h1><p role="alert" className="text-sm text-stone-600 dark:text-stone-300 mb-4">{sessionError}</p><button className="rounded-xl bg-amber-600 text-white px-4 py-2 font-semibold" onClick={() => void retrySession()}>Retry connection</button></section></main>;
@@ -893,7 +919,7 @@ export default function App() {
             availableYears={availableYears}
             viewMode={viewMode}
             onViewModeChange={setViewMode}
-            searchPending={search.pending || feed.loading}
+            searchPending={waiting || snapshot}
             onSearchEnter={search.flush}
             onSearchCompositionStart={search.compositionStart}
             onSearchCompositionEnd={search.compositionEnd}
@@ -907,13 +933,19 @@ export default function App() {
           />
         </div>
 
-        <MonthQuickBrowseRail hidden={viewMode!=='timeline'||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} disabled={feed.seeking} onNavigate={async (item)=>{const page=await feed.seek({ownerId:item.ownerId,id:item.id});if(page)landBrowse(page);}}/>
-        {feed.navigationTarget&&<div className="mb-4 flex items-center gap-3 text-sm text-stone-500" role="status">Browsing from {'month'in feed.navigationTarget?feed.navigationTarget.month:'selected memory'}<button className="min-h-11 px-3 underline" onClick={feed.newer}>{filters.sortDirection==='oldest'?'Back to start':'Back to latest'}</button></div>}
-        {feed.hasPrevious&&<div className="flex justify-center mb-4"><button id="feed-load-previous" disabled={feed.loading||feed.seeking} className="min-h-11 px-5 rounded-xl border border-stone-300 dark:border-stone-700" onClick={()=>pageWithAnchor(feed.loadPrevious)}>Load previous memories</button></div>}
+        <MonthQuickBrowseRail hidden={snapshot||viewMode!=='timeline'||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} disabled={snapshot||feed.loading||feed.seeking} onNavigate={async (item)=>{const page=await feed.seek({ownerId:item.ownerId,id:item.id});if(page)landBrowse(page);}}/>
+        {!snapshot&&feed.navigationTarget&&<div className="mb-4 flex items-center gap-3 text-sm text-stone-500" role="status">Browsing from {'month'in feed.navigationTarget?feed.navigationTarget.month:'selected memory'}<button className="min-h-11 px-3 underline" onClick={feed.newer}>{filters.sortDirection==='oldest'?'Back to start':'Back to latest'}</button></div>}
+        {!snapshot&&feed.hasPrevious&&<div className="flex justify-center mb-4"><button id="feed-load-previous" disabled={feed.loading||feed.seeking} className="min-h-11 px-5 rounded-xl border border-stone-300 dark:border-stone-700" onClick={()=>pageWithAnchor(feed.loadPrevious)}>Load previous memories</button></div>}
         {/* View Switcher: Timeline, Compact List, or Gallery */}
         <main aria-busy={search.pending || feed.loading}>
-          {(search.pending || (feed.loading && !feed.appendLoading)) && <div role="status" className="min-h-48 py-16 text-center">Updating memories…</div>}
-          {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'timeline' && (
+          <div id="feed-transition-status" role="status" aria-live="polite" className="min-h-11 text-sm text-stone-500">
+            {snapshot ? 'Previous results — not the current filters. ' : feed.items.length && feed.loading && !feed.appendLoading ? 'Updating memories… ' : ''}
+            {snapshot && (feed.error ? 'Update failed. Retry the requested filters.' : 'Updating memories…')}
+            {feed.error && <><span role="alert">{feed.error}</span><button id="feed-transition-retry" className="min-h-11 px-3 underline" onClick={feed.retry}>Retry requested results</button></>}
+          </div>
+          {initialWaiting && <FeedLoadingState view={viewMode} />}
+          <motion.div key={viewMode} {...contentMotion(!!reducedMotion)} inert={snapshot || initialWaiting} data-feed-snapshot={snapshot || undefined}>
+          {!initialWaiting && !(feed.error && !feed.items.length) && viewMode === 'timeline' && (
             <TimelineView
               events={filteredEvents}
               tracks={eventTracks}
@@ -964,7 +996,7 @@ export default function App() {
             />
           )}
 
-          {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'compact' && (
+          {!initialWaiting && !(feed.error && !feed.items.length) && viewMode === 'compact' && (
             <CompactListView
               events={filteredEvents}
               tracks={eventTracks}
@@ -979,7 +1011,7 @@ export default function App() {
             />
           )}
 
-          {!search.pending && (!feed.loading || feed.appendLoading) && viewMode === 'gallery' && (
+          {!initialWaiting && !(feed.error && !feed.items.length) && viewMode === 'gallery' && (
             <GalleryView
               events={filteredEvents}
               tracks={eventTracks}
@@ -989,16 +1021,19 @@ export default function App() {
               onOpenImageLightbox={handleOpenLightbox}
             />
           )}
+          </motion.div>
         </main>
       </div>
 
-      <LoadMoreMemories hasMore={feed.hasMore && !search.pending} loading={feed.loading || search.pending} error={feed.error}
+      <div inert={snapshot} aria-hidden={snapshot || undefined} style={snapshot ? {visibility:'hidden',minHeight:120} : undefined}>
+      <LoadMoreMemories hasMore={feed.hasMore} loading={feed.loading || search.pending} error={null}
         windowShifted={feed.windowShifted} loadedCount={feed.items.length} totalCount={feed.total}
         onLoadMore={()=>pageWithAnchor(feed.loadMore)} onNewer={feed.newer} onRefresh={feed.refresh} />
+      </div>
       <div aria-hidden="true" className="h-24" />
-      <DeferredUiBoundary key={`${user.id}:${authGenerationRef.current}`}><Suspense fallback={<div role="status" className="fixed bottom-4 left-4 z-[100] rounded-lg bg-white p-3 text-sm shadow-lg dark:bg-stone-900">Opening…</div>}>
+      <DeferredUiBoundary key={`${user.id}:${authGenerationRef.current}:${overlayEpoch}`}>
       {/* Create / Edit Event Track Modal */}
-      {isEventTrackModalOpen && <EventTrackModal key={`${user.id}:${authGenerationRef.current}`}
+      <ModalTransition>{isEventTrackModalOpen && <EventTrackModal key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isEventTrackModalOpen}
         trackToEdit={trackToEdit}
         onClose={() => {
@@ -1007,10 +1042,10 @@ export default function App() {
         }}
         onSave={(track, editTrack) => handleSaveTrack(track, editTrack)}
         onDelete={handleDeleteTrack}
-      />}
+      />}</ModalTransition>
 
       {/* Create / Edit Timeline Moment Modal */}
-      {isEventModalOpen && <EventModal key={`${user.id}:${authGenerationRef.current}`}
+      <ModalTransition>{isEventModalOpen && <EventModal key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isEventModalOpen}
         eventToEdit={eventToEdit}
         tracks={eventTracks}
@@ -1028,10 +1063,10 @@ export default function App() {
           setIsEventTrackModalOpen(true);
         }}
         onAddCustomTag={handleAddCustomTag}
-      />}
+      />}</ModalTransition>
 
       {/* Event Details View Modal */}
-      {!!eventToView && <EventDetailModal key={`${user.id}:${authGenerationRef.current}`}
+      <ModalTransition>{!!eventToView && <EventDetailModal key={`${user.id}:${authGenerationRef.current}`}
         event={eventToView}
         tracks={eventTracks}
         onSelectTrack={handleSelectTrack}
@@ -1054,9 +1089,9 @@ export default function App() {
         isSaved={eventToView ? savedKeys.has(`${eventToView.resourceOwnerId}:${eventToView.id}`) : false}
         saveState={saveState}
         onToggleSave={handleToggleSave}
-      />}
+      />}</ModalTransition>
 
-      {!!shareTrack && <CollaborationModal key={`${user.id}:${authGenerationRef.current}`}
+      <ModalTransition>{!!shareTrack && <CollaborationModal key={`${user.id}:${authGenerationRef.current}`}
         track={shareTrack}
         isOpen={!!shareTrack}
         onClose={() => setShareTrack(null)}
@@ -1066,24 +1101,24 @@ export default function App() {
         onSearchUsernames={dataApi.usernameMatches}
         invitations={collaborationInvitations}
         onAccept={acceptInvitation}
-      />}
-      {isBlindboxOpen && <BlindboxMemory key={authGenerationRef.current} currentUserId={user.id} open={isBlindboxOpen} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}
+      />}</ModalTransition>
+      <ModalTransition>{isBlindboxOpen && <BlindboxMemory key={authGenerationRef.current} currentUserId={user.id} open={isBlindboxOpen} tracks={eventTracks} onClose={() => setIsBlindboxOpen(false)} onOpen={openBlindboxMemory} />}</ModalTransition>
       {/* Image Lightbox viewer */}
-      {lightboxState.isOpen && <ImageLightbox
+      <ModalTransition>{lightboxState.isOpen && <ImageLightbox
         images={lightboxState.images}
         currentIndex={lightboxState.index}
         isOpen={lightboxState.isOpen}
         onClose={() => setLightboxState((prev) => ({ ...prev, isOpen: false }))}
         onNavigate={(newIndex) => setLightboxState((prev) => ({ ...prev, index: newIndex }))}
-      />}
-      {isPostcardOpen && <PostcardComposer
+      />}</ModalTransition>
+      <ModalTransition>{isPostcardOpen && <PostcardComposer
         key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isPostcardOpen}
         tracks={eventTracks}
         currentUserId={user.id}
         onClose={() => setIsPostcardOpen(false)}
-      />}
-      </Suspense></DeferredUiBoundary>
+      />}</ModalTransition>
+      </DeferredUiBoundary>
     </div>
     </LocalPhotoProvider>
   );

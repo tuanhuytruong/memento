@@ -1,126 +1,98 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { imageUrl, type ImageVariant } from '../lib/imageUrl';
 import { getImageCacheOwner, purgeCachedImage, readCachedImage, writeCachedImage } from '../lib/imageCache';
 
 type Props = {
-  src: string;
-  variant: ImageVariant;
-  alt: string;
-  className?: string;
-  loading?: 'lazy' | 'eager';
-  fit?: 'cover' | 'contain';
-  onClick?: () => void;
-  onDecoded?: () => void;
-  /** A local blob URL for a photo the server has not acknowledged yet. */
-  localSrc?: string;
+  src: string; variant: ImageVariant; alt: string; className?: string;
+  loading?: 'lazy' | 'eager'; fit?: 'cover' | 'contain';
+  onClick?: () => void; onDecoded?: () => void; localSrc?: string;
 };
-/** Remount the request state synchronously on identity change: old events never belong to a new photo. */
+/** Identity changes synchronously detach old pixels and fence every continuation. */
 export function PrivateImage(props: Props) {
-  return <ImageRequest key={`${props.src}\n${props.variant}`} {...props} />;
+  return <ImageRequest key={JSON.stringify([getImageCacheOwner(), props.src, props.variant, props.localSrc])} {...props} />;
 }
-
 function imageIdFromSrc(src: string): string | null {
   if (!src.startsWith('/api/images/')) return null;
-  const [path] = src.split('?', 1);
-  const id = path.slice('/api/images/'.length);
+  const id = src.split('?')[0].slice('/api/images/'.length);
   return id && !id.includes('/') ? id : null;
 }
-
-const ImageRequest: React.FC<Props> = ({ src, variant, alt, className = '', loading = 'eager', fit = 'cover', onClick, onDecoded, localSrc }) => {
+function ImageRequest({ src, variant, alt, className = '', loading = 'eager', fit = 'cover', onClick, onDecoded, localSrc }: Props) {
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
-  const alive = useRef(true);
-  const request = useRef(0);
+  const [ready, setReady] = useState(false);
+  const [delivery, setDelivery] = useState<{ url: string; warm: boolean } | null>(null);
+  const [memoryHit, setMemoryHit] = useState(false);
+  const alive = useRef(true), generation = useRef(0), notified = useRef(false);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const decoding = useRef<HTMLImageElement | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const decoded = useRef(onDecoded);
-  decoded.current = onDecoded;
-  useEffect(() => { alive.current = true; return () => { alive.current = false; request.current += 1; if (timer.current) clearTimeout(timer.current); }; }, []);
-  useEffect(() => {
-    if (!objectUrl) return;
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [objectUrl]);
+  const decoded = useRef(onDecoded); decoded.current = onDecoded;
+  useLayoutEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; if (timer.current) clearTimeout(timer.current); };
+  }, []);
+  const owner = getImageCacheOwner(), imageId = imageIdFromSrc(src);
+  const cacheable = !localSrc && !!owner && !!imageId && (variant === 'thumb' || variant === 'display');
+  const token = generation.current;
+  const current = () => alive.current && token === generation.current;
   const retry = () => {
+    generation.current++;
     if (timer.current) clearTimeout(timer.current);
-    timer.current = null;
-    request.current += 1;
-    setLoaded(false); setFailed(false); setObjectUrl(null); setAttempt((value) => value + 1);
+    timer.current = null; decoding.current = null;
+    setReady(false); setFailed(false); setDelivery(null); setMemoryHit(false); setAttempt(value => value + 1);
   };
-  const identity = request.current;
   const handleError = () => {
-    if (!alive.current || identity !== request.current || timer.current) return;
-    // Only private API URLs support a cache-busting automatic retry. External URLs retry by explicit remount only.
-    if (attempt === 0 && src.startsWith('/api/images/') && navigator.onLine !== false) {
-      timer.current = setTimeout(() => { timer.current = null; if (alive.current && identity === request.current) retry(); }, 500);
+    if (!current() || timer.current || notified.current) return;
+    if (cacheable) void purgeCachedImage(owner!, imageId!, variant);
+    if (attempt === 0 && !localSrc && src.startsWith('/api/images/') && navigator.onLine !== false) {
+      timer.current = setTimeout(() => { timer.current = null; if (current()) retry(); }, 500);
     } else setFailed(true);
   };
-
-  // Thumb and display variants are read through the 24h local cache first: a repeat
-  // view costs no request, and a denial drops the entry instead of serving stale bytes.
-  const cacheable = !localSrc && (variant === 'thumb' || variant === 'display') && imageIdFromSrc(src) !== null;
+  // Bytes, even cached bytes, are not readiness: only the rendered element decodes.
   useEffect(() => {
     if (!cacheable) return;
-    const owner = getImageCacheOwner();
-    const imageId = imageIdFromSrc(src);
-    if (!owner || !imageId) return;
-    let cancelled = false;
-    const load = async () => {
-      const cached = await readCachedImage(owner, imageId, variant);
-      if (cancelled) return;
-      if (cached) {
-        request.current += 1;
-        if (timer.current) clearTimeout(timer.current);
-        timer.current = null;
-        setObjectUrl(URL.createObjectURL(cached));
-        setLoaded(true);
-        setFailed(false);
-        decoded.current?.();
-        return;
-      }
+    let cancelled = false, objectUrl: string | null = null;
+    const controller = new AbortController();
+    void (async () => {
       try {
-        const response = await fetch(imageUrl(src, variant, 0), { credentials: 'same-origin' });
-        if (cancelled) return;
-        if (response.status === 401 || response.status === 403) {
-          void purgeCachedImage(owner, imageId, variant);
-          setFailed(true);
-          return;
+        const cached = attempt === 0 ? await readCachedImage(owner!, imageId!, variant) : null;
+        if (cancelled || !current()) return;
+        let blob = cached;
+        if (!blob) {
+          const response = await fetch(imageUrl(src, variant, attempt), { credentials: 'same-origin', signal: controller.signal });
+          if (cancelled || !current()) return;
+          if (response.status === 401 || response.status === 403) { void purgeCachedImage(owner!, imageId!, variant); setFailed(true); return; }
+          if (!response.ok) { handleError(); return; }
+          blob = await response.blob();
+          if (cancelled || !current()) return;
+          if (!blob.size) { handleError(); return; }
+          void writeCachedImage(owner!, imageId!, variant, blob);
         }
-        if (!response.ok) { handleError(); return; }
-        const blob = await response.blob();
-        if (!blob.size) { handleError(); return; }
-        void writeCachedImage(owner, imageId, variant, blob);
-        request.current += 1;
-        setObjectUrl(URL.createObjectURL(blob));
-        setLoaded(true);
-        setFailed(false);
-        decoded.current?.();
-      } catch {
-        if (!cancelled) handleError();
-      }
-    };
-    void load();
-    return () => { cancelled = true; };
+        objectUrl = URL.createObjectURL(blob);
+        setDelivery({ url: objectUrl, warm: !!cached });
+      } catch { if (!cancelled) handleError(); }
+    })();
+    return () => { cancelled = true; controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
+    // All other inputs are immutable for this keyed identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cacheable, src, variant, attempt]);
-
-  const effectiveSrc = localSrc ?? objectUrl;
-  if (failed && !localSrc) return <div className={`relative flex min-h-20 items-center justify-center bg-stone-100 text-center text-xs text-stone-500 dark:bg-stone-800 ${className}`}><div><p role="status">Photo unavailable</p><button type="button" onClick={(event) => { event.stopPropagation(); retry(); }} className="mt-1 inline-flex min-h-11 items-center gap-1 rounded-md px-3 font-semibold hover:bg-stone-200 dark:hover:bg-stone-700"><RefreshCw className="h-3 w-3" />Retry photo</button></div></div>;
-  if (effectiveSrc) {
-    return <div className={`relative ${className}`} onClick={onClick}>{!loaded && <div className="absolute inset-0 motion-safe:animate-pulse bg-stone-100 dark:bg-stone-800" aria-hidden="true" />}<img src={effectiveSrc} loading={localSrc ? 'eager' : loading} decoding="async" alt={alt} onLoad={async (event) => {
-      const image = event.currentTarget;
-      try { await image.decode(); } catch { if (!localSrc) handleError(); return; }
-      if (!alive.current) return;
-      setLoaded(true);
-    }} onError={() => { if (!localSrc) handleError(); }} className={`h-full w-full ${fit === 'contain' ? 'object-contain' : 'object-cover'} ${loaded ? 'opacity-100' : 'opacity-0'}`} /></div>;
-  }
-  if (cacheable) return <div className={`relative ${className}`} onClick={onClick}><div className="absolute inset-0 motion-safe:animate-pulse bg-stone-100 dark:bg-stone-800" aria-hidden="true" /></div>;
-  return <div className={`relative ${className}`} onClick={onClick}>{!loaded && <div className="absolute inset-0 motion-safe:animate-pulse bg-stone-100 dark:bg-stone-800" aria-hidden="true" />}<img key={attempt} src={imageUrl(src, variant, attempt)} loading={loading} decoding="async" alt={alt} onLoad={async (event) => {
-    const image = event.currentTarget;
-    try { await image.decode(); } catch { handleError(); return; }
-    if (!alive.current || identity !== request.current) return;
+  }, [cacheable, attempt]);
+  const decodeImage = async (image: HTMLImageElement) => {
+    if (!current() || notified.current || decoding.current === image) return;
+    decoding.current = image;
+    try { await image.decode(); } catch { if (current() && imageRef.current === image) handleError(); return; }
+    if (!current() || imageRef.current !== image || !image.isConnected) return;
     if (timer.current) clearTimeout(timer.current);
-    timer.current = null; setLoaded(true); decoded.current?.();
-  }} onError={handleError} className={`h-full w-full ${fit === 'contain' ? 'object-contain' : 'object-cover'} ${loaded ? 'opacity-100' : 'opacity-0'}`} /></div>;
-};
+    timer.current = null; notified.current = true;
+    setReady(true); decoded.current?.();
+  };
+  const effectiveSrc = localSrc || delivery?.url || (!cacheable ? imageUrl(src, variant, attempt) : null);
+  if (failed) return <div className={`relative flex min-h-20 items-center justify-center bg-stone-100 text-center text-xs text-stone-500 dark:bg-stone-800 ${className}`}><div><p role="status">Photo unavailable</p><button type="button" onClick={event => { event.stopPropagation(); retry(); }} className="ui-action mt-1 inline-flex min-h-11 items-center gap-1 rounded-md px-3 font-semibold hover:bg-stone-200 dark:hover:bg-stone-700"><RefreshCw className="h-3 w-3" />Retry photo</button></div></div>;
+  return <div className={`relative ${className}`} data-photo-state={ready ? 'decoded' : 'loading'} onClick={onClick}>
+    {!ready && <div className="absolute inset-0 motion-safe:animate-pulse bg-stone-100 dark:bg-stone-800" aria-hidden="true" />}
+    {effectiveSrc && <img key={attempt} ref={image => {
+      imageRef.current = image;
+      if (image?.complete && image.naturalWidth > 0 && decoding.current !== image) { setMemoryHit(true); void decodeImage(image); }
+    }} src={effectiveSrc} loading={localSrc ? 'eager' : loading} decoding="async" alt={alt} onLoad={event => void decodeImage(event.currentTarget)} onError={handleError} className={`private-image h-full w-full ${fit === 'contain' ? 'object-contain' : 'object-cover'}`} style={{ opacity: ready ? 1 : 0, transitionDuration: localSrc || delivery?.warm || memoryHit ? '0ms' : undefined }} />}
+  </div>;
+}

@@ -183,7 +183,7 @@ export function MomentPerspectives({ event, currentUserId, initialKind = 'perspe
     </ol>
     {canRead && !canWrite && <p className="text-xs text-stone-500">Editor access is needed to add a perspective.</p>}
     {nextCursor && <button type="button" disabled={loading} className="min-h-11 rounded-lg px-3 text-sm underline disabled:opacity-50" onClick={() => void load(nextCursor, true)}>{loading ? 'Loading…' : 'Load more'}</button>}
-    <PerspectiveComposerDialog
+    <PerspectiveComposerDialog key={canWrite ? 'authorized' : 'denied'}
       open={composerOpen && canWrite}
       title={editingId ? 'Edit perspective' : kind === 'reflection' ? 'Bây giờ nghĩ lại…' : 'Add your perspective'}
       kind={kind} editing={!!editingId} draft={draft} busy={busy} error={error}

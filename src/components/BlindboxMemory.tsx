@@ -1,3 +1,4 @@
+import { useOverlayMotion } from './ModalTransition';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Dices, ExternalLink, Sparkles, X } from 'lucide-react';
@@ -19,6 +20,7 @@ const intents: { key: BlindboxIntent; label: string }[] = [{ key: 'surprise', la
 
 export function BlindboxMemory(props: Props) { return props.open ? <BlindboxBody {...props} /> : null; }
 function BlindboxBody({ open, currentUserId, tracks, onClose, onOpen }: Props) {
+  const overlayMotion = useOverlayMotion();
   const reducedMotion = useReducedMotion();
   const [intent, setIntent] = useState<BlindboxIntent>('surprise');
   const [query, setQuery] = useState('');
@@ -70,11 +72,9 @@ function BlindboxBody({ open, currentUserId, tracks, onClose, onOpen }: Props) {
 
   const track = result && tracks.find((item) => item.id === result.event.eventId && item.resourceOwnerId === result.event.resourceOwnerId);
   const emotion = result && getEmotionMeta(result.event.emotion);
-  const panelInitial = reducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 14 };
-  const panelAnimate = reducedMotion ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 };
 
-  return <AnimatePresence>{open && <motion.div ref={modal} tabIndex={-1} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: reducedMotion ? 0.12 : 0.18 }} className="fixed inset-0 z-[60] flex items-center justify-center bg-stone-950/55 p-4" onMouseDown={onClose} role="dialog" aria-modal="true" aria-label="Blindbox memory">
-    <motion.section initial={panelInitial} animate={panelAnimate} exit={panelInitial} transition={{ type: reducedMotion ? 'tween' : 'spring', stiffness: 360, damping: 28, duration: 0.2 }} className="w-full max-w-lg max-h-[90vh] break-words [overflow-wrap:anywhere] overflow-y-auto rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-800 dark:bg-stone-900" onMouseDown={(event) => event.stopPropagation()}>
+  return <motion.div ref={modal} tabIndex={-1} {...overlayMotion.backdrop} className="fixed inset-0 z-[60] flex items-center justify-center bg-stone-950/55 p-4" onMouseDown={onClose} role="dialog" aria-modal="true" aria-label="Blindbox memory">
+    <motion.section {...overlayMotion.panel} className="w-full max-w-lg max-h-[90vh] break-words [overflow-wrap:anywhere] overflow-y-auto rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-800 dark:bg-stone-900" onMouseDown={(event) => event.stopPropagation()}>
       <header className="flex items-center justify-between"><h2 className="flex gap-2 items-center text-lg font-bold font-display"><Dices className="w-5 h-5 text-amber-600" />Open a memory</h2><button onClick={onClose} className="rounded-lg p-2 text-stone-500 transition hover:bg-stone-100 dark:hover:bg-stone-800" aria-label="Close"><X className="w-5 h-5" /></button></header>
       {customizing && !isRevealing && <motion.div initial={{ opacity: 0, y: reducedMotion ? 0 : 5 }} animate={{ opacity: 1, y: 0 }} className="mt-5 space-y-4"><p className="text-sm text-stone-500">Chosen only from memories you can already access.</p><div className="flex flex-wrap gap-2">{intents.map((item) => <motion.button whileHover={reducedMotion ? undefined : { y: -1 }} whileTap={reducedMotion ? undefined : { scale: 0.97 }} key={item.key} onClick={() => setIntent(item.key)} className={`rounded-full min-h-11 px-3 py-1.5 text-xs font-semibold transition-colors ${intent === item.key ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900' : 'bg-stone-100 text-stone-700 dark:bg-stone-800 dark:text-stone-200'}`}>{item.label}</motion.button>)}</div><label className="block text-sm font-semibold">What are you looking for?<input value={query} maxLength={120} onChange={(event) => setQuery(event.target.value)} placeholder="Optional — a feeling, place, or idea" className="mt-2 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm dark:border-stone-700 dark:bg-stone-950" /></label><motion.button whileTap={reducedMotion ? undefined : { scale: 0.98 }} onClick={() => void reveal({intent,query})} disabled={isRevealing} className="w-full rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:opacity-50">Reveal a memory</motion.button><button type="button" className="min-h-11 px-3 text-sm" onClick={() => { setCustomizing(false); setError(''); }}>Cancel customization</button></motion.div>}
       {error && <p role="alert" className="mt-3 text-sm text-red-600">{error}</p>}
@@ -91,5 +91,5 @@ function BlindboxBody({ open, currentUserId, tracks, onClose, onOpen }: Props) {
         </motion.div>}
       </AnimatePresence>
     </motion.section>
-  </motion.div>}</AnimatePresence>;
+  </motion.div>;
 }

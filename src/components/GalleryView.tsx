@@ -81,7 +81,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                       e.stopPropagation();
                       if (onSelectTrack) onSelectTrack(track);
                     }}
-                    className={`absolute max-w-[65%] top-2.5 right-2.5 max-w-full min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border backdrop-blur-md shadow-xs transition ${theme.badgeClass}`}
+                    className={`ui-action absolute max-w-[65%] top-2.5 right-2.5 max-w-full min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border backdrop-blur-md shadow-xs transition ${theme.badgeClass}`}
                   >
                     <TrackIcon className="w-3 h-3" />
                     <span className="min-w-0 truncate">{track.title}</span>
@@ -102,7 +102,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                         e.stopPropagation();
                         if (onSelectTrack) onSelectTrack(track);
                       }}
-                      className={`max-w-full min-w-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border transition ${theme.badgeClass}`}
+                      className={`ui-action max-w-full min-w-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border transition ${theme.badgeClass}`}
                     >
                       <TrackIcon className="w-3 h-3" />
                       <span className="min-w-0 truncate">{track.title}</span>
@@ -176,7 +176,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                       e.stopPropagation();
                       onTagClick(tag);
                     }}
-                    className="max-w-full break-all px-2 py-0.5 rounded text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-amber-100 transition"
+                    className="ui-action max-w-full break-all px-2 py-0.5 rounded text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-amber-100 transition"
                   >
                     #{tag}
                   </button>

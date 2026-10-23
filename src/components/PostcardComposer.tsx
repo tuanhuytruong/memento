@@ -1,3 +1,5 @@
+import { motion } from 'motion/react';
+import { useOverlayMotion } from './ModalTransition';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { EventTrack, PostcardRequest, PostcardSelection, PostcardTemplateKey, TimelineEvent } from '../types';
 import { momentIdentity, trackIdentity } from '../lib/resourceIdentity';
@@ -32,6 +34,7 @@ function isCompact() {
 }
 
 export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, currentUserId, onClose }) => {
+  const overlayMotion = useOverlayMotion();
   const panelRef = useModalLifecycle(isOpen, onClose);
   const [step, setStep] = useState<Step>('select');
   const [template, setTemplate] = useState<PostcardTemplateKey>('journey');
@@ -208,7 +211,7 @@ export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, currentUserI
 
   if (!isOpen) return null;
   return (
-    <div
+    <motion.div {...overlayMotion.backdrop}
       ref={panelRef}
       role="dialog"
       aria-modal="true"
@@ -218,7 +221,7 @@ export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, currentUserI
       className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-black/50 p-3 sm:p-6"
       onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}
     >
-      <div className="my-auto flex w-full max-w-5xl flex-col gap-4 rounded-2xl border border-stone-200 bg-white p-4 shadow-xl dark:border-stone-700 dark:bg-stone-900 sm:p-6">
+      <motion.div {...overlayMotion.panel} className="my-auto flex w-full max-w-5xl flex-col gap-4 rounded-2xl border border-stone-200 bg-white p-4 shadow-xl dark:border-stone-700 dark:bg-stone-900 sm:p-6">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 id="postcard-composer-title" className="text-base font-semibold text-stone-900 dark:text-stone-50">Create postcard</h2>
@@ -466,8 +469,8 @@ export const PostcardComposer: React.FC<Props> = ({ isOpen, tracks, currentUserI
           </div>
         </div>
 
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 };
 

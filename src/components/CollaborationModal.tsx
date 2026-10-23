@@ -1,3 +1,5 @@
+import { motion } from 'motion/react';
+import { useOverlayMotion } from './ModalTransition';
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, Clock3, Share2, UserMinus, Users } from 'lucide-react';
 import { useModalLifecycle } from '../lib/useModalLifecycle';
@@ -16,6 +18,7 @@ type Props = {
 };
 
 export const CollaborationModal: React.FC<Props> = ({ invitations, onAccept, track, isOpen, onClose, onInvite, onLoadCollaborators, onRevoke, onSearchUsernames }) => {
+  const overlayMotion = useOverlayMotion();
   const alive = useRef(true);
   const pendingRequest = useRef(false);
   const modal = useModalLifecycle(isOpen, onClose);
@@ -63,8 +66,8 @@ export const CollaborationModal: React.FC<Props> = ({ invitations, onAccept, tra
     catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Could not revoke access.'); }
     finally { if (alive.current) { pendingRequest.current = false; setBusy(false); } }
   };
-  return <div ref={modal} tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/45" role="dialog" aria-modal="true" aria-label={`Share ${track.title}`}>
-    <section className="w-full max-w-lg rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-xl">
+  return <motion.div {...overlayMotion.backdrop} ref={modal} tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/45" role="dialog" aria-modal="true" aria-label={`Share ${track.title}`}>
+    <motion.section {...overlayMotion.panel} className="w-full max-w-lg rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-xl">
       <header className="flex items-center justify-between p-5 border-b border-stone-100 dark:border-stone-800"><div><h2 className="font-display text-lg font-bold flex items-center gap-2"><Share2 className="w-5 h-5 text-amber-600" />Share track</h2><p className="text-sm text-stone-500 mt-1">{track.title}</p></div><button onClick={onClose} className="text-sm text-stone-500 hover:text-stone-900">Close</button></header>
       <div className="p-5 space-y-5">
         {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
@@ -78,8 +81,8 @@ export const CollaborationModal: React.FC<Props> = ({ invitations, onAccept, tra
         <CollaboratorList label="Active" people={active} onRevoke={revoke} disabled={busy} />
         <CollaboratorList label="Pending" people={pending} onRevoke={revoke} disabled={busy} />
       </div>
-    </section>
-  </div>;
+    </motion.section>
+  </motion.div>;
 }
 
 function CollaboratorList({ label, people, onRevoke, disabled }: { label: string; people: TrackCollaborator[]; onRevoke: (id: string) => Promise<void>; disabled: boolean }) {

@@ -1,3 +1,5 @@
+import { motion } from 'motion/react';
+import { useOverlayMotion } from './ModalTransition';
 import React, { useState, useEffect, useRef } from 'react';
 import { PrivateImage } from './PrivateImage';
 import { ApiError, dataApi } from '../lib/api';
@@ -65,6 +67,7 @@ export const EventModal: React.FC<EventModalProps> = ({
   onAddCustomTag,
   onCreateNewTrack,
 }) => {
+  const overlayMotion = useOverlayMotion();
   const alive = useRef(true);
   const initialized = useRef(false);
   const blobs = useRef<string[]>([]);
@@ -580,13 +583,13 @@ export const EventModal: React.FC<EventModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div
+    <motion.div {...overlayMotion.backdrop}
       ref={modal} tabIndex={-1} role="dialog" aria-modal="true" aria-label={eventToEdit ? 'Edit memory' : 'New memory'}
       id="event-modal-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm p-3 sm:p-5 overflow-y-auto"
       onClick={() => requestDismiss()}
     >
-      <div
+      <motion.div {...overlayMotion.panel}
         id="event-modal-card"
         onClick={(e) => e.stopPropagation()}
         className="relative w-full max-w-2xl bg-white dark:bg-stone-900 rounded-2xl shadow-2xl border border-stone-200 dark:border-stone-800 overflow-hidden my-6 flex flex-col max-h-[90vh]"
@@ -1206,7 +1209,7 @@ export const EventModal: React.FC<EventModalProps> = ({
             </div>
           </div>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 };

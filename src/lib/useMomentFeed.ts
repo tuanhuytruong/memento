@@ -86,6 +86,10 @@ export function dedupeByIdentity(pages: TimelineEvent[][]): TimelineEvent[] {
   return merged;
 }
 
+export function isFeedAccessFailure(error: unknown): boolean {
+  return [401,403,404].includes((error as {status?:number})?.status ?? 0);
+}
+
 export interface MomentFeedState {
   items: TimelineEvent[];
   total: number | null;
@@ -119,8 +123,14 @@ export function useMomentFeed(options: {
   query: MomentFeedQuery;
   generation: number;
   enabled?: boolean;
+  paused?: boolean;
   maxRetainedPages?: number;
 }): MomentFeedState & {
+  snapshot: boolean;
+  settled: boolean;
+  retry: () => void;
+  /** Successful retried navigation hands its committed page to App landing. */
+  retryLanding: {page:MomentFeedPage;requestId:number}|null;
   seek: (target:{ownerId:string;id:string}|{month:string},signal?:AbortSignal)=>Promise<MomentFeedPage|null>;
   loadPrevious:()=>void;
   hasPrevious:boolean;
@@ -131,7 +141,7 @@ export function useMomentFeed(options: {
   newer: () => void;
   refresh: () => void;
 } {
-  const { fetchPage, fetchSeek, query, generation, enabled = true, maxRetainedPages = 5 } = options;
+  const { fetchPage, fetchSeek, query, generation, enabled = true, paused = false, maxRetainedPages = 5 } = options;
   const [hasPrevious,setHasPrevious]=useState(false);
   const [seeking,setSeeking]=useState(false);
   const [navigationTarget,setNavigationTarget]=useState<{ownerId:string;id:string}|{month:string}|null>(null);
@@ -150,17 +160,22 @@ export function useMomentFeed(options: {
   // work and the retained pages together, so one request can never complete
   // into another account's list.
   const scope = feedScopeHash(query, generation);
-  const [landedScope, setLandedScope] = useState(scope);
-  const currentScope = useRef({ scope, enabled });
-  currentScope.current = { scope, enabled };
+  const [landedScope, setLandedScope] = useState<string | null>(null);
+  const [landedGeneration, setLandedGeneration] = useState(generation);
+  const [denied, setDenied] = useState(false);
+  const failedOperation = useRef<(() => void) | null>(null);
+  const [retryLanding,setRetryLanding]=useState<{page:MomentFeedPage;requestId:number}|null>(null);
+  const currentScope = useRef({ scope, enabled, paused });
+  currentScope.current = { scope, enabled, paused };
   const activeController = useRef<AbortController | null>(null);
   const busy = useRef(false);
   const requestId = useRef(0);
   const cursorRef = useRef<string | null>(null);
   const firstCursorRef = useRef<string | null | undefined>(undefined);
 
-  const run = useCallback(async (mode: 'initial' | 'more' | 'previous', existing: TimelineEvent[][]) => {
-    if (!enabled) return;
+  const run = useCallback(async (mode: 'initial' | 'more' | 'previous', existing: TimelineEvent[][], retryCursor?: string | null) => {
+    if (!enabled || paused) return;
+    setRetryLanding(null);
     const id = ++requestId.current;
     activeController.current?.abort();
     const controller = new AbortController();
@@ -169,15 +184,20 @@ export function useMomentFeed(options: {
     setLoading(true);
     setAppendLoading(mode !== 'initial');
     setError(null);
+    const requestedCursor = retryCursor !== undefined ? retryCursor : mode === 'more' ? cursorRef.current : mode === 'previous' ? pageBounds.current[0]?.previousCursor ?? null : null;
+    failedOperation.current = () => { void run(mode, existing, requestedCursor); };
     try {
-      const page = await fetchPage({ cursor: mode === 'more' ? cursorRef.current : mode === 'previous' ? pageBounds.current[0]?.previousCursor ?? null : null, navigation: mode === 'previous' ? 'previous':'next', query, signal: controller.signal });
-      if (id !== requestId.current || currentScope.current.scope !== scope || !currentScope.current.enabled) return; // superseded: never land
+      const page = await fetchPage({ cursor: requestedCursor, navigation: mode === 'previous' ? 'previous':'next', query, signal: controller.signal });
+      if (id !== requestId.current || currentScope.current.scope !== scope || !currentScope.current.enabled || currentScope.current.paused) return; // superseded: never land
       const next = mode === 'more' ? [...existing, page.moments] : mode === 'previous' ? [page.moments,...existing] : [page.moments];
       const bounds = mode === 'more' ? [...pageBounds.current,page] : mode === 'previous' ? [page,...pageBounds.current] : [page];
       const slid = mode === 'previous' ? {pages:next.slice(0,maxRetainedPages),dropped:Math.max(0,next.length-maxRetainedPages)} : slideWindow(next,maxRetainedPages);
       pageBounds.current=retainDirectional(bounds,maxRetainedPages,mode==='previous'?'previous':'next');
       setHasPrevious(!!pageBounds.current[0]?.previousCursor);
       setLandedScope(scope);
+      setLandedGeneration(generation);
+      setDenied(false);
+      failedOperation.current = null;
       setPages(slid.pages);
       setDropped(dropped => dropped + slid.dropped);
       cursorRef.current = pageBounds.current.at(-1)?.nextCursor ?? null;
@@ -189,60 +209,73 @@ export function useMomentFeed(options: {
         setTotal(page.total);
       }
     } catch (failure) {
-      if (id !== requestId.current || currentScope.current.scope !== scope || !currentScope.current.enabled) return;
+      if (id !== requestId.current || currentScope.current.scope !== scope || !currentScope.current.enabled || currentScope.current.paused) return;
       if ((failure as { name?: string })?.name === 'AbortError') return;
+      if (isFeedAccessFailure(failure)) {
+        // Denial invalidates the captured documents AND cursor operation.
+        // Reauthorize the whole window instead of merging historical pages.
+        failedOperation.current=()=>{void run('initial',[],null);};
+        anchor.current=null;setNavigationTarget(null);firstCursorRef.current=undefined;setDropped(0);
+        setPages([]); pageBounds.current=[]; setDenied(true); setLandedScope(null); setTotal(null); setCursor(null); cursorRef.current=null; setHasPrevious(false);
+      }
       setError(failure instanceof Error ? failure.message : 'Could not load memories. Please retry.');
     } finally {
-      if (id === requestId.current) { busy.current = false; setLoading(false); setAppendLoading(false); }
+      if (id === requestId.current && currentScope.current.scope === scope && currentScope.current.enabled && !currentScope.current.paused) { busy.current = false; setLoading(false); setAppendLoading(false); }
     }
-  }, [fetchPage, query, scope, enabled, maxRetainedPages]);
+  }, [fetchPage, query, scope, enabled, paused, generation, maxRetainedPages]);
 
   // Reset whenever the account or the filter scope changes.
   useEffect(() => {
     requestId.current += 1;
-    cursorRef.current = null;
+    if (landedScope !== scope) cursorRef.current = null;
     firstCursorRef.current = undefined;
-    setPages([]);
-    pageBounds.current=[];setHasPrevious(false);anchor.current=null;setNavigationTarget(null);setSeeking(false);
-    setCursor(null);
-    setTotal(null);
+    if (!enabled || landedGeneration !== generation) {
+      setPages([]); setLandedScope(null); setDenied(false); setLandedGeneration(generation);
+    }
+    if (landedScope !== scope || !enabled || landedGeneration !== generation) {
+      pageBounds.current=[];setHasPrevious(false);setCursor(null);
+    }
+    anchor.current=null;setNavigationTarget(null);setSeeking(false);
     setDropped(0);
     setError(null);
-    if (enabled) void run('initial', []);
+    failedOperation.current=null;setRetryLanding(null);
+    setLoading(false);setAppendLoading(false);
+    if (enabled && !paused) void run('initial', []);
     return () => { activeController.current?.abort(); requestId.current += 1; busy.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, enabled, reloadToken]);
+  }, [scope, enabled, paused, generation, reloadToken]);
 
   const loadMore = useCallback(() => {
-    if (busy.current || !cursor) return;
+    if (busy.current || paused || landedScope !== scope || !cursor) return;
     void run('more', pages);
-  }, [loading, cursor, pages, run]);
+  }, [loading, cursor, pages, run, paused, landedScope, scope]);
 
   /** Slide the retained window back toward older content and fetch past it. */
   const older = useCallback(() => {
-    if (busy.current || !cursor) return;
+    if (busy.current || paused || landedScope !== scope || !cursor) return;
     void run('more', pages);
-  }, [loading, cursor, pages, run]);
+  }, [loading, cursor, pages, run, paused, landedScope, scope]);
 
   /** Move the window back toward newer content; a fresh first page. */
   const newer = useCallback(() => {
-    if (busy.current) return;
+    if (busy.current || paused || landedScope !== scope) return;
     setDropped(0);anchor.current=null;setNavigationTarget(null);
     void run('initial', []);
-  }, [loading, run]);
+  }, [loading, run, paused, landedScope, scope]);
 
-  const loadPrevious=useCallback(()=>{if(!busy.current && hasPrevious)void run('previous',pages);},[hasPrevious,pages,run]);
-  const seek=useCallback(async(target:{ownerId:string;id:string}|{month:string}, external?:AbortSignal,refreshing=false)=>{
-    if(!enabled || !fetchSeek || busy.current)return null;
+  const loadPrevious=useCallback(()=>{if(!busy.current && !paused && landedScope===scope && hasPrevious)void run('previous',pages);},[hasPrevious,pages,run,paused,landedScope,scope]);
+  const seek=useCallback(async(target:{ownerId:string;id:string}|{month:string}, external?:AbortSignal,refreshing=false,retrying=false)=>{
+    if(!enabled || paused || (!refreshing && landedScope!==scope) || !fetchSeek || busy.current)return null;
+    setRetryLanding(null);
     const id=++requestId.current;activeController.current?.abort();const controller=new AbortController();activeController.current=controller;
     const abort=()=>controller.abort();external?.addEventListener('abort',abort,{once:true});if(external?.aborted)controller.abort();
-    busy.current=true;setSeeking(true);setError(null);
+    busy.current=true;setSeeking(true);setError(null);failedOperation.current=()=>{void seek(target,undefined,true,true);};
     try{const page=await fetchSeek(query,target,controller.signal);
-      if(controller.signal.aborted||id!==requestId.current||scope!==currentScope.current.scope||!currentScope.current.enabled)return null;
-      pageBounds.current=[page];setPages([page.moments]);setLandedScope(scope);cursorRef.current=page.nextCursor;setCursor(page.nextCursor);setHasPrevious(!!page.previousCursor);setTotal(page.total??null);setDropped(0);anchor.current=page.target??target;setNavigationTarget('month'in target?target:{month:page.moments[0]?.date?.slice(0,7)||'undated'});return page;
-    }catch(e){if(!controller.signal.aborted&&id===requestId.current&&scope===currentScope.current.scope){setError(e instanceof Error?e.message:'Memory unavailable. Reset to start.');if(refreshing){setPages([]);pageBounds.current=[];setHasPrevious(false);setCursor(null);cursorRef.current=null;}}return null;}
-    finally{external?.removeEventListener('abort',abort);if(id===requestId.current&&scope===currentScope.current.scope){busy.current=false;setSeeking(false);}}
-  },[fetchSeek,query,scope,enabled]);
+      if(controller.signal.aborted||id!==requestId.current||scope!==currentScope.current.scope||!currentScope.current.enabled||currentScope.current.paused)return null;
+      failedOperation.current=null;if(retrying)setRetryLanding({page,requestId:id});setDenied(false);setLandedGeneration(generation);pageBounds.current=[page];setPages([page.moments]);setLandedScope(scope);cursorRef.current=page.nextCursor;setCursor(page.nextCursor);setHasPrevious(!!page.previousCursor);setTotal(page.total??null);setDropped(0);anchor.current=page.target??target;setNavigationTarget('month'in target?target:{month:page.moments[0]?.date?.slice(0,7)||'undated'});return page;
+    }catch(e){if(!controller.signal.aborted&&id===requestId.current&&scope===currentScope.current.scope&&currentScope.current.enabled&&!currentScope.current.paused){setError(e instanceof Error?e.message:'Memory unavailable. Reset to start.');if(isFeedAccessFailure(e)){failedOperation.current=()=>{void run('initial',[],null);};anchor.current=null;setNavigationTarget(null);firstCursorRef.current=undefined;setDropped(0);setDenied(true);setLandedScope(null);setTotal(null);setPages([]);pageBounds.current=[];setHasPrevious(false);setCursor(null);cursorRef.current=null;}}return null;}
+    finally{external?.removeEventListener('abort',abort);if(id===requestId.current&&scope===currentScope.current.scope&&currentScope.current.enabled&&!currentScope.current.paused){busy.current=false;setSeeking(false);}}
+  },[fetchSeek,query,scope,enabled,paused,landedScope,generation,run]);
   const refresh = useCallback(() => {
     setDropped(0);
     if(anchor.current && fetchSeek){void seek(anchor.current,undefined,true);return;}
@@ -250,16 +283,20 @@ export function useMomentFeed(options: {
   }, [seek,fetchSeek]);
 
   return {
-    items: enabled && landedScope === scope ? dedupeByIdentity(pages) : [],
-    total: enabled && landedScope === scope ? total : null,
-    hasMore: enabled && landedScope === scope && cursor !== null,
+    snapshot: enabled && !denied && landedGeneration === generation && landedScope !== null && (paused || landedScope !== scope),
+    settled: enabled && !denied && landedGeneration === generation && landedScope === scope,
+    retry: () => { if(currentScope.current.enabled&&!currentScope.current.paused&&currentScope.current.scope===scope&&!busy.current)failedOperation.current?.(); },
+    retryLanding: enabled&&!paused&&!denied&&landedScope===scope&&retryLanding?.requestId===requestId.current?retryLanding:null,
+    items: enabled && !denied && landedGeneration === generation ? dedupeByIdentity(pages) : [],
+    total: enabled && !paused && !denied && landedGeneration === generation && landedScope === scope ? total : null,
+    hasMore: enabled && !paused && !denied && landedGeneration === generation && landedScope === scope && cursor !== null,
     loading,
     appendLoading: enabled && landedScope === scope && appendLoading,
     error,
     windowShifted: dropped > 0,
     loadedPages: pages.length,
     loadMore,
-    loadPrevious,hasPrevious,seeking,seek,navigationTarget,
+    loadPrevious,hasPrevious: enabled && !paused && !denied && landedScope===scope && hasPrevious,seeking,seek,navigationTarget,
     older,
     newer,
     refresh,
