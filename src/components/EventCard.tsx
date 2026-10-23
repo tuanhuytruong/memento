@@ -10,7 +10,6 @@ import {
   Tag,
   ImageIcon,
 } from 'lucide-react';
-import { motion } from 'motion/react';
 import { TimelineEvent, EventTrack } from '../types';
 import { getEmotionMeta } from '../data/emotions';
 import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
@@ -54,10 +53,7 @@ export const EventCard: React.FC<EventCardProps> = ({
     : null;
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, ease: 'easeOut' }}
+    <div
       className="relative flex items-start gap-4 sm:gap-6 group"
     >
       {/* Node Marker on the timeline stem */}
@@ -322,6 +318,6 @@ export const EventCard: React.FC<EventCardProps> = ({
           </div>
         )}
       </div>
-    </motion.div>
+    </div>
   );
 };

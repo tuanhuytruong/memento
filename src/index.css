@@ -27,3 +27,17 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #a8a29e;
 }
+
+:root {
+  --motion-press: 110ms;
+  --motion-content: 160ms;
+  --motion-overlay: 200ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+.feed-skeleton-block { background: #e7e5e4; border-radius: 0.75rem; }
+.dark .feed-skeleton-block { background: #292524; }
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-press: 0ms; --motion-content: 0ms; --motion-overlay: 0ms; }
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0ms !important; scroll-behavior: auto !important; }
+  [id^="event-card-"] *, #gallery-view-grid * { transform: none !important; }
+}
