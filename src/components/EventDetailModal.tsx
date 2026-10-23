@@ -233,7 +233,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
             <button
               onClick={requestClose}
               aria-label="Close memory details"
-              className="ui-action min-h-11 min-w-11 p-2 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition ml-1"
+              className="ui-action inline-flex items-center justify-center min-h-11 min-w-11 p-2 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition ml-1"
             >
               <X className="w-5 h-5" />
             </button>
@@ -303,7 +303,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
                 <PrivateImage src={event.images[activeImageIndex] || event.images[0]} variant="display" onDecoded={onDecoded} fit="contain" alt={event.title} className="h-[min(56vh,420px)] w-full cursor-pointer hover:opacity-95 transition" onClick={() => onOpenImageLightbox(event.images, activeImageIndex)} />
                 <button
                   onClick={() => onOpenImageLightbox(event.images, activeImageIndex)}
-                  className="ui-action absolute min-h-11 min-w-11 bottom-3 right-3 p-2 rounded-lg bg-black/60 text-white hover:bg-black/80 transition"
+                  className="ui-action inline-flex items-center justify-center absolute min-h-11 min-w-11 bottom-3 right-3 p-2 rounded-lg bg-black/60 text-white hover:bg-black/80 transition"
                   title="Enlarge photo"
                 >
                   <Maximize2 className="w-4 h-4" />
