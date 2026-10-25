@@ -21,6 +21,7 @@ function fakeClient(rows = []) {
 test('savedKey is the composite identity, never a bare id', () => {
   assert.equal(savedKey('A', 'm1'), 'A:m1');
   assert.notEqual(savedKey('A', 'm1'), savedKey('B', 'm1'), 'the same id under another owner is a different memory');
+  assert.equal(savedKey('A', 'm1:with:colons'), 'A:m1:with:colons');
 });
 
 test('decodeSavedCursor accepts a real cursor and rejects anything else', () => {
@@ -158,10 +159,14 @@ test('saving is private, idempotent and access-checked', { timeout: 120000 }, as
     // Idempotent: repeating either state is the same fact, and there is no
     // toggle endpoint to race.
     assert.equal((await request(`/api/moments/${momentId}/saved`, { method: 'PUT', token: owner.token, body: { ownerId: owner.id, active: true } })).data.saved.saved, true);
+    const colonId = 'saved:with:colons';
+    await pool.query(`INSERT INTO ${qschema}.saved_moments(user_id,moment_owner_id,moment_id) VALUES($1,$2,$3)`, [owner.id, owner.id, colonId]);
+    await pool.query(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document,version) VALUES($1,$2,$3,$4,1)`, [owner.id, colonId, trackId, JSON.stringify({ id: colonId, eventId: trackId, title: 'colon identity' })]);
     const list = await request('/api/saved', { token: owner.token });
     assert.equal(list.res.status, 200);
     assert.deepEqual(list.data.saved, [{ ownerId: owner.id, id: momentId }], 'owner sees exactly their own save');
-    assert.equal(list.data.count, 1);
+    assert.ok(list.data.saved.some(item => item.ownerId === owner.id && item.id === colonId), 'opaque IDs containing colons round-trip intact');
+    assert.equal(list.data.count, 2);
     assert.equal((await request('/api/saved', { token: editor.token })).data.count, 1, 'the editor has their own independent save');
     // Saving is invisible to the memory's author.
     const ownerSeesOwnList = await request('/api/saved', { token: owner.token });

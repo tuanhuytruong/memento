@@ -18,10 +18,11 @@ import {
 const OWNER = 'owner-a';
 const blob = () => new Blob([new Uint8Array(2048)], { type: 'image/jpeg' });
 
-function put(uploadId: string, overrides: { ownerId?: string; momentId?: string; createdAt?: number; state?: 'pending' | 'committed'; bytes?: number } = {}) {
+function put(uploadId: string, overrides: { uploaderAccountId?: string; resourceOwnerId?: string; momentId?: string; createdAt?: number; state?: 'pending' | 'committed'; bytes?: number } = {}) {
   return outboxPut({
     uploadId,
-    ownerId: overrides.ownerId ?? OWNER,
+    uploaderAccountId: overrides.uploaderAccountId ?? OWNER,
+    resourceOwnerId: overrides.resourceOwnerId ?? overrides.uploaderAccountId ?? OWNER,
     momentId: overrides.momentId ?? 'moment-1',
     blob: blob(),
     name: `${uploadId}.jpg`,
@@ -97,7 +98,7 @@ test('resume picks the oldest moment and keeps its photos in order', async () =>
   await put('already-committed', { momentId: 'moment-1', createdAt: 1, state: 'committed' });
   const queue = outboxOldestUncommitted(OWNER);
   assert.equal(queue?.momentId, 'moment-1');
-  assert.equal(queue?.ownerId, OWNER, 'the resume path re-uploads under the same owner');
+  assert.equal(queue?.uploaderAccountId, OWNER, 'the resume path re-uploads under the same owner');
   assert.deepEqual(queue?.files.map((entry) => entry.uploadId), ['first-moment-a', 'first-moment-b']);
   assert.ok(queue?.files.every((entry) => entry.file instanceof File), 'a stored blob is re-uploaded as a File');
 });
@@ -106,7 +107,7 @@ test('one account never sees another account queued photo', async () => {
   await outboxPurgeAll();
   await outboxLoad(OWNER);
   await put('mine');
-  await put('theirs', { ownerId: 'owner-b' });
+  await put('theirs', { uploaderAccountId: 'owner-b' });
   assert.deepEqual(outboxSnapshot(OWNER).map((record) => record.uploadId), ['mine']);
   await outboxLoad('owner-b');
   assert.deepEqual(outboxSnapshot('owner-b').map((record) => record.uploadId), ['theirs']);
@@ -120,4 +121,29 @@ test('signing out purges every queued photo', async () => {
   await outboxPurgeAll();
   assert.deepEqual(outboxSnapshot(OWNER), []);
   assert.equal(outboxOldestUncommitted(OWNER), null);
+});
+
+test('a purge invalidates the old outbox epoch and no old record can be updated afterward', async () => {
+  await outboxPurgeAll();
+  await outboxLoad(OWNER);
+  await put('late-old-session');
+  await outboxPurgeAll();
+  assert.equal(await outboxUpdate(OWNER, 'late-old-session', { state: 'committed' }), null);
+  assert.deepEqual(outboxSnapshot(OWNER), []);
+  await outboxLoad('owner-b');
+  await put('fresh-session', { uploaderAccountId: 'owner-b' });
+  assert.deepEqual(outboxSnapshot('owner-b').map((record) => record.uploadId), ['fresh-session']);
+});
+
+
+test('editor queue is partitioned by uploader while retaining a distinct destination owner', async () => {
+  await outboxPurgeAll();
+  await outboxLoad('editor-e');
+  await put('editor-to-owner', { uploaderAccountId: 'editor-e', resourceOwnerId: 'owner-o', momentId: 'owner-moment' });
+  const queue = outboxOldestUncommitted('editor-e');
+  assert.equal(queue?.uploaderAccountId, 'editor-e');
+  assert.equal(queue?.resourceOwnerId, 'owner-o');
+  assert.equal(queue?.momentId, 'owner-moment');
+  await outboxLoad('owner-o');
+  assert.equal(outboxOldestUncommitted('owner-o'), null, 'resource owner cannot inherit the editor device queue');
 });

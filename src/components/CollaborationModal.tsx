@@ -53,7 +53,9 @@ export const CollaborationModal: React.FC<Props> = ({ invitations, onAccept, tra
 
   if (!isOpen || !track) return null;
   const pending = collaborators.filter((item) => !item.accepted_at && !item.revoked_at && new Date(item.expires_at) > new Date());
-  const active = collaborators.filter((item) => item.accepted_at && !item.revoked_at && new Date(item.expires_at) > new Date());
+  // The seven-day expiry applies only while acceptance is pending. Accepted
+  // collaboration persists until the owner revokes it.
+  const active = collaborators.filter((item) => item.accepted_at && !item.revoked_at);
   const invite = async (event: React.FormEvent) => {
     event.preventDefault(); if (pendingRequest.current) return; pendingRequest.current = true; setBusy(true); setError('');
     try { await onInvite(username.trim(), role); if (!alive.current) return; const items = await load.current(); if (!alive.current) return; setUsername(''); setCollaborators(items); }

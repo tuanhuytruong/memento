@@ -41,7 +41,7 @@ export const EventCard: React.FC<EventCardProps> = ({
   onOpenImageLightbox,
 }) => {
   // A photo the owner just attached can still be local-only while the upload runs.
-  const pendingPhotos = useLocalPhotos(event.id);
+  const pendingPhotos = useLocalPhotos(event.id, event.resourceOwnerId);
   const photoCount = event.images.length + pendingPhotos.length;
   const emotionMeta = getEmotionMeta(event.emotion);
   const relativeTime = getRelativeTime(event.date);

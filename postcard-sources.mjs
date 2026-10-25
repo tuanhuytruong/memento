@@ -10,17 +10,34 @@ const MAX_CONCURRENT_FETCHES = 3;
 const FETCH_TIMEOUT_MS = 20_000;
 const MAX_SOURCE_BYTES = 24 * 1024 * 1024;
 
-async function mapLimit(items, limit, worker) {
+// Fail closed: on the first worker failure cancel siblings, then wait for every
+// started source read to settle. The caller must not release its byte/admission
+// reservation while native streams are still consuming slots in the background.
+async function mapLimit(items, limit, worker, parentSignal) {
   const results = new Array(items.length);
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort(parentSignal?.reason || new ApiError(499, 'Postcard rendering was cancelled.'));
+  parentSignal?.addEventListener('abort', onParentAbort, { once: true });
   let cursor = 0;
+  let firstError;
   const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
     for (;;) {
+      if (controller.signal.aborted) return;
       const index = cursor++;
       if (index >= items.length) return;
-      results[index] = await worker(items[index], index);
+      try {
+        results[index] = await worker(items[index], index, controller.signal);
+      } catch (error) {
+        if (!firstError) firstError = error;
+        if (!controller.signal.aborted) controller.abort(error);
+        return;
+      }
     }
   });
-  await Promise.all(runners);
+  await Promise.allSettled(runners);
+  parentSignal?.removeEventListener('abort', onParentAbort);
+  if (firstError) throw firstError;
+  if (controller.signal.aborted) throw controller.signal.reason;
   return results;
 }
 
@@ -56,7 +73,7 @@ export async function resolvePostcardPhotos(spec, deps, signal) {
       throw new ApiError(403, 'Postcards can only be created from your own moments.');
     }
     return access;
-  });
+  }, signal);
 
   // 2) Every photo must belong to the moment it was selected under.
   const selections = spec.images.map((imageId, index) => ({ imageId, moment: moments[index] }));
@@ -81,9 +98,9 @@ export async function resolvePostcardPhotos(spec, deps, signal) {
   // 3) Fresh image access + namespace check immediately before each byte read.
   //    The shared sourceSlot bounds aggregate read concurrency across all
   //    in-flight postcards; each slot is released when its read settles.
-  const photos = await mapLimit(selections, MAX_CONCURRENT_FETCHES, async selection => {
+  const photos = await mapLimit(selections, MAX_CONCURRENT_FETCHES, async (selection, _index, sourceSignal) => {
     if (!selection.imageId) return null;
-    if (signal?.aborted) throw signal.reason;
+    if (sourceSignal.aborted) throw sourceSignal.reason;
     const releaseSlot = sourceSlot ? await sourceSlot() : null;
     try {
       const image = await imageAccess(userId, selection.imageId, pool);
@@ -96,8 +113,8 @@ export async function resolvePostcardPhotos(spec, deps, signal) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(new ApiError(504, 'One of the chosen photos took too long to load. Try again.')), FETCH_TIMEOUT_MS);
       timer.unref?.();
-      const onParentAbort = () => controller.abort(signal.reason || new ApiError(499, 'Postcard rendering was cancelled.'));
-      signal?.addEventListener('abort', onParentAbort, { once: true });
+      const onParentAbort = () => controller.abort(sourceSignal.reason || new ApiError(499, 'Postcard rendering was cancelled.'));
+      sourceSignal.addEventListener('abort', onParentAbort, { once: true });
       try {
         const object = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: variant.key }), { abortSignal: controller.signal });
         const buffer = await readStream(object.Body, MAX_SOURCE_BYTES, controller.signal);
@@ -108,12 +125,12 @@ export async function resolvePostcardPhotos(spec, deps, signal) {
         throw postError('One of the chosen photos could not be loaded. Remove it and try again.');
       } finally {
         clearTimeout(timer);
-        signal?.removeEventListener('abort', onParentAbort);
+        sourceSignal.removeEventListener('abort', onParentAbort);
       }
     } finally {
       releaseSlot?.();
     }
-  });
+  }, signal);
 
   return photos;
 }
