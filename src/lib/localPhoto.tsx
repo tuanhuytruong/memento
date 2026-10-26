@@ -49,16 +49,16 @@ const STATUS_LABEL: Record<PendingPhoto['state'], string> = {
 };
 
 /** Photos for one moment that have not been acknowledged by the server yet. */
-export function useLocalPhotos(momentId: string | undefined): PendingPhoto[] {
+export function useLocalPhotos(momentId: string | undefined, resourceOwnerId: string | undefined): PendingPhoto[] {
   const { records } = useContext(LocalPhotoContext);
   const [photos, setPhotos] = useState<PendingPhoto[]>([]);
 
   useEffect(() => {
-    if (!momentId) {
+    if (!momentId || !resourceOwnerId) {
       setPhotos([]);
       return;
     }
-    const pending = records.filter((record) => record.momentId === momentId && record.state !== 'committed');
+    const pending = records.filter((record) => record.momentId === momentId && record.resourceOwnerId === resourceOwnerId && record.state !== 'committed');
     setPhotos(pending.map((record) => {
       let url = objectUrls.get(record.uploadId);
       if (!url) {
@@ -68,7 +68,7 @@ export function useLocalPhotos(momentId: string | undefined): PendingPhoto[] {
       const state = record.state as PendingPhoto['state'];
       return { uploadId: record.uploadId, url, state, status: STATUS_LABEL[state] };
     }));
-  }, [records, momentId]);
+  }, [records, momentId, resourceOwnerId]);
 
   return photos;
 }

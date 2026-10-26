@@ -34,6 +34,12 @@ export const pool = new pg.Pool({
   idle_in_transaction_session_timeout: DB_BUDGETS.idleTransactionTimeoutMs,
 });
 instrumentPool(pool);
+// pg emits idle client connection failures on the Pool. A listener converts
+// those into a bounded sanitized diagnostic instead of an uncaught process error.
+pool.on('error', (error) => {
+  const code = typeof error?.code === 'string' ? error.code.slice(0, 32) : 'unknown';
+  console.error(JSON.stringify({ event: 'db.pool.idle_error', code }));
+});
 export const hashInvite = value => crypto.createHash('sha256').update(value).digest('hex');
 export const hashSession = value => crypto.createHmac('sha256', process.env.SESSION_SECRET).update(value).digest('hex');
 export const id = () => crypto.randomUUID();

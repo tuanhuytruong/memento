@@ -15,7 +15,7 @@ import { motion, useReducedMotion } from 'motion/react';
 import { contentMotion } from './lib/uiMotion';
 import { LoadMoreMemories } from './components/LoadMoreMemories';
 import { authApi, ApiError, UploadAbortedError, dataApi, loadAccountData, type AuthUser, type ApiTag, type CollaborationInvitation, type RequestTiming } from './lib/api';
-import { outboxEvictExpired, outboxLoad, outboxOldestUncommitted, outboxPurgeAll, outboxPut, outboxUpdate } from './lib/photoOutbox';
+import { OutboxSessionInvalidatedError, outboxEvictExpired, outboxLoad, outboxOldestUncommitted, outboxPurgeAll, outboxPut, outboxUpdate } from './lib/photoOutbox';
 import { LocalPhotoProvider } from './lib/localPhoto';
 import { setImageCacheOwner } from './lib/imageCache';
 import { clearUploadDiagnostics, describeUploadTiming, phaseDiagnostic, recordUploadDiagnostic } from './lib/uploadDiagnostics';
@@ -51,7 +51,8 @@ export default function App() {
   const [visitError, setVisitError] = useState('');
   const [feedRevision, setFeedRevision] = useState(0);
   const [uploadRunning, setUploadRunning] = useState(false);
-  const [pendingImageRetry, setPendingImageRetry] = useState<{ momentId: string; ownerId: string; files: { file: File; uploadId: string }[] } | null>(null);
+  const [pendingImageRetry, setPendingImageRetry] = useState<{ momentId: string; uploaderAccountId: string; resourceOwnerId: string; files: { file: File; uploadId: string }[] } | null>(null);
+  const [outboxHydratedOwner, setOutboxHydratedOwner] = useState<string | null>(null);
   const [eventTracks, setEventTracks] = useState<EventTrack[]>([]);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [apiTags, setApiTags] = useState<ApiTag[]>([]);
@@ -75,8 +76,11 @@ export default function App() {
   // Which card opened the detail view, so closing can return focus and scroll.
   const detailOpenerKey = useRef<string | null>(null);
   const uploadBusy = useRef(false);
+  const uploadControllers = useRef(new Set<AbortController>());
+  const pendingImageRetryRef = useRef<typeof pendingImageRetry>(null);
   const reactionPending = useRef(new Map<string, ReturnType<typeof createReactionQueue>>());
   const assertSession = (generation: number) => { if (generation !== authGenerationRef.current) throw new Error('Session changed. Request result discarded.'); };
+  useEffect(() => { pendingImageRetryRef.current = pendingImageRetry; }, [pendingImageRetry]);
 
   const loadData = useCallback(async () => {
     const generation = authGenerationRef.current;
@@ -253,7 +257,10 @@ export default function App() {
     setIsEventTrackModalOpen(false); setTrackToEdit(null);
     setLightboxState({ images: [], index: 0, isOpen: false });
     setPendingImageRetry(null); setDataError(''); setSessionError(''); setPerspectiveError('');
-    setDataLoading(false); setUploadRunning(false); uploadBusy.current = false; reactionPending.current.clear();
+    setDataLoading(false); setUploadRunning(false); uploadBusy.current = false;
+    for (const controller of uploadControllers.current) controller.abort();
+    uploadControllers.current.clear();
+    reactionPending.current.clear();
     setSelectedTrackKey('all'); setVisits([]); visitWrites.current.clear();
     setIsPostcardOpen(false);
     // No private draft crosses an account or session boundary.
@@ -262,6 +269,9 @@ export default function App() {
     // Photo bytes on this device belong to the session that wrote them: a logout or
     // an account switch both drop the outbox and every cached variant.
     void outboxPurgeAll();
+    pendingImageRetryRef.current = null;
+    setPendingImageRetry(null);
+    setOutboxHydratedOwner(null);
     setImageCacheOwner(null);
     setFilters((previous) => ({ ...previous, search: '', selectedEventId: 'all', selectedTags: [], selectedEmotions: [], selectedYear: 'all', dateFrom: '', dateTo: '', milestonesOnly: false, hasImagesOnly: false, savedOnly: false }));
   }
@@ -607,7 +617,7 @@ export default function App() {
     const saved = await (editId ? dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!) : dataApi.createMoment(data, eventOwnerId!)).finally(() => { recordUploadDiagnostic(phaseDiagnostic('moment-write', performance.now() - writeStartedAt)); });
     assertSession(generation);
     setEvents(prev => editId ? prev.map(event => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
-    const queue = { momentId: saved.id, ownerId: saved.resourceOwnerId!, files: imageFiles.map(file => ({ file, uploadId: crypto.randomUUID() })) };
+    const queue = { momentId: saved.id, uploaderAccountId: user.id, resourceOwnerId: saved.resourceOwnerId!, files: imageFiles.map(file => ({ file, uploadId: crypto.randomUUID() })) };
     const reconcile = async () => { onProgress({ phase: 'reconciling' }); const reconcileStartedAt = performance.now(); try { await loadData(); } finally { recordUploadDiagnostic(phaseDiagnostic('reconcile', performance.now() - reconcileStartedAt)); } assertSession(generation); setFeedRevision(value => value + 1); await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); assertSession(generation); setPendingImageRetry(null); setDataError(''); onProgress({ phase: 'complete' }); };
     try {
       if (queue.files.length) { onProgress({ phase: 'preparing-images' }); setPendingImageRetry(queue); await processImageQueue(queue, generation, onProgress); }
@@ -705,16 +715,19 @@ export default function App() {
     // The blob becomes durable before the first attempt: switching apps, killing the
     // tab or losing the network can no longer lose the photo or wedge this gate.
     for (const item of queue.files) {
+      assertSession(generation);
       await outboxPut({
         uploadId: item.uploadId,
-        ownerId: queue.ownerId,
+        uploaderAccountId: queue.uploaderAccountId,
+        resourceOwnerId: queue.resourceOwnerId,
         momentId: queue.momentId,
         blob: item.file,
         name: item.file.name,
         type: item.file.type,
         bytes: item.file.size,
         state: 'pending',
-      }).catch(() => undefined);
+      }).catch((error) => { if (error instanceof OutboxSessionInvalidatedError) throw error; });
+      assertSession(generation);
     }
     try {
       while (remaining.length) {
@@ -724,25 +737,31 @@ export default function App() {
         let lastError: unknown = null;
         for (let attempt = 1; attempt <= UPLOAD_MAX_ATTEMPTS; attempt += 1) {
           assertSession(generation);
-          await outboxUpdate(queue.ownerId, uploadId, { state: 'uploading', attempts: attempt, lastAttemptAt: Date.now() }).catch(() => null);
+          await outboxUpdate(queue.uploaderAccountId, uploadId, { state: 'uploading', attempts: attempt, lastAttemptAt: Date.now() }).catch((error) => { if (error instanceof OutboxSessionInvalidatedError) throw error; return null; });
+          assertSession(generation);
           recordUploadDiagnostic(phaseDiagnostic('upload-start', 0, uploadId));
           const startedAt = performance.now();
           // Client elapsed minus the origin's own stages leaves the unattributed remainder:
           // transport, queueing, or work that happened before this process saw the request.
           const timing: { current: RequestTiming | null } = { current: null };
+          const controller = new AbortController();
+          uploadControllers.current.add(controller);
           try {
-            await dataApi.uploadImage(file, queue.momentId, queue.ownerId, uploadId, (measured) => { timing.current = measured; });
+            await dataApi.uploadImage(file, queue.momentId, queue.resourceOwnerId, uploadId, (measured) => { timing.current = measured; }, controller.signal);
+            assertSession(generation);
             lastError = null;
           } catch (error) {
             lastError = error;
             const aborted = error instanceof UploadAbortedError;
             recordUploadDiagnostic(phaseDiagnostic(aborted ? (error.timeout ? 'upload-abort-timeout' : 'upload-abort-session') : 'upload-failed', 0, uploadId));
-            await outboxUpdate(queue.ownerId, uploadId, { state: 'failed' }).catch(() => null);
+            await outboxUpdate(queue.uploaderAccountId, uploadId, { state: 'failed' }).catch((updateError) => { if (updateError instanceof OutboxSessionInvalidatedError) throw updateError; return null; });
+            assertSession(generation);
             // An interrupted attempt is worth one immediate retry; anything the server
             // rejected on purpose is not.
             if (aborted && attempt < UPLOAD_MAX_ATTEMPTS && navigator.onLine !== false) continue;
             break;
           } finally {
+            uploadControllers.current.delete(controller);
             recordUploadDiagnostic(describeUploadTiming({ uploadId, clientMs: performance.now() - startedAt, timing: timing.current }));
           }
           break;
@@ -751,24 +770,28 @@ export default function App() {
           if (generation === authGenerationRef.current) setPendingImageRetry({ ...queue, files: remaining });
           throw lastError;
         }
-        await outboxUpdate(queue.ownerId, uploadId, { state: 'committed' }).catch(() => null);
+        await outboxUpdate(queue.uploaderAccountId, uploadId, { state: 'committed' }).catch((error) => { if (error instanceof OutboxSessionInvalidatedError) throw error; return null; });
+        assertSession(generation);
         recordUploadDiagnostic(phaseDiagnostic('upload-committed', 0, uploadId));
-        await outboxEvictExpired(queue.ownerId).catch(() => 0);
+        await outboxEvictExpired(queue.uploaderAccountId).catch(() => 0);
+        assertSession(generation);
         remaining = remaining.slice(1);
-        setPendingImageRetry(remaining.length ? { ...queue, files: remaining } : null);
+        if (generation === authGenerationRef.current) setPendingImageRetry(remaining.length ? { ...queue, files: remaining } : null);
       }
     } catch (error) {
       if (generation === authGenerationRef.current) setPendingImageRetry({ ...queue, files: remaining });
       throw error;
     } finally {
-      if (generation === authGenerationRef.current) { uploadBusy.current = false; setUploadRunning(false); }
+      uploadBusy.current = false;
+      if (generation === authGenerationRef.current) setUploadRunning(false);
     }
   }
   const retryImageUploads = async () => {
-    if (!pendingImageRetry) return;
+    const queue = pendingImageRetryRef.current;
+    if (!queue) return;
     const generation = authGenerationRef.current;
     try {
-      await processImageQueue(pendingImageRetry, generation);
+      await processImageQueue(queue, generation);
       // A photo that lands from the banner was never part of a completed save, so the
       // feed still does not know about it: reconcile before the retry looks done.
       await loadData();
@@ -786,7 +809,7 @@ export default function App() {
    */
   const resumePendingPhotos = useCallback(async () => {
     const owner = user?.id;
-    if (!owner || uploadBusy.current || authStatus !== 'authenticated' || !dataReady) return;
+    if (!owner || outboxHydratedOwner !== owner || uploadBusy.current || authStatus !== 'authenticated' || !dataReady) return;
     const queue = outboxOldestUncommitted(owner);
     if (!queue) return;
     const generation = authGenerationRef.current;
@@ -801,14 +824,22 @@ export default function App() {
       // The banner and the retry control already describe the failure.
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, authStatus, dataReady]);
+  }, [user?.id, authStatus, dataReady, outboxHydratedOwner]);
 
   useEffect(() => {
     if (!user) return;
     // Ask the engine to keep this origin's storage; a refusal is fine, the outbox is
     // still better than no copy at all.
     void navigator.storage?.persist?.().catch(() => false);
-    void outboxLoad(user.id).then(() => outboxEvictExpired(user.id)).catch(() => undefined);
+    let active = true;
+    // Resume is gated on this hydration completing; otherwise the one startup drain
+    // can run before IndexedDB exposes the old queue.
+    void outboxLoad(user.id).then(async () => {
+      if (!active) return;
+      await outboxEvictExpired(user.id);
+      if (active) setOutboxHydratedOwner(user.id);
+    }).catch(() => { if (active) setOutboxHydratedOwner(user.id); });
+    return () => { active = false; };
   }, [user]);
 
   useEffect(() => {

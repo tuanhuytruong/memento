@@ -493,8 +493,10 @@ app.get('/api/saved', auth, asyncHandler(async (req, res) => {
   ]);
   res.set('Cache-Control', 'no-store');
   res.json({ saved: saved.map(key => {
-    const [owner, id] = key.split(':');
-    return { ownerId: owner, id };
+    // owner IDs are UUIDs, so their only separator is the first colon. Moment
+    // IDs are opaque text and may themselves contain any number of colons.
+    const separator = key.indexOf(':');
+    return { ownerId: key.slice(0, separator), id: key.slice(separator + 1) };
   }), count });
 }));
 
