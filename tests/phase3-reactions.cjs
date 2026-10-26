@@ -71,7 +71,12 @@ let base='http://127.0.0.1:'+web.address().port;
       await react.click();
       await page.waitForFunction(()=>document.querySelector('#event-detail-card button[aria-label^="React 😂"]')?.getAttribute('aria-pressed')==='true');
       assert.equal(await react.getAttribute('aria-pressed'),'true'); assert.equal(writes,1,'writes serialize while genuine response held');
-      await page.screenshot({path:path.join(out,'held-rapid-reactions.png')});
+      // Playwright screenshot waits forever for a remote font that is unrelated to
+      // this interaction. Capture the rendered Chromium surface directly instead.
+      const cdp = await context.newCDPSession(page);
+      const capture = await cdp.send('Page.captureScreenshot', { format: 'png' });
+      fs.writeFileSync(path.join(out, 'held-rapid-reactions.png'), Buffer.from(capture.data, 'base64'));
+      await cdp.detach();
       release();
       await page.waitForFunction(()=>document.querySelector('#event-detail-card button[aria-label^="React ❤️"]')?.getAttribute('aria-busy')==='false');
       assert.equal(writes,4);
