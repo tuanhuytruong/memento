@@ -27,6 +27,7 @@ import { usePhotoPrefetch } from '../lib/usePhotoPrefetch';
 import { useModalLifecycle } from '../lib/useModalLifecycle';
 import { PrivateImage } from './PrivateImage';
 import { setReactionState } from '../lib/reactionState';
+import { reactionSummaryLabel, recentReactorText } from '../lib/reactionPresentation';
 
 interface EventDetailModalProps {
   event: TimelineEvent | null;
@@ -71,7 +72,6 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
   const [imageIndex, setActiveImageIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [showActors, setShowActors] = useState(false);
   const reactionClicks = useRef(new Map<string, number>());
   const reactionLocal = useRef(event?.reactions || []);
   reactionLocal.current = event?.reactions || [];
@@ -360,12 +360,11 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
             <span className="mr-1 text-xs font-semibold text-stone-500">React</span>
             {(['❤️', '🥹', '😂', '✨', '🙌', '🎉'] as const).map((emoji) => {
               const reaction = reactions.find((item) => item.emoji === emoji);
-              return <button key={emoji} type="button" title={reaction?.usernames?.length ? reaction.usernames.join(', ') : `React ${emoji}`} aria-busy={reactionPending} aria-pressed={!!reaction?.selected} aria-label={`React ${emoji}${reaction?.count ? `, ${reaction.count} reactions` : ''}`} onClick={() => void toggleReaction(emoji)} className={`ui-action min-h-11 min-w-11 rounded-full border px-2 text-sm transition ${reaction?.selected ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/30' : 'border-stone-200 hover:bg-stone-100 dark:border-stone-700 dark:hover:bg-stone-800'}`}>{emoji}{reaction?.count ? <span className="ml-1 text-xs font-semibold">{reaction.count}</span> : null}</button>;
+              const reactorText = reaction ? recentReactorText(reaction) : '';
+              return <button key={emoji} type="button" title={reactorText || `React ${emoji}`} aria-busy={reactionPending} aria-pressed={!!reaction?.selected} aria-label={reaction ? `React ${reactionSummaryLabel(reaction)}` : `React ${emoji}`} onClick={() => void toggleReaction(emoji)} className={`ui-action min-h-11 min-w-11 rounded-full border px-2 text-sm transition ${reaction?.selected ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/30' : 'border-stone-200 hover:bg-stone-100 dark:border-stone-700 dark:hover:bg-stone-800'}`}>{emoji}{reaction?.count ? <span className="ml-1 text-xs font-semibold">{reaction.count}</span> : null}</button>;
             })}
             <span className="sr-only" role="status" aria-live="polite">{reactionPending ? 'Saving reactions' : ''}</span>
-            <button type="button" className="ui-action min-h-11 px-2 text-xs underline" onClick={() => setShowActors(!showActors)} aria-expanded={showActors}>Who reacted?</button>
             {reactionError && <div className="flex w-full items-center gap-2 text-xs text-rose-700 dark:text-rose-300" role="alert"><span>{reactionError}</span>{reactionRetry && <button type="button" className="ui-action min-h-11 rounded-lg px-3 underline" disabled={reactionPending} onClick={() => void persistReaction(reactionRetry.emoji, reactionRetry.active)}>Retry reaction</button>}</div>}
-            {showActors && <ul className="w-full text-xs text-stone-500">{reactions.filter((item) => item.count).map((item) => <li key={item.emoji}>{item.emoji} {item.usernames.join(', ')}</li>)}</ul>}
           </section>
 
           {/* Dedicated Idea / Key Takeaway Card */}

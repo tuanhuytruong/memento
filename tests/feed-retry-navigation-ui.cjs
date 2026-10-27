@@ -295,11 +295,14 @@ async function setup(browser, base, n, variants = false) {
     await page.locator('[data-testid="edge-film-preview"]').waitFor();
     assert.equal(await page.locator('#month-browse-open,[data-testid="month-browse-panel"]').count(), 0, "obsolete browse menu is absent");
     await page.waitForTimeout(700);
-    await page.getByRole("button",{name:/Go to memory:/}).focus();
+    const previewAction = page.getByRole("button", { name: /Go to memory:/ });
+    await previewAction.focus();
     await page.waitForTimeout(700);
-    const expectedId="feed-"+Number((await page.getByRole("button",{name:/Go to memory:/}).innerText()).match(/Memory (\d+)/)[1]);
+    // Freeze the action's current identity and activate that same focused control.
+    // Re-focusing after a hover grace period can select a different preview item.
+    const expectedId="feed-"+Number((await previewAction.innerText()).match(/Memory (\d+)/)[1]);
     state.failSeek=true;
-    await page.getByRole('button', { name: /Go to memory:/ }).focus();await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter');
     await page.getByRole('button',{name:'Retry requested results',exact:true}).waitFor();
     const failed=state.requests.filter(r=>r.path==='/api/moments/seek').at(-1);
     // Independently expected first warmed October preview, not response.target.

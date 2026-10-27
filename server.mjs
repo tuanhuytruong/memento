@@ -196,7 +196,7 @@ async function reactionSummaries(userId, moments, client = pool) {
   const ids = moments.map(moment => moment.id);
   const { rows } = await client.query(`
     SELECT r.moment_owner_id,r.moment_id,r.emoji,COUNT(*)::int AS count,
-      BOOL_OR(r.user_id=$1) AS selected, ARRAY_AGG(u.username ORDER BY u.username) AS usernames
+      BOOL_OR(r.user_id=$1) AS selected, ARRAY_AGG(u.username ORDER BY r.created_at DESC, u.username ASC) AS usernames
     FROM ${qschema}.moment_reactions r JOIN ${qschema}.users u ON u.id=r.user_id
     WHERE (r.moment_owner_id,r.moment_id) IN (SELECT * FROM unnest($2::uuid[],$3::text[]))
     GROUP BY r.moment_owner_id,r.moment_id,r.emoji ORDER BY r.moment_owner_id,r.moment_id,r.emoji`, [userId, owners, ids]);
