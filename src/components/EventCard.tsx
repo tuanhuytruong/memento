@@ -1,3 +1,4 @@
+import { ReactionControls, type ReactionControlProps } from './ReactionControls';
 import React from 'react';
 import {
   Calendar,
@@ -17,9 +18,10 @@ import { formatDateDisplay, getRelativeTime } from '../lib/storage';
 import { PrivateImage } from './PrivateImage';
 import { useLocalPhotos } from '../lib/localPhoto';
 import { momentIdentity } from '../lib/resourceIdentity';
-import { ReactionSummaryRail } from './ReactionSummaryRail';
 
 interface EventCardProps {
+  onToggleReaction: ReactionControlProps['onToggleReaction'];
+  currentUsername?: string;
   event: TimelineEvent;
   track?: EventTrack;
   onSelectTrack?: (track: EventTrack) => void;
@@ -35,6 +37,8 @@ export const EventCard: React.FC<EventCardProps> = ({
   event,
   track,
   onSelectTrack,
+  onToggleReaction,
+  currentUsername,
   onViewDetails,
   onEdit,
   onDelete,
@@ -319,7 +323,7 @@ export const EventCard: React.FC<EventCardProps> = ({
           </div>
         )}
       </div>
-      <ReactionSummaryRail reactions={event.reactions} className="mt-2 ml-1" />
+      <ReactionControls event={event} onToggleReaction={onToggleReaction} currentUsername={currentUsername} className="mt-2 ml-1" />
       </div>
     </div>
   );
