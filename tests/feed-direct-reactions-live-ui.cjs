@@ -10,7 +10,7 @@ const crypto = require('node:crypto');
   assert.equal(process.env.DB_SCHEMA, 'memento_dev');
   const { pool, qschema, hashSession } = await import('../memento-db.mjs');
 const base = 'https://memento-dev.srv.io.vn';
-  const out = path.resolve('.hermes/evidence/feed-reactions'); fs.mkdirSync(out, { recursive: true });
+  const out = path.resolve('.hermes/evidence/feed-reaction-overlap'); fs.mkdirSync(out, { recursive: true });
   const report = { synthetic: false, scope: 'Authenticated Chromium through deployed public DEV nginx/PM2 against DEV PostgreSQL; disposable user/track/moment/perspective/reaction; no R2.', checks: [], requests: [], pageerrors: [], cleanup: false };
   const owner = { id: crypto.randomUUID(), username: `qa_reaction_${crypto.randomBytes(6).toString('hex')}`, token: crypto.randomBytes(32).toString('hex') };
   const track = `qa_track_${crypto.randomBytes(6).toString('hex')}`;
@@ -40,6 +40,33 @@ const base = 'https://memento-dev.srv.io.vn';
     const card = page.locator(`[id="event-card-${owner.id}:${moment}"]`); await card.waitFor();
     const controls = card.locator('..').locator('[data-reaction-controls]');
     assert.equal(await controls.locator('button[aria-label^="React "]').count(), 6);
+    const visualMatrix = async state => {
+      for (const theme of ['light','dark']) for (const width of [320,360,390,414,1440]) {
+        await page.setViewportSize({width,height:900});
+        await page.emulateMedia({colorScheme:theme});
+        await page.evaluate(()=>document.activeElement?.blur());
+        await controls.evaluate(el=>el.scrollIntoView({block:'center',behavior:'instant'}));
+        await page.mouse.move(width-1,0);
+        await page.waitForTimeout(250);
+        const data=await controls.evaluate(el=>{
+          const stem=document.querySelector('#timeline-container > [aria-hidden="true"]').getBoundingClientRect();
+          const buttons=[...el.querySelectorAll('button[data-reaction-summary]')].map(b=>{
+            const r=b.getBoundingClientRect(),v=b.querySelector('.reaction-visual').getBoundingClientRect();
+            const cs=getComputedStyle(b);
+            return {x:r.x,y:r.y,right:r.right,w:r.width,h:r.height,hit:b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)),visualX:v.x,visualRight:v.right,border:cs.borderLeftWidth,bg:cs.backgroundColor,selected:b.getAttribute('aria-pressed')};
+          });
+          return {stem:{x:stem.x,right:stem.right},buttons};
+        });
+        assert.equal(data.buttons.length,6);
+        assert(data.buttons.every(r=>r.w>=44&&r.h>=44&&r.hit&&r.x>=0&&r.right<=width&&Math.abs(r.y-data.buttons[0].y)<1),JSON.stringify(data));
+        if(width<640) assert(data.buttons.every(r=>r.visualX>=data.stem.right+2&&r.border==='0px'&&r.bg==='rgba(0, 0, 0, 0)'), 'visible reaction must clear timeline: '+JSON.stringify(data));
+        else assert(data.buttons.every(r=>r.border==='1px'),'desktop pills retained');
+        report.checks.push({state,theme,width,visualGeometry:data});
+        const cdp=await context.newCDPSession(page); const capture=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,`${state}-${theme}-${width}.png`),Buffer.from(capture.data,'base64'));await cdp.detach();
+      }
+    };
+    await visualMatrix('zero-visual');
+
     const zero = controls.getByRole('button', {name:/React 🎉/});
     assert.equal(await zero.getAttribute('aria-pressed'), 'false');
     await zero.click();
@@ -88,6 +115,13 @@ const base = 'https://memento-dev.srv.io.vn';
       report.checks.push({state:'all-six-populated',width,geometry});
       const cdp=await context.newCDPSession(page); const capture=await cdp.send('Page.captureScreenshot',{format:'png'}); fs.writeFileSync(path.join(out,`populated-${width}.png`),Buffer.from(capture.data,'base64')); await cdp.detach();
     }
+    await visualMatrix('populated-visual');
+    const selectedHeart=controls.getByRole('button',{name:/React ❤️/});
+    await selectedHeart.click();
+    await page.waitForFunction(()=>document.querySelector('[data-reaction-controls] button[aria-label^="React ❤️"]')?.getAttribute('aria-busy')==='false');
+    await visualMatrix('selected-visual');
+    await selectedHeart.click();
+    await page.waitForFunction(()=>document.querySelector('[data-reaction-controls] button[aria-label^="React ❤️"]')?.getAttribute('aria-busy')==='false');
     await page.setViewportSize({width:390,height:844});
     report.checks.push("all-zero memory rendered all six controls before seeding tooltip fixture");
     const rail = page.locator('[data-reaction-summary="❤️"]'); await rail.waitFor();

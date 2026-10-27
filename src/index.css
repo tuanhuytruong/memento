@@ -52,14 +52,15 @@ body {
 .ui-action:enabled:active { box-shadow: inset 0 0 0 2px rgb(217 119 6 / 35%); }
 /* Exact counts remain in the accessible name; desktop keeps its original text. */
 .reaction-count-compact { display: none; }
+.reaction-visual { display: contents; }
 @media (max-width: 639px) {
-  /* Reclaim the 36px timeline marker + 16px gap below the card, not its content. */
-  .reaction-feed-rail { margin-left: -52px; width: calc(100% + 52px); }
+  /* Leave visible content clear of the stem; transparent hit areas may use its gutter. */
+  .reaction-feed-rail { margin-left: -40px; width: calc(100% + 40px); }
   .reaction-feed-rail,
   #compact-list-table-wrap [data-reaction-controls] {
     display: grid;
     grid-template-columns: repeat(6, minmax(44px, 1fr));
-    gap: 2px;
+    gap: 0;
   }
   .reaction-feed-rail > button[data-reaction-summary],
   #compact-list-table-wrap [data-reaction-controls] > button[data-reaction-summary] {
@@ -71,6 +72,31 @@ body {
     padding: 2px;
     line-height: 18px;
   }
+  .reaction-feed-rail > button[data-reaction-summary],
+  #compact-list-table-wrap [data-reaction-controls] > button[data-reaction-summary] {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    outline: none;
+  }
+  .reaction-feed-rail .reaction-visual,
+  #compact-list-table-wrap .reaction-visual {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 36px;
+    border-radius: 8px;
+  }
+  .reaction-feed-rail button[aria-pressed="true"] .reaction-visual,
+  #compact-list-table-wrap button[aria-pressed="true"] .reaction-visual { background: #fef3c7; }
+  @media (prefers-color-scheme: dark) {
+    .reaction-feed-rail button[aria-pressed="true"] .reaction-visual,
+    #compact-list-table-wrap button[aria-pressed="true"] .reaction-visual { background: #451a03; }
+  }
+  .reaction-feed-rail button:focus-visible .reaction-visual,
+  #compact-list-table-wrap button:focus-visible .reaction-visual { outline: 2px solid #d97706; }
   .reaction-feed-rail .reaction-count,
   #compact-list-table-wrap .reaction-count { margin-left: 0; font-size: 10px; line-height: 12px; }
   .reaction-feed-rail .reaction-count-full,
