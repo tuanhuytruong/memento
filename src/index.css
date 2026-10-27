@@ -50,6 +50,36 @@ body {
 }
 .ui-action:focus-visible { outline: 2px solid #d97706; outline-offset: 2px; }
 .ui-action:enabled:active { box-shadow: inset 0 0 0 2px rgb(217 119 6 / 35%); }
+/* Exact counts remain in the accessible name; desktop keeps its original text. */
+.reaction-count-compact { display: none; }
+@media (max-width: 639px) {
+  /* Reclaim the 36px timeline marker + 16px gap below the card, not its content. */
+  .reaction-feed-rail { margin-left: -52px; width: calc(100% + 52px); }
+  .reaction-feed-rail,
+  #compact-list-table-wrap [data-reaction-controls] {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(44px, 1fr));
+    gap: 2px;
+  }
+  .reaction-feed-rail > button[data-reaction-summary],
+  #compact-list-table-wrap [data-reaction-controls] > button[data-reaction-summary] {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 44px;
+    padding: 2px;
+    line-height: 18px;
+  }
+  .reaction-feed-rail .reaction-count,
+  #compact-list-table-wrap .reaction-count { margin-left: 0; font-size: 10px; line-height: 12px; }
+  .reaction-feed-rail .reaction-count-full,
+  #compact-list-table-wrap .reaction-count-full { display: none; }
+  .reaction-feed-rail .reaction-count-compact,
+  #compact-list-table-wrap .reaction-count-compact { display: inline; }
+  .reaction-feed-rail > [role="alert"],
+  #compact-list-table-wrap [data-reaction-controls] > [role="alert"] { grid-column: 1 / -1; }
+}
 .private-image {
   transition-property: opacity;
   transition-duration: var(--motion-content);

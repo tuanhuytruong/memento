@@ -323,7 +323,7 @@ export const EventCard: React.FC<EventCardProps> = ({
           </div>
         )}
       </div>
-      <ReactionControls event={event} onToggleReaction={onToggleReaction} currentUsername={currentUsername} className="mt-2 ml-1" />
+      <ReactionControls event={event} onToggleReaction={onToggleReaction} currentUsername={currentUsername} className="reaction-feed-rail mt-2 ml-1" />
       </div>
     </div>
   );

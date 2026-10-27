@@ -49,12 +49,14 @@ const base = 'https://memento-dev.srv.io.vn';
     await zero.click();
     await page.waitForFunction(() => document.querySelector('[data-reaction-controls] button[aria-label^="React 🎉"]')?.getAttribute('aria-busy') === 'false');
     assert.equal(await zero.getAttribute('aria-pressed'), 'false');
-    for (const width of [1440,390,320]) {
+    for (const width of [1440,414,390,360,320]) {
       await page.setViewportSize({width,height:900});
       await controls.evaluate(el=>el.scrollIntoView({block:'center',behavior:'instant'}));
       await page.waitForTimeout(200);
-      const geometry = await controls.locator('button[aria-label^="React "]').evaluateAll(xs=>xs.map(el=>{const r=el.getBoundingClientRect();return {w:r.width,h:r.height,opacity:getComputedStyle(el).opacity,enabled:!el.disabled,hit:el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};}));
+      const geometry = await controls.locator('button[aria-label^="React "]').evaluateAll(xs=>xs.map(el=>{const r=el.getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,w:r.width,h:r.height,opacity:getComputedStyle(el).opacity,enabled:!el.disabled,hit:el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};}));
       assert(geometry.every(r=>r.w>=44&&r.h>=44&&r.opacity==='1'&&r.enabled&&r.hit), JSON.stringify(geometry));
+      assert(geometry.every(r=>Math.abs(r.y-geometry[0].y)<1&&r.x>=0&&r.right<=width), 'zero controls single row and viewport bounded: '+JSON.stringify(geometry));
+      report.checks.push({ state:'zero', width, geometry });
       assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
       await zero.click();
       await page.waitForFunction(() => document.querySelector('[data-reaction-controls] button[aria-label^="React 🎉"]')?.getAttribute('aria-busy') === 'false');
@@ -71,7 +73,22 @@ const base = 'https://memento-dev.srv.io.vn';
       await pool.query(`INSERT INTO ${qschema}.users(id,username,password_hash) VALUES($1,$2,$3)`, [reactor.id, reactor.username, 'unused-qa-reactor']);
       await pool.query(`INSERT INTO ${qschema}.moment_reactions(moment_owner_id,moment_id,user_id,emoji,created_at) VALUES($1,$2,$3,$4,$5)`, [owner.id, moment, reactor.id, '❤️', `2026-10-27T12:00:0${index}Z`]);
     }
+    for (const reactor of recentReactors) for (const emoji of ['🥹','😂','✨','🙌','🎉']) {
+      await pool.query(`INSERT INTO ${qschema}.moment_reactions(moment_owner_id,moment_id,user_id,emoji) VALUES($1,$2,$3,$4)`, [owner.id,moment,reactor.id,emoji]);
+    }
     await page.reload(); await card.waitFor();
+    for (const width of [320,360,390,414,1440]) {
+      await page.setViewportSize({width,height:900});
+      await controls.evaluate(el=>el.scrollIntoView({block:'center',behavior:'instant'}));
+      await page.waitForTimeout(200);
+      const geometry=await controls.locator('button[data-reaction-summary]').evaluateAll(xs=>xs.map(el=>{const r=el.getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,w:r.width,h:r.height,hit:el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)),fits:el.scrollWidth<=el.clientWidth,label:el.getAttribute('aria-label')};}));
+      assert.equal(geometry.length,6);
+      assert(geometry.every(r=>r.w>=44&&r.h>=44&&r.hit&&r.fits&&Math.abs(r.y-geometry[0].y)<1&&r.x>=0&&r.right<=width),JSON.stringify(geometry));
+      assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      report.checks.push({state:'all-six-populated',width,geometry});
+      const cdp=await context.newCDPSession(page); const capture=await cdp.send('Page.captureScreenshot',{format:'png'}); fs.writeFileSync(path.join(out,`populated-${width}.png`),Buffer.from(capture.data,'base64')); await cdp.detach();
+    }
+    await page.setViewportSize({width:390,height:844});
     report.checks.push("all-zero memory rendered all six controls before seeding tooltip fixture");
     const rail = page.locator('[data-reaction-summary="❤️"]'); await rail.waitFor();
     await rail.hover();
@@ -142,7 +159,7 @@ const base = 'https://memento-dev.srv.io.vn';
     await page.waitForFunction(()=>document.querySelector('#event-detail-card button[aria-label^="React 😂"]')?.getAttribute('aria-busy')==='false');
     assert.equal(await controls.getByRole('button',{name:/React 😂/}).getAttribute('aria-pressed'),'false');
     report.checks.push('feed->detail and detail->feed selected/count synchronization; identical recent-reactor wording');
-    assert.equal(await controls.getByRole('button',{name:/React 😂/}).innerText(), await modal.getByRole('button',{name:/React 😂/}).innerText());
+    assert.equal(await controls.getByRole('button',{name:/React 😂/}).getAttribute('aria-label'), await modal.getByRole('button',{name:/React 😂/}).getAttribute('aria-label'));
     await page.keyboard.press('Escape'); await modal.waitFor({state:'detached'});
     await page.setViewportSize({width:1440,height:900});
     await page.getByRole('button',{name:'Compact list view',exact:true}).click();
