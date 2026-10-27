@@ -6,6 +6,7 @@ import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { trackIdentity, momentIdentity } from '../lib/resourceIdentity';
 import { Calendar, MapPin, Lightbulb, Star, ImageIcon } from 'lucide-react';
 import { PrivateImage } from './PrivateImage';
+import { ReactionSummaryRail } from './ReactionSummaryRail';
 
 interface GalleryViewProps {
   events: TimelineEvent[];
@@ -166,7 +167,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({
                 )}
               </div>
 
-              {!!evt.reactions?.some((item) => item.count > 0) && <p aria-label="Reaction summary" className="text-xs text-stone-500">{evt.reactions.filter((item) => item.count > 0).map((item) => `${item.emoji} ${item.count}`).join(' · ')}</p>}
+              <ReactionSummaryRail reactions={evt.reactions} className="pt-1" />
               {/* Tags */}
               <div className="flex flex-wrap gap-1 pt-2 border-t border-stone-100 dark:border-stone-800">
                 {evt.tags.map((tag) => (

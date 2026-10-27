@@ -17,6 +17,7 @@ import { formatDateDisplay, getRelativeTime } from '../lib/storage';
 import { PrivateImage } from './PrivateImage';
 import { useLocalPhotos } from '../lib/localPhoto';
 import { momentIdentity } from '../lib/resourceIdentity';
+import { ReactionSummaryRail } from './ReactionSummaryRail';
 
 interface EventCardProps {
   event: TimelineEvent;
@@ -79,7 +80,8 @@ export const EventCard: React.FC<EventCardProps> = ({
         </div>
       </div>
 
-      {/* Main Event Card */}
+      {/* Post card and its separate reaction rail share the timeline column. */}
+      <div className="min-w-0 flex-1">
       <div
         id={`event-card-${momentIdentity(event)}`}
         data-memory-date={event.date??''}
@@ -298,7 +300,6 @@ export const EventCard: React.FC<EventCardProps> = ({
           </p>
         )}
 
-        {!!event.reactions?.some((item) => item.count > 0) && <p aria-label="Reaction summary" className="mb-2 text-xs text-stone-500">{event.reactions.filter((item) => item.count > 0).map((item) => `${item.emoji} ${item.count}`).join(' · ')}</p>}
         {/* Bottom Tag Categorization Chips */}
         {event.tags && event.tags.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-stone-100 dark:border-stone-800/80">
@@ -317,6 +318,8 @@ export const EventCard: React.FC<EventCardProps> = ({
             ))}
           </div>
         )}
+      </div>
+      <ReactionSummaryRail reactions={event.reactions} className="mt-2 ml-1" />
       </div>
     </div>
   );

@@ -73,7 +73,7 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
   }
   const username = `test_${crypto.randomUUID().replaceAll('-','').slice(0,20)}`;
   const secondUsername = `test_${crypto.randomUUID().replaceAll('-','').slice(0,20)}`;
-  let token, token2, userId, userId2, trackId, momentId, imageId, inviteHash1, inviteHash2, lookupUsers=[];
+  let token, token2, userId, userId2, trackId, momentId, imageId, inviteHash1, inviteHash2, lookupUsers=[], recentReactorUsers=[];
   try {
     const badOrigin = await fetch(base+'/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password:'valid-long-password',inviteCode:'invalid'})});
     assert.equal(badOrigin.status,403);
@@ -209,6 +209,18 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
       assert.equal((await request('/api/perspectives/export?limit=501',{token:token2})).res.status,400);
       assert.equal((await request('/api/perspectives/export?cursor=bad',{token:token2})).res.status,400);
 
+    // Reaction summaries retain all authorized names newest-first; presentation bounds them separately.
+    recentReactorUsers = Array.from({length: 6}, (_, index) => ({ id: crypto.randomUUID(), username: `recent${index}_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}` }));
+    for (let index = 0; index < recentReactorUsers.length; index++) {
+      const reactor = recentReactorUsers[index];
+      await pool.query(`INSERT INTO ${qschema}.users(id,username,password_hash) VALUES($1,$2,$3)`, [reactor.id, reactor.username, 'unused-reaction-recency-fixture']);
+      await pool.query(`INSERT INTO ${qschema}.moment_reactions(moment_owner_id,moment_id,user_id,emoji,created_at) VALUES($1,$2,$3,$4,$5)`, [userId, momentId, reactor.id, '❤️', `2026-10-27T12:00:0${index}Z`]);
+    }
+    const recentSummary = await request(`/api/moments/${momentId}/reactions`, { token });
+    const recentHeart = recentSummary.data.reactions.find(reaction => reaction.emoji === '❤️');
+    assert.equal(recentHeart.count, 7);
+    assert.deepEqual(recentHeart.usernames, [...recentReactorUsers].reverse().map(reactor => reactor.username).concat(secondUsername));
+
     const form=new FormData();form.set('momentId',momentId);form.set('ownerId',userId);form.set('file',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVQImWNgZGJmZGJmgFAAAK4AGRLRbNUAAAAASUVORK5CYII=','base64')],{type:'image/png'}),'test.png');
     const uploaded=await request('/api/images',{method:'POST',token,multipart:form});assert.equal(uploaded.res.status,201);imageId=uploaded.data.image.id;assert.match(uploaded.data.image.url,/^\/api\/images\//);
     const stored=await pool.query(`SELECT object_key,thumb_object_key,display_object_key FROM ${qschema}.images WHERE id=$1`,[imageId]);assert.ok(stored.rows[0].object_key.startsWith(`${process.env.DB_SCHEMA}/`));assert.ok(stored.rows[0].thumb_object_key?.startsWith(`${process.env.DB_SCHEMA}/`));assert.ok(stored.rows[0].display_object_key?.startsWith(`${process.env.DB_SCHEMA}/`));
@@ -235,6 +247,7 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
     if(token) await request('/api/auth/logout',{method:'POST',token}).catch(()=>{});
     if(token2) await request('/api/auth/logout',{method:'POST',token:token2}).catch(()=>{});
     for (const user of lookupUsers) await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`,[user.id]).catch(()=>{});
+    for (const user of recentReactorUsers) await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`,[user.id]).catch(()=>{});
     if(userId) await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`,[userId]).catch(()=>{});
     if(userId2) await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`,[userId2]).catch(()=>{});
     if(inviteHash1) await pool.query(`DELETE FROM ${qschema}.invites WHERE code_hash=$1`,[inviteHash1]).catch(()=>{});
