@@ -54,12 +54,17 @@ body {
 .reaction-count-compact { display: none; }
 .reaction-visual { display: contents; }
 @media (max-width: 639px) {
-  /* Leave visible content clear of the stem; transparent hit areas may use its gutter. */
-  .reaction-feed-rail { margin-left: -40px; width: calc(100% + 40px); }
+  /* Reclaim only the gutter needed for six targets; keep the cluster on the card's right edge. */
+  .reaction-feed-rail {
+    margin-left: min(0px, calc(100% - 264px));
+    width: max(100%, 264px);
+  }
   .reaction-feed-rail,
   #compact-list-table-wrap [data-reaction-controls] {
+    position: relative;
     display: grid;
-    grid-template-columns: repeat(6, minmax(44px, 1fr));
+    grid-template-columns: repeat(6, 44px);
+    justify-content: end;
     gap: 0;
   }
   .reaction-feed-rail > button[data-reaction-summary],
@@ -74,6 +79,7 @@ body {
   }
   .reaction-feed-rail > button[data-reaction-summary],
   #compact-list-table-wrap [data-reaction-controls] > button[data-reaction-summary] {
+    position: static;
     border: 0;
     background: transparent;
     box-shadow: none;
@@ -97,6 +103,9 @@ body {
   }
   .reaction-feed-rail button:focus-visible .reaction-visual,
   #compact-list-table-wrap button:focus-visible .reaction-visual { outline: 2px solid #d97706; }
+  /* Anchor bounded tooltips to the rail, not a right-edge reaction target. */
+  .reaction-feed-rail [data-reaction-tooltip],
+  #compact-list-table-wrap [data-reaction-tooltip] { left: auto; right: 0; }
   .reaction-feed-rail .reaction-count,
   #compact-list-table-wrap .reaction-count { margin-left: 0; font-size: 10px; line-height: 12px; }
   .reaction-feed-rail .reaction-count-full,

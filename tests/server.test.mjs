@@ -211,10 +211,12 @@ test('authenticated API integration with owner isolation and R2 prefix', { timeo
 
     // Reaction summaries retain all authorized names newest-first; presentation bounds them separately.
     recentReactorUsers = Array.from({length: 6}, (_, index) => ({ id: crypto.randomUUID(), username: `recent${index}_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}` }));
+    // Anchor fixture ordering to the DB clock, not a calendar date that eventually becomes stale.
+    const recencyBase = Number((await pool.query('SELECT extract(epoch from clock_timestamp()) * 1000 AS now_ms')).rows[0].now_ms) + 60_000;
     for (let index = 0; index < recentReactorUsers.length; index++) {
       const reactor = recentReactorUsers[index];
       await pool.query(`INSERT INTO ${qschema}.users(id,username,password_hash) VALUES($1,$2,$3)`, [reactor.id, reactor.username, 'unused-reaction-recency-fixture']);
-      await pool.query(`INSERT INTO ${qschema}.moment_reactions(moment_owner_id,moment_id,user_id,emoji,created_at) VALUES($1,$2,$3,$4,$5)`, [userId, momentId, reactor.id, '❤️', `2026-10-27T12:00:0${index}Z`]);
+      await pool.query(`INSERT INTO ${qschema}.moment_reactions(moment_owner_id,moment_id,user_id,emoji,created_at) VALUES($1,$2,$3,$4,$5)`, [userId, momentId, reactor.id, '❤️', new Date(recencyBase + index * 1000).toISOString()]);
     }
     const recentSummary = await request(`/api/moments/${momentId}/reactions`, { token });
     const recentHeart = recentSummary.data.reactions.find(reaction => reaction.emoji === '❤️');

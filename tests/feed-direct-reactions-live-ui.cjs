@@ -10,7 +10,7 @@ const crypto = require('node:crypto');
   assert.equal(process.env.DB_SCHEMA, 'memento_dev');
   const { pool, qschema, hashSession } = await import('../memento-db.mjs');
 const base = 'https://memento-dev.srv.io.vn';
-  const out = path.resolve('.hermes/evidence/feed-reaction-overlap'); fs.mkdirSync(out, { recursive: true });
+  const out = path.resolve('.hermes/evidence/compact-right-reactions'); fs.mkdirSync(out, { recursive: true });
   const report = { synthetic: false, scope: 'Authenticated Chromium through deployed public DEV nginx/PM2 against DEV PostgreSQL; disposable user/track/moment/perspective/reaction; no R2.', checks: [], requests: [], pageerrors: [], cleanup: false };
   const owner = { id: crypto.randomUUID(), username: `qa_reaction_${crypto.randomBytes(6).toString('hex')}`, token: crypto.randomBytes(32).toString('hex') };
   const track = `qa_track_${crypto.randomBytes(6).toString('hex')}`;
@@ -55,11 +55,17 @@ const base = 'https://memento-dev.srv.io.vn';
             const cs=getComputedStyle(b);
             return {x:r.x,y:r.y,right:r.right,w:r.width,h:r.height,hit:b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)),visualX:v.x,visualRight:v.right,border:cs.borderLeftWidth,bg:cs.backgroundColor,selected:b.getAttribute('aria-pressed')};
           });
-          return {stem:{x:stem.x,right:stem.right},buttons};
+          const card=el.parentElement.querySelector('[id^="event-card-"]').getBoundingClientRect();
+          return {stem:{x:stem.x,right:stem.right},cardRight:card.right,buttons};
         });
         assert.equal(data.buttons.length,6);
         assert(data.buttons.every(r=>r.w>=44&&r.h>=44&&r.hit&&r.x>=0&&r.right<=width&&Math.abs(r.y-data.buttons[0].y)<1),JSON.stringify(data));
-        if(width<640) assert(data.buttons.every(r=>r.visualX>=data.stem.right+2&&r.border==='0px'&&r.bg==='rgba(0, 0, 0, 0)'), 'visible reaction must clear timeline: '+JSON.stringify(data));
+        if(width<640) {
+          assert(data.buttons.every(r=>Math.abs(r.w-44)<0.1&&r.visualX>=data.stem.right+4&&r.border==='0px'&&r.bg==='rgba(0, 0, 0, 0)'), 'fixed targets and focus/selection clear timeline: '+JSON.stringify(data));
+          assert(data.buttons.slice(1).every((r,i)=>Math.abs(r.x-data.buttons[i].right)<0.1),'zero gaps/nonoverlapping targets');
+          assert(Math.abs(data.buttons[5].right-data.cardRight)<0.1,'cluster aligns with card right edge: '+JSON.stringify(data));
+          assert(Math.abs(data.buttons[5].right-data.buttons[0].x-264)<0.1,'compact 264px cluster');
+        }
         else assert(data.buttons.every(r=>r.border==='1px'),'desktop pills retained');
         report.checks.push({state,theme,width,visualGeometry:data});
         const cdp=await context.newCDPSession(page); const capture=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,`${state}-${theme}-${width}.png`),Buffer.from(capture.data,'base64'));await cdp.detach();
@@ -195,6 +201,18 @@ const base = 'https://memento-dev.srv.io.vn';
     report.checks.push('feed->detail and detail->feed selected/count synchronization; identical recent-reactor wording');
     assert.equal(await controls.getByRole('button',{name:/React 😂/}).getAttribute('aria-label'), await modal.getByRole('button',{name:/React 😂/}).getAttribute('aria-label'));
     await page.keyboard.press('Escape'); await modal.waitFor({state:'detached'});
+    // Genuine 100-row aggregate: exact accessible count, bounded mobile 99+ display.
+    for (let index=0;index<92;index++) {
+      const reactor={id:crypto.randomUUID(),username:`High${crypto.randomBytes(8).toString('hex')}`}; recentReactors.push(reactor);
+      await pool.query(`INSERT INTO ${qschema}.users(id,username,password_hash) VALUES($1,$2,$3)`,[reactor.id,reactor.username,'unused-qa-reactor']);
+      await pool.query(`INSERT INTO ${qschema}.moment_reactions(moment_owner_id,moment_id,user_id,emoji) VALUES($1,$2,$3,$4)`,[owner.id,moment,reactor.id,'❤️']);
+    }
+    await page.reload(); await card.waitFor();
+    assert.match(await controls.getByRole('button',{name:/React ❤️/}).getAttribute('aria-label'),/100/);
+    await visualMatrix('high-count-selected');
+    await page.setViewportSize({width:390,height:900});
+    assert.equal(await controls.locator('[data-reaction-summary="❤️"] .reaction-count-compact').innerText(),'99+');
+    report.checks.push('100 genuine DB reaction rows: exact accessible 100 and mobile 99+');
     await page.setViewportSize({width:1440,height:900});
     await page.getByRole('button',{name:'Compact list view',exact:true}).click();
     const listControls=page.locator('#compact-list-table-wrap [data-reaction-controls]');
