@@ -26,8 +26,7 @@ import { formatDateDisplay, getRelativeTime } from '../lib/storage';
 import { usePhotoPrefetch } from '../lib/usePhotoPrefetch';
 import { useModalLifecycle } from '../lib/useModalLifecycle';
 import { PrivateImage } from './PrivateImage';
-import { setReactionState } from '../lib/reactionState';
-import { reactionSummaryLabel, recentReactorText } from '../lib/reactionPresentation';
+import { ReactionControls } from './ReactionControls';
 
 interface EventDetailModalProps {
   event: TimelineEvent | null;
@@ -72,13 +71,6 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
   const [imageIndex, setActiveImageIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const reactionClicks = useRef(new Map<string, number>());
-  const reactionLocal = useRef(event?.reactions || []);
-  reactionLocal.current = event?.reactions || [];
-  const reactionCount = useRef(0);
-  const [reactionPending, setReactionPending] = useState(false);
-  const [reactionError, setReactionError] = useState('');
-  const [reactionRetry, setReactionRetry] = useState<{ emoji: NonNullable<TimelineEvent['reactions']>[number]['emoji']; active: boolean } | null>(null);
   const draftDirty = useRef(false);
   const [canContribute, setCanContribute] = useState(false);
   const [reflectionSignal, setReflectionSignal] = useState(0);
@@ -104,25 +96,6 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
     finally { if (alive.current) { pending.current = false; setBusy(false); } }
   };
   if (!isOpen || !event) return null;
-  const reactions = event.reactions || [];
-  const persistReaction = async (emoji: NonNullable<TimelineEvent['reactions']>[number]['emoji'], active: boolean) => {
-    const sequence = (reactionClicks.current.get(emoji) || 0) + 1;
-    reactionClicks.current.set(emoji, sequence);
-    reactionLocal.current = setReactionState(reactionLocal.current, emoji, active, currentUsername);
-    reactionCount.current += 1;
-    setReactionPending(true); setReactionError(''); setReactionRetry(null);
-    try { await onToggleReaction(event, emoji, active); }
-    catch (failure) {
-      if (alive.current && reactionClicks.current.get(emoji) === sequence) {
-        setReactionError(failure instanceof Error ? failure.message : 'Could not save your reaction.');
-        setReactionRetry({ emoji, active });
-      }
-    } finally {
-      reactionCount.current -= 1;
-      if (alive.current) setReactionPending(reactionCount.current > 0);
-    }
-  };
-  const toggleReaction = (emoji: NonNullable<TimelineEvent['reactions']>[number]['emoji']) => persistReaction(emoji, !reactionLocal.current.find(item => item.emoji === emoji)?.selected);
   const emotionMeta = getEmotionMeta(event.emotion);
   const relativeTime = getRelativeTime(event.date);
 
@@ -356,16 +329,7 @@ const DetailBody: React.FC<EventDetailModalProps> = ({
             </div>
           )}
 
-          <section className="flex flex-wrap items-center gap-2 border-t border-stone-100 pt-4 dark:border-stone-800">
-            <span className="mr-1 text-xs font-semibold text-stone-500">React</span>
-            {(['❤️', '🥹', '😂', '✨', '🙌', '🎉'] as const).map((emoji) => {
-              const reaction = reactions.find((item) => item.emoji === emoji);
-              const reactorText = reaction ? recentReactorText(reaction) : '';
-              return <button key={emoji} type="button" title={reactorText || `React ${emoji}`} aria-busy={reactionPending} aria-pressed={!!reaction?.selected} aria-label={reaction ? `React ${reactionSummaryLabel(reaction)}` : `React ${emoji}`} onClick={() => void toggleReaction(emoji)} className={`ui-action min-h-11 min-w-11 rounded-full border px-2 text-sm transition ${reaction?.selected ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/30' : 'border-stone-200 hover:bg-stone-100 dark:border-stone-700 dark:hover:bg-stone-800'}`}>{emoji}{reaction?.count ? <span className="ml-1 text-xs font-semibold">{reaction.count}</span> : null}</button>;
-            })}
-            <span className="sr-only" role="status" aria-live="polite">{reactionPending ? 'Saving reactions' : ''}</span>
-            {reactionError && <div className="flex w-full items-center gap-2 text-xs text-rose-700 dark:text-rose-300" role="alert"><span>{reactionError}</span>{reactionRetry && <button type="button" className="ui-action min-h-11 rounded-lg px-3 underline" disabled={reactionPending} onClick={() => void persistReaction(reactionRetry.emoji, reactionRetry.active)}>Retry reaction</button>}</div>}
-          </section>
+          <ReactionControls event={event} onToggleReaction={onToggleReaction} currentUsername={currentUsername} className="border-t border-stone-100 pt-4 dark:border-stone-800" />
 
           {/* Dedicated Idea / Key Takeaway Card */}
           {event.idea && (

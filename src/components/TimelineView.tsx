@@ -1,3 +1,4 @@
+import type { ReactionControlProps } from './ReactionControls';
 import React from 'react';
 import { TimelineEvent, EventTrack } from '../types';
 import { EventCard } from './EventCard';
@@ -6,6 +7,8 @@ import { getEventTheme } from '../data/eventThemes';
 import { trackIdentity, momentIdentity } from '../lib/resourceIdentity';
 
 interface TimelineViewProps {
+  onToggleReaction: ReactionControlProps['onToggleReaction'];
+  currentUsername?: string;
   events: TimelineEvent[];
   tracks: EventTrack[];
   currentTrackKey?: string;
@@ -33,6 +36,8 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   tracks,
   currentTrackKey = 'all',
   onSelectTrack,
+  onToggleReaction,
+  currentUsername,
   onViewDetails,
   onEdit,
   onDelete,
@@ -181,6 +186,8 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                   const eventTrack = evt.eventId ? trackMap.get(`${evt.resourceOwnerId ?? 'legacy'}:${evt.eventId}`) : undefined;
                   return (
                     <EventCard
+                        onToggleReaction={onToggleReaction}
+                        currentUsername={currentUsername}
                       key={momentIdentity(evt)}
                       event={evt}
                       track={eventTrack}

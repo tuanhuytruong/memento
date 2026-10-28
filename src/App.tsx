@@ -978,6 +978,8 @@ export default function App() {
           <motion.div key={viewMode} {...contentMotion(!!reducedMotion)} inert={snapshot || initialWaiting} data-feed-snapshot={snapshot || undefined}>
           {!initialWaiting && !(feed.error && !feed.items.length) && viewMode === 'timeline' && (
             <TimelineView
+              onToggleReaction={handleToggleReaction}
+              currentUsername={user.username}
               events={filteredEvents}
               tracks={eventTracks}
               currentTrackKey={selectedTrackKey}
@@ -1029,6 +1031,8 @@ export default function App() {
 
           {!initialWaiting && !(feed.error && !feed.items.length) && viewMode === 'compact' && (
             <CompactListView
+              onToggleReaction={handleToggleReaction}
+              currentUsername={user.username}
               events={filteredEvents}
               tracks={eventTracks}
               onSelectTrack={handleSelectTrack}

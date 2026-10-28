@@ -1,3 +1,4 @@
+import { ReactionControls, type ReactionControlProps } from './ReactionControls';
 import React from 'react';
 import { TimelineEvent, EventTrack } from '../types';
 import { getEmotionMeta } from '../data/emotions';
@@ -15,6 +16,8 @@ import {
 } from 'lucide-react';
 
 interface CompactListViewProps {
+  onToggleReaction: ReactionControlProps['onToggleReaction'];
+  currentUsername?: string;
   events: TimelineEvent[];
   tracks: EventTrack[];
   onSelectTrack?: (track: EventTrack) => void;
@@ -28,6 +31,8 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
   events,
   tracks,
   onSelectTrack,
+  onToggleReaction,
+  currentUsername,
   onViewDetails,
   onEdit,
   onDelete,
@@ -116,6 +121,7 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
                     <div className="font-bold text-stone-900 dark:text-stone-100 hover:text-amber-700">
                       {evt.title}
                     </div>
+                    <ReactionControls event={evt} onToggleReaction={onToggleReaction} currentUsername={currentUsername} className="mt-2" />
                     {evt.idea && (
                       <div className="text-xs text-amber-800 dark:text-amber-300 italic flex items-center gap-1 mt-0.5 line-clamp-1">
                         <Lightbulb className="w-3 h-3 text-amber-500 fill-amber-500 shrink-0" />
