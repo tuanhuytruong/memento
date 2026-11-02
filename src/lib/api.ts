@@ -287,8 +287,11 @@ export const dataApi = {
     return all;
   },
   setReaction: async (momentId: string, ownerId: string, emoji: MemoryReaction['emoji'], active: boolean, signal?: AbortSignal) => request<{ reactions: MemoryReaction[]; selectedEmojis: string[] }>(`/moments/${encodeURIComponent(momentId)}/reactions`, { method: 'PUT', body: JSON.stringify({ ownerId, emoji, active }), signal }),
-  createMoment: async (moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, eventOwnerId: string) =>
-    requireResource<TimelineEvent>(await request('/moments', { method: 'POST', body: JSON.stringify({ ...moment, eventOwnerId }) }), ['moment'], 'moment'),
+  createMoment: async (moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, eventOwnerId: string, operationId: string) => {
+    const deadline = withDeadline(undefined, 30_000);
+    try { return requireResource<TimelineEvent>(await request('/moments', { method: 'POST', headers: { 'Idempotency-Key': operationId }, body: JSON.stringify({ ...moment, eventOwnerId }), signal: deadline.signal }), ['moment'], 'moment'); }
+    finally { deadline.dispose(); }
+  },
   updateMoment: async (id: string, ownerId: string, moment: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, expectedVersion: number, eventOwnerId: string) =>
     requireResource<TimelineEvent>(await request(`/moments/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ ...moment, ownerId, expectedVersion, eventOwnerId }) }), ['moment'], 'moment'),
   deleteMoment: (id: string, ownerId: string) => request(`/moments/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ ownerId }) }),

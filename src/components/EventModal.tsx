@@ -50,7 +50,7 @@ interface EventModalProps {
   /** Auth generation fence: a draft never crosses an account or session boundary. */
   sessionGeneration: number;
   onClose: () => void;
-  onSave: (eventData: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles?: File[], eventOwnerId?: string, expectedVersion?: number, onProgress?: (progress: SaveProgress) => void) => Promise<void>;
+  onSave: (eventData: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles?: File[], eventOwnerId?: string, expectedVersion?: number, onProgress?: (progress: SaveProgress) => void, operationId?: string) => Promise<void>;
   onAddCustomTag?: (newTag: string) => Promise<void>;
   onCreateNewTrack?: () => void;
 }
@@ -70,6 +70,10 @@ export const EventModal: React.FC<EventModalProps> = ({
   const overlayMotion = useOverlayMotion();
   const alive = useRef(true);
   const initialized = useRef(false);
+  const submitLock = useRef(false);
+  // Freeze an attempted create: a lost response must retry the exact operation,
+  // even if the user edits visible fields before retrying. A new composer is a new draft.
+  const createAttempt = useRef<null | { id: string; payload: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>; files: File[]; ownerId: string }>(null);
   const blobs = useRef<string[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [saveProgress, setSaveProgress] = useState<SaveProgress | null>(null);
@@ -445,6 +449,7 @@ export const EventModal: React.FC<EventModalProps> = ({
 
   const succeedAndClose = () => {
     if (!alive.current) return;
+    createAttempt.current = null;
     clearMomentDraft(scopeKey);
     images.filter((image) => image.startsWith('blob:')).forEach((image) => URL.revokeObjectURL(image));
     blobs.current = [];
@@ -453,7 +458,7 @@ export const EventModal: React.FC<EventModalProps> = ({
 
   const toConflictOrError = async (error: unknown, id: string, ownerId: string) => {
     if (!alive.current) return;
-    if (error instanceof ApiError && error.status === 409) {
+    if (error instanceof ApiError && error.status === 409 && id) {
       // Keep the draft on screen and load the current version for comparison;
       // never ask the user to copy text into another application.
       try {
@@ -477,12 +482,13 @@ export const EventModal: React.FC<EventModalProps> = ({
       setSaveError('');
       return;
     }
-    setSaveError(error instanceof Error ? error.message : 'Could not save this moment. Your edits are still here; retry when ready.');
+    setSaveError(createAttempt.current && error instanceof ApiError && error.status === 409 ? error.message : createAttempt.current ? 'Confirmation was not received. Retry will safely finish the original submitted draft (including its original title and track). To write different content, close and start a new draft.' : error instanceof Error ? error.message : 'Could not save this moment. Your edits are still here; retry when ready.');
   };
 
   /** Explicit rebase: the draft is saved against the freshly reviewed version. */
   const keepMyEdits = async (latest: TimelineEvent) => {
-    if (!selectedTrack) return;
+    if (!selectedTrack || submitLock.current || busy) return;
+    submitLock.current = true;
     const payload = buildPayload(latest.images || []);
     setSaveError('');
     setIsSaving(true);
@@ -493,6 +499,7 @@ export const EventModal: React.FC<EventModalProps> = ({
       // A further conflict returns to comparison; nothing is force-overwritten.
       await toConflictOrError(error, latest.id, latest.resourceOwnerId || selectedTrack.resourceOwnerId);
     } finally {
+      submitLock.current = false;
       if (alive.current) setIsSaving(false);
     }
   };
@@ -544,7 +551,7 @@ export const EventModal: React.FC<EventModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (busy) return;
+    if (busy || submitLock.current || retrySave) return;
     setConflict(null);
     const effectiveVersion = adoptedVersion ?? eventToEdit?.version;
     if (!hasWritableTrack || !selectedTrack) {
@@ -560,13 +567,16 @@ export const EventModal: React.FC<EventModalProps> = ({
     }
 
     const payload = buildPayload(images);
+    submitLock.current = true;
+    if (!eventToEdit && !createAttempt.current) createAttempt.current = { id: crypto.randomUUID(), payload, files: [...imageFiles], ownerId: selectedTrack.resourceOwnerId! };
+    const attempt = !eventToEdit ? createAttempt.current : null;
     setSaveError('');
     setSaveProgress({ phase: 'writing' });
     setIsSaving(true);
-    onSave(payload, eventToEdit?.id, imageFiles, selectedTrack.resourceOwnerId, effectiveVersion, setSaveProgress)
+    onSave(attempt?.payload || payload, eventToEdit?.id, attempt?.files || imageFiles, attempt?.ownerId || selectedTrack.resourceOwnerId, effectiveVersion, setSaveProgress, attempt?.id)
       .then(succeedAndClose)
       .catch((error: unknown) => { const retry = (error as { retry?: unknown })?.retry; if (typeof retry === 'function') { setRetrySave(() => retry as () => Promise<void>); setSaveError(error instanceof Error ? error.message : 'Could not finish saving this memory.'); return; } return toConflictOrError(error, eventToEdit?.id || '', eventToEdit?.resourceOwnerId || selectedTrack.resourceOwnerId); })
-      .finally(() => { if (alive.current) { setIsSaving(false); setSaveProgress(null); } });
+      .finally(() => { submitLock.current = false; if (alive.current) { setIsSaving(false); setSaveProgress(null); } });
   };
 
   // Combine default tags with existing tags
@@ -621,7 +631,7 @@ export const EventModal: React.FC<EventModalProps> = ({
         {/* Scrollable body. The footer is a flex SIBLING below, so Save/Cancel
             are always reachable and never overlay the photo grid. */}
         <form id="event-modal-form" onSubmit={handleSubmit} className="px-4 sm:px-6 py-5 space-y-5 overflow-y-auto flex-1 text-sm">
-          {retrySave && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200"><p>{saveError}</p><button id="retry-save-event" type="button" className="mt-3 min-h-11 rounded-xl bg-amber-600 px-4 font-semibold text-white" onClick={() => { const retry = retrySave; setRetrySave(null); setSaveError(''); setSaveProgress({ phase: 'reconciling' }); setIsSaving(true); retry().then(succeedAndClose).catch(error => { const again=(error as {retry?:unknown})?.retry; if(typeof again==='function') setRetrySave(() => again as () => Promise<void>); setSaveError(error instanceof Error ? error.message : 'Could not finish saving this memory.'); }).finally(() => { if(alive.current){setIsSaving(false);setSaveProgress(null);} }); }}>Retry save</button></div>}
+          {retrySave && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200"><p>{saveError}</p><button id="retry-save-event" type="button" className="mt-3 min-h-11 rounded-xl bg-amber-600 px-4 font-semibold text-white" onClick={() => { if(submitLock.current || busy) return; submitLock.current = true; const retry = retrySave; setRetrySave(null); setSaveError(''); setSaveProgress({ phase: 'reconciling' }); setIsSaving(true); retry().then(succeedAndClose).catch(error => { const again=(error as {retry?:unknown})?.retry; if(typeof again==='function') setRetrySave(() => again as () => Promise<void>); setSaveError(error instanceof Error ? error.message : 'Could not finish saving this memory.'); }).finally(() => { submitLock.current = false; if(alive.current){setIsSaving(false);setSaveProgress(null);} }); }}>Retry save</button></div>}
           {!hasWritableTrack && (
             <p role="status" className="rounded-xl border border-stone-200 bg-stone-50 dark:border-stone-800 dark:bg-stone-800/50 px-4 py-3 text-sm text-stone-600 dark:text-stone-300">
               You do not have a track you can write to yet. Create your first track to start logging memories, or ask an owner to share one with editing access.
