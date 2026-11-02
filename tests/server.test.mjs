@@ -1,4 +1,5 @@
 import './mutation-safety.test.mjs';
+import './moment-create-idempotency.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';

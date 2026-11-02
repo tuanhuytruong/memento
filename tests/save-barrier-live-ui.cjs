@@ -19,7 +19,7 @@ const base = process.env.MEMENTO_DEV_BASE || 'https://memento-dev.srv.io.vn';
 
   const out = path.resolve(process.env.MEMENTO_UI_ARTIFACTS || '.hermes/evidence/save-barrier');
   fs.mkdirSync(out, { recursive: true });
-  const report = { syntheticPhotos: true, base, checks: [], uploads: [], responses: [], trail: [], pageerrors: [], cleanup: false };
+  const report = { syntheticPhotos: true, controlledFailures: ['photo 500','response loss after real create','reconciliation 500'], base, checks: [], uploads: [], responses: [], trail: [], pageerrors: [], cleanup: false };
   const check = (label) => { report.checks.push(label); console.log('CHECK', label); };
 
   const photo = await require('sharp')({ create: { width: 1200, height: 1600, channels: 3, background: { r: 168, g: 158, b: 200 } } })
@@ -60,6 +60,9 @@ const base = process.env.MEMENTO_DEV_BASE || 'https://memento-dev.srv.io.vn';
     const armed = new Set();
     const held = { write: [], image: [], query: [] };
     let failNextImage = false;
+    let loseNextWrite = false;
+    let failNextQuery = false;
+    const creates = [];
     const hold = (kind) => armed.add(kind);
     const disarm = (kind) => armed.delete(kind);
     const heldCount = (kind) => held[kind].length;
@@ -72,7 +75,13 @@ const base = process.env.MEMENTO_DEV_BASE || 'https://memento-dev.srv.io.vn';
       const kind = method === 'POST' && pathname === '/api/moments' ? 'write'
         : method === 'POST' && pathname === '/api/images' ? 'image'
         : method === 'POST' && pathname === '/api/moments/query' ? 'query' : null;
+      if(pathname==='/api/tracks' && method==='GET' && failNextQuery) { failNextQuery=false; return route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:'controlled reconcile failure'})}); }
       if (!kind) return route.continue();
+      if (kind === 'write') {
+        creates.push({key:request.headers()['idempotency-key'],body:request.postData()});
+        if(loseNextWrite) { loseNextWrite=false; const response=await route.fetch(); assert.equal(response.status(),201); await new Promise(resolve=>setTimeout(resolve,31_000)); return route.fulfill({response}).catch(()=>{}); }
+      }
+      if(kind==='query' && failNextQuery) { failNextQuery=false; return route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:'controlled reconcile failure'})}); }
       if (kind === 'image') report.uploads.push({ key: request.headers()['idempotency-key'] || null, bytes: (request.postDataBuffer() || Buffer.alloc(0)).length });
       if (kind === 'image' && failNextImage) {
         failNextImage = false;
@@ -128,7 +137,7 @@ const base = process.env.MEMENTO_DEV_BASE || 'https://memento-dev.srv.io.vn';
     // upload cannot slip past while the write is held.
     hold('write');
     hold('image');
-    await saveButton.click();
+    await page.locator('#event-modal-form').evaluate(form => { for(let i=0;i<8;i++) form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})); });
     await progress.getByText('Holding on to this moment…').waitFor({ state: 'visible' });
     await waitHeld('write');
     assert.equal(await dialog.isVisible(), true, 'the composer must stay open during the write');
@@ -214,6 +223,49 @@ const base = process.env.MEMENTO_DEV_BASE || 'https://memento-dev.srv.io.vn';
     await page.locator('[id^="event-card-"]').filter({ hasText: 'QA barrier failed photo' }).first().waitFor({ state: 'visible' });
     check(`idempotency: the failed photo retried with its original key ${attempts[0].key.slice(0, 8)}… and stored exactly once`);
 
+    // Real create committed, but browser deliberately loses the confirmation.
+    await page.setViewportSize({width:390,height:844});
+    await page.locator('#floating-memory-actions').click();
+    await page.locator('#memory-actions').getByRole('button',{name:'New entry',exact:true}).click();
+    await dialog.waitFor({state:'visible'});
+    await dialog.locator('#event-title-input').fill('QA ambiguous original');
+    loseNextWrite=true;
+    const beforeLost=creates.length;
+    await dialog.locator('#event-title-input').press('Enter');
+    await dialog.getByText(/Confirmation was not received/).first().waitFor({state:'visible',timeout:40000});
+    assert.equal(await dialog.locator('#event-title-input').inputValue(),'QA ambiguous original');
+    await dialog.locator('#event-title-input').fill('visible changed title');
+    await dialog.getByText(/Confirmation was not received/).first().scrollIntoViewIfNeeded();
+    await page.screenshot({path:path.join(out,'ambiguous-mobile.png')});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await dialog.locator('#save-event-button').click();
+    await dialog.waitFor({state:'detached',timeout:30000});
+    assert.equal(creates.length,beforeLost+2);
+    assert.equal(creates[beforeLost].key,creates[beforeLost+1].key);
+    assert.equal(creates[beforeLost].body,creates[beforeLost+1].body);
+    const ambiguous=await pool.query(`SELECT document FROM ${qschema}.moments WHERE owner_id=$1 AND document->>'title'='QA ambiguous original'`,[owner.id]);
+    assert.equal(ambiguous.rowCount,1);
+    check('mobile actual create plus controlled response loss: keyboard submit, preserved draft, stable key and frozen payload retry, exactly one row');
+
+    await page.locator('#floating-memory-actions').click();
+    await page.locator('#memory-actions').getByRole('button',{name:'New entry',exact:true}).click();
+    await dialog.waitFor({state:'visible'});
+    await dialog.locator('#event-title-input').fill('QA reconcile failure');
+    failNextQuery=true;
+    const beforeReconcile=creates.length;
+    await dialog.locator('#save-event-button').click();
+    await dialog.locator('#retry-save-event').waitFor({state:'visible',timeout:30000});
+    await page.locator('#event-modal-form').evaluate(form=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+    await page.waitForTimeout(100);
+    assert.equal(creates.length,beforeReconcile+1,'main submit cannot bypass continuation');
+    await dialog.locator('#retry-save-event').evaluate(button=>{button.click();button.click();});
+    await dialog.waitFor({state:'detached',timeout:30000});
+    assert.equal(creates.length,beforeReconcile+1,'reconcile retry must not create');
+    check('controlled reconciliation failure on live backend: continuation retry and rapid retry clicks do not recreate');
+    report.creates=creates.map(({key})=>({key}));
+    report.bundle=await page.locator('script[type="module"][src]').first().getAttribute('src');
+
+
     const timed = report.responses.filter((response) => response.pathname === '/api/images' && response.status < 300);
     assert.ok(timed.length >= 1, 'the upload returned a success response');
     for (const response of timed) {
@@ -229,6 +281,7 @@ const base = process.env.MEMENTO_DEV_BASE || 'https://memento-dev.srv.io.vn';
 
     assert.equal(report.pageerrors.length, 0, `page errors: ${JSON.stringify(report.pageerrors)}`);
     check('no browser page errors during the full save barrier journey');
+    report.passed=true;
   } catch (error) {
     try {
       if (page) {
@@ -238,10 +291,16 @@ const base = process.env.MEMENTO_DEV_BASE || 'https://memento-dev.srv.io.vn';
         console.error('TRAIL', report.trail.slice(-16).join(' -> '));
       }
     } catch {}
+    report.passed=false; report.error=error.message;
     throw error;
   } finally {
     if (browser) await browser.close().catch(() => {});
     try {
+      const disposable=await pool.query(`SELECT id FROM ${qschema}.moments WHERE owner_id=$1`,[owner.id]);
+      for(const moment of disposable.rows){
+        const response=await fetch(base+'/api/moments/'+encodeURIComponent(moment.id),{method:'DELETE',headers:{Origin:base,Cookie:`memento_session=${owner.token}`,'Content-Type':'application/json'},body:JSON.stringify({ownerId:owner.id})});
+        assert.equal(response.status,200,'API deletion queues all fixture R2 objects for cleanup');
+      }
       await pool.query(`DELETE FROM ${qschema}.users WHERE id=$1`, [owner.id]);
       const remaining = await pool.query(`SELECT (SELECT count(*) FROM ${qschema}.moments WHERE owner_id=$1) AS moments, (SELECT count(*) FROM ${qschema}.images WHERE owner_id=$1) AS images`, [owner.id]);
       report.cleanup = Number(remaining.rows[0].moments) === 0 && Number(remaining.rows[0].images) === 0;

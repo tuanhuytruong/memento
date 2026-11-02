@@ -634,13 +634,33 @@ app.post('/api/moments', auth, async (req,res) => {
   const eventOwnerId=req.body?.eventOwnerId;
   if(!validUuid(eventOwnerId)) throw new ApiError(400,'Invalid track owner');
   if(d.images.length) throw new ApiError(400,'Images must be uploaded using POST /api/images');
+  const operationKey=req.get('idempotency-key')||null;
+  if(operationKey&&!/^[a-zA-Z0-9_.:-]{8,128}$/.test(operationKey)) throw new ApiError(400,'Invalid Idempotency-Key');
+  // Server timestamps and IDs are not part of the client operation payload.
+  const fingerprint={...d};
+  for(const key of ['id','createdAt','updatedAt','version','expectedVersion']) delete fingerprint[key];
+  const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
+  const payloadHash=crypto.createHash('sha256').update(JSON.stringify(canonical(fingerprint))).digest('hex');
   d.id=typeof d.id==='string'&&d.id.length<128?d.id:id(); d.images=[]; delete d.version; delete d.expectedVersion;
-  let resourceOwnerId;
-  await mutate(req,exactTrackAccess,{ownerId:eventOwnerId,id:d.eventId},async(c,a)=>{
-    requireEditor(a); resourceOwnerId=a.owner_id;
+  const moment=await mutate(req,exactTrackAccess,{ownerId:eventOwnerId,id:d.eventId},async(c,a)=>{
+    requireEditor(a);
+    if(operationKey){
+      await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`${qschema}:create:${req.user.id}:${operationKey}`]);
+      const replay=await c.query(`SELECT * FROM ${qschema}.moment_create_operations WHERE actor_id=$1 AND operation_key=$2`,[req.user.id,operationKey]);
+      if(replay.rowCount){
+        const op=replay.rows[0];
+        if(op.owner_id!==a.owner_id||op.track_id!==d.eventId||op.payload_hash!==payloadHash) throw new ApiError(409,'Create operation does not match this draft');
+        const current=await c.query(`SELECT document,version,event_id FROM ${qschema}.moments WHERE owner_id=$1 AND id=$2`,[op.owner_id,op.moment_id]);
+        if(op.deleted_at||!current.rowCount||current.rows[0].event_id!==op.track_id) throw new ApiError(409,'Previously created moment was deleted or moved; start a new draft');
+        const images=await c.query(`SELECT id FROM ${qschema}.images WHERE owner_id=$1 AND moment_id=$2 ORDER BY created_at`,[op.owner_id,op.moment_id]);
+        return safeMoment(current.rows[0].document,images.rows,[],current.rows[0].version,op.owner_id);
+      }
+    }
     await c.query(`INSERT INTO ${qschema}.moments(owner_id,id,event_id,document) VALUES($1,$2,$3,$4)`,[a.owner_id,d.id,d.eventId,d]);
+    if(operationKey) await c.query(`INSERT INTO ${qschema}.moment_create_operations(actor_id,operation_key,owner_id,track_id,payload_hash,moment_id) VALUES($1,$2,$3,$4,$5,$6)`,[req.user.id,operationKey,a.owner_id,d.eventId,payloadHash,d.id]);
     await persistTags(a.owner_id,d.tags,c);
-  }); res.status(201).json({moment:{...d,resourceOwnerId,version:1}});
+    return {...d,resourceOwnerId:a.owner_id,version:1};
+  }); res.status(201).json({moment});
 });
 app.put('/api/moments/:id', auth, async (req,res) => {
   const ownerId=req.body?.ownerId; if(!validUuid(ownerId)) throw new ApiError(400,'Invalid moment owner');

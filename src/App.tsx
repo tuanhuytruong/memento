@@ -602,7 +602,7 @@ export default function App() {
   };
   useEffect(()=>{if(feed.loading||feed.seeking||!prependAnchor.current)return;const anchor=prependAnchor.current;prependAnchor.current=null;let cancelled=false;void document.fonts.ready.then(()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{if(cancelled||anchor.scope!==browseScope)return;const node=document.getElementById(anchor.id);if(node)scrollBy(0,node.getBoundingClientRect().top-anchor.top);})));return()=>{cancelled=true;};},[feed.loading,feed.seeking,feed.items.map(momentIdentity).join('|')]);
   // The modal is released only after create/edit, optional private uploads and feed reconciliation.
-  const handleSaveEvent = async (data: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles: File[] = [], eventOwnerId?: string, expectedVersion?: number, onProgress: (progress: SaveProgress) => void = () => {}) => {
+  const handleSaveEvent = async (data: Omit<TimelineEvent, 'id' | 'createdAt' | 'updatedAt'>, editId?: string, imageFiles: File[] = [], eventOwnerId?: string, expectedVersion?: number, onProgress: (progress: SaveProgress) => void = () => {}, operationId?: string) => {
     const generation = authGenerationRef.current;
     // Only a photo that is still in flight may block this save: a photo that already
     // failed stays queued in the outbox and resumes on its own or from the banner,
@@ -611,12 +611,13 @@ export default function App() {
     if (editId && (!eventToEdit || eventToEdit.id !== editId)) throw new Error('This edit is no longer open. Close and reopen the form before saving. Your draft is unchanged.');
     const version = expectedVersion ?? eventToEdit?.version;
     if (editId && !Number.isInteger(version)) throw new Error('This edit has no version. Close and reopen the form before saving. Your draft is unchanged.');
+    if (!editId && !operationId) throw new Error('Missing create operation identity. Reopen the composer.');
     onProgress({ phase: 'writing' });
     // Timed so a slow save can be attributed to the write or to the photos after it.
     const writeStartedAt = performance.now();
-    const saved = await (editId ? dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!) : dataApi.createMoment(data, eventOwnerId!)).finally(() => { recordUploadDiagnostic(phaseDiagnostic('moment-write', performance.now() - writeStartedAt)); });
+    const saved = await (editId ? dataApi.updateMoment(editId, eventToEdit!.resourceOwnerId!, data, version!, eventOwnerId || eventToEdit!.resourceOwnerId!) : dataApi.createMoment(data, eventOwnerId!, operationId!)).finally(() => { recordUploadDiagnostic(phaseDiagnostic('moment-write', performance.now() - writeStartedAt)); });
     assertSession(generation);
-    setEvents(prev => editId ? prev.map(event => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev]);
+    setEvents(prev => editId ? prev.map(event => event.id === editId && event.resourceOwnerId === eventToEdit?.resourceOwnerId ? saved : event) : [saved, ...prev.filter(event => event.id !== saved.id || event.resourceOwnerId !== saved.resourceOwnerId)]);
     const queue = { momentId: saved.id, uploaderAccountId: user.id, resourceOwnerId: saved.resourceOwnerId!, files: imageFiles.map(file => ({ file, uploadId: crypto.randomUUID() })) };
     const reconcile = async () => { onProgress({ phase: 'reconciling' }); const reconcileStartedAt = performance.now(); try { await loadData(); } finally { recordUploadDiagnostic(phaseDiagnostic('reconcile', performance.now() - reconcileStartedAt)); } assertSession(generation); setFeedRevision(value => value + 1); await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); assertSession(generation); setPendingImageRetry(null); setDataError(''); onProgress({ phase: 'complete' }); };
     try {
@@ -624,7 +625,7 @@ export default function App() {
       await reconcile();
     } catch (failure) {
       const error = failure instanceof Error ? failure : new Error('Could not finish saving this memory.');
-      (error as Error & { retry?: () => Promise<void> }).retry = async () => { const remaining = pendingImageRetry?.momentId === queue.momentId ? pendingImageRetry.files : queue.files; if (remaining.length) await processImageQueue({ ...queue, files: remaining }, generation, onProgress); await reconcile(); };
+      (error as Error & { retry?: () => Promise<void> }).retry = async () => { assertSession(generation); const remaining = pendingImageRetry?.momentId === queue.momentId ? pendingImageRetry.files : queue.files; if (remaining.length) await processImageQueue({ ...queue, files: remaining }, generation, onProgress); await reconcile(); };
       throw error;
     }
   };
