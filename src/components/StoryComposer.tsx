@@ -1,0 +1,43 @@
+import { useEffect, useRef, useState } from 'react';
+import type { StoryDetail, StoryDraft, TimelineEvent } from '../types';
+import { ApiError } from '../lib/api';
+import { storiesApi } from '../lib/storiesApi';
+import { addStoryMoment, moveStoryItem, storyPayload, validateStoryDraft } from '../lib/storyDraft';
+import { StoryReader } from './StoryReader';
+export const storyButton='min-h-11 min-w-11 rounded-xl border border-stone-300 px-3 py-2 text-sm font-medium disabled:opacity-40 dark:border-stone-700';
+export function StoryComposer({initial,ownerId,trackId,onSaved,onDirty,onBusy}:{initial:StoryDetail|null;ownerId:string;trackId:string;onSaved:()=>void;onDirty:(value:boolean)=>void;onBusy:(value:boolean)=>void}){
+ const baseline=useRef<StoryDraft>(initial?{...initial.story,items:initial.items}:{trackId,title:'',opening:'',closing:'',items:[]});
+ const [draft,setDraft]=useState<StoryDraft>(baseline.current),[step,setStep]=useState(0),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const [search,setSearch]=useState(''),[cursor,setCursor]=useState<string|null>(null),[page,setPage]=useState<{moments:TimelineEvent[];nextCursor:string|null}>({moments:[],nextCursor:null}),[loading,setLoading]=useState(false),[pageError,setPageError]=useState(''),[retry,setRetry]=useState(0);
+ const operation=useRef<{key:string;payload:string}|null>(null),active=useRef(true),saving=useRef(false),controller=useRef<AbortController|null>(null);
+ useEffect(()=>{active.current=true;return()=>{active.current=false;controller.current?.abort();};},[]);
+ useEffect(()=>{onDirty(JSON.stringify(storyPayload(draft))!==JSON.stringify(storyPayload(baseline.current)));},[draft,onDirty]);
+ useEffect(()=>{
+  if(step!==1)return;const abort=new AbortController();setLoading(true);setPageError('');setPage({moments:[],nextCursor:null});
+  const timer=setTimeout(()=>{storiesApi.picker(ownerId,trackId,search,cursor,abort.signal).then(result=>{if(!abort.signal.aborted)setPage(result);}).catch(failure=>{if(!abort.signal.aborted)setPageError(failure instanceof Error?failure.message:'Could not load memories.');}).finally(()=>{if(!abort.signal.aborted)setLoading(false);});},200);
+  return()=>{clearTimeout(timer);abort.abort();};
+ },[ownerId,trackId,step,search,cursor,retry]);
+ const save=async()=>{
+  if(saving.current)return;const invalid=validateStoryDraft(draft);if(invalid){setError(invalid);return;}
+  const payload=JSON.stringify(storyPayload(draft));
+  if(!operation.current)operation.current={key:crypto.randomUUID(),payload};
+  if(!initial&&operation.current.payload!==payload){setError('A previous save may have succeeded. Retry its unchanged draft or close and reload the library before creating another story.');return;}
+  saving.current=true;setBusy(true);onBusy(true);setError('');const abort=new AbortController();controller.current=abort;
+  try{if(initial)await storiesApi.update(initial.story.id,draft,initial.story.version,abort.signal);else await storiesApi.create(draft,operation.current.key,abort.signal);if(active.current){onDirty(false);onSaved();}}
+  catch(failure){if(active.current){if(failure instanceof ApiError&&failure.status===409)setError('This story changed elsewhere. Your draft is retained; close and reload before editing again.');else if(failure instanceof ApiError&&(failure.status===404||failure.status===403||failure.status===401))setError('Access is no longer available. Your changes were not saved.');else setError(failure instanceof Error?failure.message:'Save failed. Retry this unchanged draft safely.');}}
+  finally{saving.current=false;if(active.current){setBusy(false);onBusy(false);}}
+ };
+ const field='mt-1 min-h-11 w-full rounded-xl border border-stone-300 bg-transparent p-3 dark:border-stone-700';
+ return <div data-story-composer className="flex h-full min-h-0 flex-col">
+ <div data-story-composer-body className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4 sm:p-7">
+ <nav aria-label="Story steps" className="flex flex-wrap gap-2">{['Details','Choose memories','Arrange & preview'].map((label,index)=><button key={label} disabled={busy} aria-current={step===index?'step':undefined} className={`${storyButton} ${step===index?'bg-amber-100 text-stone-900':''}`} onClick={()=>{setError('');setStep(index);}}>{index+1}. {label}</button>)}</nav>
+ <p className="text-sm text-stone-500">One story, one track, 1–50 memories. Only the track owner can curate stories.</p>
+ {step===0&&<div className="space-y-4"><label className="block">Story title<input disabled={busy} className={field} maxLength={120} value={draft.title} onChange={e=>setDraft({...draft,title:e.target.value})}/></label><label className="block">Opening note<textarea disabled={busy} className={field} rows={4} maxLength={4000} value={draft.opening} onChange={e=>setDraft({...draft,opening:e.target.value})}/></label><label className="block">Closing note<textarea disabled={busy} className={field} rows={4} maxLength={4000} value={draft.closing} onChange={e=>setDraft({...draft,closing:e.target.value})}/></label></div>}
+ {step===1&&<><label className="block">Search this track<input className={field} value={search} maxLength={200} onChange={e=>{setSearch(e.target.value);setCursor(null);}}/></label><p>{draft.items.length} / 50 selected</p>{loading&&<p role="status">Loading memories…</p>}{pageError&&<div role="alert">{pageError}<button className={storyButton} onClick={()=>setRetry(n=>n+1)}>Retry memories</button></div>}{!loading&&!pageError&&!page.moments.length&&<p>No matching memories in this track.</p>}
+ <ul className="space-y-2">{page.moments.map(moment=>{const selected=draft.items.some(i=>i.momentId===moment.id);return <li key={moment.id}><button disabled={busy||(!selected&&draft.items.length>=50)} aria-pressed={selected} className={`${storyButton} w-full text-left ${selected?'bg-amber-100 text-stone-900':''}`} onClick={()=>setDraft(current=>selected?{...current,items:current.items.filter(i=>i.momentId!==moment.id)}:addStoryMoment(current,moment,crypto.randomUUID()))}>{selected?'✓ ':''}{moment.title}<span className="block text-xs">{moment.date||'Undated'}</span></button></li>;})}</ul><div className="flex gap-2">{cursor&&<button className={storyButton} onClick={()=>setCursor(null)}>First memories</button>}{page.nextCursor&&<button className={storyButton} onClick={()=>setCursor(page.nextCursor)}>Next memories</button>}</div></>}
+ {step===2&&<><ol className="space-y-4">{draft.items.map((item,index)=><li key={item.itemId} className="rounded-xl border border-stone-200 p-3 dark:border-stone-700"><h3 className="break-words">{index+1}. {item.moment?.title||'Memory no longer available'}</h3>{!item.moment&&<p className="text-sm text-stone-500">Repair this link by removing it and choosing a replacement memory.</p>}<div className="my-2 flex flex-wrap gap-2"><button aria-label={`Move memory ${index+1} up`} disabled={busy||index===0} className={storyButton} onClick={()=>setDraft(moveStoryItem(draft,index,-1))}>Up</button><button aria-label={`Move memory ${index+1} down`} disabled={busy||index===draft.items.length-1} className={storyButton} onClick={()=>setDraft(moveStoryItem(draft,index,1))}>Down</button><button disabled={busy} className={storyButton} onClick={()=>setDraft({...draft,items:draft.items.filter(i=>i.itemId!==item.itemId)})}>Remove memory {index+1}</button></div><label className="block text-sm">Bridge note for memory {index+1}<textarea disabled={busy} className={field} maxLength={2000} rows={2} value={item.note} onChange={e=>setDraft({...draft,items:draft.items.map(i=>i.itemId===item.itemId?{...i,note:e.target.value}:i)})}/></label></li>)}</ol><h3 className="font-display text-xl">Reading preview</h3><StoryReader detail={{story:{...draft,id:initial?.story.id||'preview',ownerId,version:initial?.story.version||1,updatedAt:''},items:draft.items,capabilities:{canEdit:true,canDelete:true}}}/></>}
+ {error&&<p role="alert" className="text-red-700 dark:text-red-300">{error}</p>}
+ </div>
+ <footer data-story-composer-footer className="flex shrink-0 flex-wrap justify-between gap-2 border-t px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] sm:px-7">{step>0?<button disabled={busy} className={storyButton} onClick={()=>setStep(step-1)}>Back</button>:<span/>}{step<2?<button className={storyButton} onClick={()=>{if(step===0&&!draft.title.trim()){setError('A story title is required.');return;}if(step===1&&!draft.items.length){setError('Choose 1–50 memories.');return;}setError('');setStep(step+1);}}>Continue</button>:<button disabled={busy} className={`${storyButton} bg-amber-600 text-white`} onClick={()=>void save()}>{busy?'Saving story…':'Save story'}</button>}</footer>
+ </div>;
+}

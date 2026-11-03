@@ -156,3 +156,8 @@ export interface AccountOverview {
   tags: { name: string; count: number }[];
   years: string[];
 }
+
+export interface StoryItem { itemId: string; momentId: string; note: string; moment?: TimelineEvent | null; unavailable?: boolean }
+export interface StoryDraft { trackId: string; title: string; opening: string; closing: string; items: StoryItem[] }
+export interface StorySummary { id: string; ownerId: string; trackId: string; title: string; opening: string; closing: string; version: number; updatedAt: string; itemCount?: number }
+export interface StoryDetail { story: StorySummary; items: StoryItem[]; capabilities: { canEdit: boolean; canDelete: boolean } }

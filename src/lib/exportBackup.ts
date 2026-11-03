@@ -11,7 +11,12 @@
 
 import type { EventTrack, MomentPerspective, TimelineEvent } from '../types';
 
-/** Serialised backup, version 4.0: it records its own scope explicitly. */
+export interface BackupStory {
+  id: string; ownerId: string; trackId: string; title: string; opening: string; closing: string;
+  version: number; createdAt: string; updatedAt: string;
+  items: { itemId: string; momentId: string; position: number; note: string }[];
+}
+/** Serialised backup, version 5.0: owned stories, shared stories excluded. */
 export interface TimelineBackupPayload {
   version: string;
   exportedAt: string;
@@ -19,6 +24,7 @@ export interface TimelineBackupPayload {
   events: TimelineEvent[];
   customTags: string[];
   perspectives: MomentPerspective[];
+  stories?: BackupStory[];
   scope: {
     /** Who the export was taken for, so a later reader can tell whose it is. */
     ownerScope: 'current-account';
@@ -100,6 +106,7 @@ export async function buildCompleteBackup(options: {
   tags: string[];
   fetchMomentsPage: (cursor: string | null) => Promise<Page<TimelineEvent>>;
   fetchPerspectives: () => Promise<MomentPerspective[]>;
+  fetchStories?: () => Promise<BackupStory[]>;
   now?: Date;
 }): Promise<TimelineBackupPayload> {
   const { ownerUserId, tracks, tags, fetchMomentsPage, fetchPerspectives } = options;
@@ -131,8 +138,15 @@ export async function buildCompleteBackup(options: {
     }
   }
 
+  // Legacy callers keep the v4 shape. Only an explicit complete stories source
+  // may claim v5; the active application uses the signed snapshot protocol.
+  const stories = options.fetchStories ? await options.fetchStories() : undefined;
+  if (options.fetchStories && (!Array.isArray(stories) || stories.some(s => !s || !s.id || s.ownerId !== ownerUserId) || new Set(stories.map(s => s.id)).size !== stories.length)) {
+    throw new Error('Export stopped: owned stories could not be verified.');
+  }
   return {
-    version: '4.0',
+    version: stories ? '5.0' : '4.0',
+    ...(stories ? { stories } : {}),
     exportedAt: (options.now ?? new Date()).toISOString(),
     eventTracks: tracks,
     events: moments,

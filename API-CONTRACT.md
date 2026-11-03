@@ -2,6 +2,20 @@
 
 Base URL: same origin, `/api`. All endpoints except register/login require a valid session cookie where noted. Mutation requests (`POST`, `PUT`, `DELETE`) require a same-origin `Origin` header. JSON responses use `application/json`; errors use `{ "error": "..." }`.
 
+## Stories (Phase A; backup 5.0)
+
+All story routes authenticate current sessions, retain same-origin mutation protection and return `Cache-Control: no-store` (including route errors). Stories belong to one owned track. Accepted viewers/editors may read; only the owner curates. Pending, revoked, unrelated and unknown resources return 404. Acceptance remains valid after the invitation deadline.
+
+- `POST /stories/query` body `{trackOwnerId,trackId,cursor?,limit?}` returns `{stories,nextCursor}`. Default 20/max 50. Descending `(updatedAt,id)` keyset. HMAC cursor uses a story-specific domain, account and exact track scope, 1-hour expiry and 2048-byte bound. Revalidate current track access on every page; concurrent edits may change the library (not a snapshot).
+- `GET /stories/:id` returns `{story,items,capabilities:{canEdit,canDelete}}`. Camelcase story: `id,ownerId,trackId,title,opening,closing,version,createdAt,updatedAt,itemCount`. Items: `itemId,momentId,position,note,moment:TimelineEvent|null`. Resolve live source by exact owner+moment+same track, with authenticated image references only. Missing/moved links reveal no former text/image data. Notes and positions remain.
+- `POST /stories` requires `Idempotency-Key` (8–128 ASCII alphanumerics/underscore/hyphen) and `{trackId,title,opening,closing,items:[{itemId,momentId,note}]}`. Title 1–120; opening/closing max 4000 each; 1–50 unique item IDs and moment IDs; note max 2000. Array order sets position. Foreign/missing/newly invented source links rejected with 400. Canonical frozen payload/key replay returns the same live story; changed payload 409; deleted replay 410, including track-cascade deletion. Ledger survives story/track deletion and is cleaned only with the account.
+- `PUT /stories/:id` requires numeric `expectedVersion` (or If-Match), plus the complete create document. Track immutable. Stored exact item/moment pairs may retain missing links; new missing pairs cannot be submitted. Replacement and version increment atomic under schema/owner write lock.
+- `DELETE /stories/:id` requires expected version, deletes only story/items and tombstones create operations, never source moments/photos. Missing version 428; stale version 409.
+
+Picker uses existing bounded `POST /moments/query` scoped by exact owned `trackKey`; story writes independently enforce ownership and exact references under the owner mutation lock. Reads do not acquire the write lock; ACL and source projection share a single statement snapshot.
+
+Signed export adds kind `stories` and `counts.stories`. Only owned stories are included; shared stories explicitly excluded. Story payload contains metadata plus ordered `{itemId,momentId,position,note}` references, never copied moment content. Every start/page/finalize digest includes the exact same fresh story/item payload in the statement snapshot, so same-count note/order/reference/title edits invalidate the token. Active app backup version is `5.0`; no import support. The legacy helper preserves v4 for callers without an explicit stories source; supplying verified owned stories produces v5. Photos remain references, not bytes.
+
 ## Frozen compatibility and privacy contracts (Phase 0)
 
 These are named contracts, enforced by tests, not aspirations:

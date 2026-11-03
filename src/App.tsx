@@ -33,6 +33,7 @@ const EventDetailModal = lazy(() => import('./components/EventDetailModal').then
 const ImageLightbox = lazy(() => import('./components/ImageLightbox').then(module => ({ default: module.ImageLightbox })));
 const BlindboxMemory = lazy(() => import('./components/BlindboxMemory').then(module => ({ default: module.BlindboxMemory })));
 // Postcard rendering is a heavy, rarely-used flow; it never joins the initial bundle.
+const StoryLibrary = lazy(() => import('./components/StoryLibrary').then(module => ({ default: module.StoryLibrary })));
 const PostcardComposer = lazy(() => import('./components/PostcardComposer').then(module => ({ default: module.PostcardComposer })));
 import { FloatingMemoryActions } from './components/FloatingMemoryActions';
 import { MemoryResurfacing } from './components/MemoryResurfacing';
@@ -237,6 +238,7 @@ export default function App() {
 
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
   const [isPostcardOpen, setIsPostcardOpen] = useState(false);
+  const [isStoryLibraryOpen, setIsStoryLibraryOpen] = useState(false);
   const [eventToEdit, setEventToEdit] = useState<TimelineEvent | null>(null);
   const [eventToView, setEventToView] = useState<TimelineEvent | null>(null);
 
@@ -262,7 +264,7 @@ export default function App() {
     uploadControllers.current.clear();
     reactionPending.current.clear();
     setSelectedTrackKey('all'); setVisits([]); visitWrites.current.clear();
-    setIsPostcardOpen(false);
+    setIsPostcardOpen(false); setIsStoryLibraryOpen(false);
     // No private draft crosses an account or session boundary.
     releaseAllMomentDrafts().forEach((url) => { try { URL.revokeObjectURL(url); } catch { /* already revoked */ } });
     clearUploadDiagnostics();
@@ -438,7 +440,7 @@ export default function App() {
       const start = await dataApi.exportSnapshot('start', {});
       assertSession(generation);
       const collections: Record<string, any[]> = {};
-      for (const kind of ['moments', 'tracks', 'tags', 'perspectives']) {
+      for (const kind of ['moments', 'tracks', 'tags', 'perspectives', 'stories']) {
         const items: any[] = []; const cursors = new Set<string>(); let cursor: string | null = null;
         do {
           const page = await dataApi.exportSnapshot('page', { fingerprint: start.fingerprint, token: start.token, kind, cursor, limit: 100 });
@@ -456,10 +458,10 @@ export default function App() {
       assertSession(generation);
       if (final.complete !== true || final.fingerprint !== start.fingerprint) throw new Error('Backup could not be finalized.');
       const payload = {
-        version: '4.0', complete: true, exportedAt: new Date().toISOString(),
-        scope: { ownerScope: 'all-authorized', ownerUserId: user.id, capturedUnder: 'server-validated-fingerprint', perspectives: 'owned-moments-only', images: 'references-to-stored-images-only' },
+        version: '5.0', complete: true, exportedAt: new Date().toISOString(),
+        scope: { ownerScope: 'all-authorized', ownerUserId: user.id, capturedUnder: 'server-validated-fingerprint', perspectives: 'owned-moments-only', stories: 'owned-only-shared-stories-excluded', images: 'references-to-stored-images-only' },
         counts: start.counts, events: collections.moments, eventTracks: collections.tracks,
-        customTags: collections.tags, perspectives: collections.perspectives,
+        customTags: collections.tags, perspectives: collections.perspectives, stories: collections.stories,
       };
       downloadBackup(payload);
     } catch (error) {
@@ -890,11 +892,12 @@ export default function App() {
           // One export path only: a second, lighter one would be the route a
           // partial backup escapes through.
           onExportJson={exportJsonWithPerspectives}
+          onOpenStories={() => setIsStoryLibraryOpen(true)}
           // Export is owner-only, so the entry point disappears without an owned track.
           onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
           canCreateEntry={canCreateEntry}
         />
-        <FloatingMemoryActions canCreate={canCreateEntry} onCreate={openCreateEntry} onDiscover={() => setIsBlindboxOpen(true)} hidden={isEventModalOpen || isEventTrackModalOpen || isBlindboxOpen || isPostcardOpen || !!eventToView || !!shareTrack || lightboxState.isOpen} />
+        <FloatingMemoryActions canCreate={canCreateEntry} onCreate={openCreateEntry} onDiscover={() => setIsBlindboxOpen(true)} hidden={isEventModalOpen || isEventTrackModalOpen || isBlindboxOpen || isPostcardOpen || isStoryLibraryOpen || !!eventToView || !!shareTrack || lightboxState.isOpen} />
         {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
         {selectedTrackKey === 'all' && (
           <MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} />
@@ -965,7 +968,7 @@ export default function App() {
           />
         </div>
 
-        <MonthQuickBrowseRail hidden={snapshot||viewMode!=='timeline'||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} disabled={snapshot||feed.loading||feed.seeking} onNavigate={async (item)=>{const page=await feed.seek({ownerId:item.ownerId,id:item.id});if(page)landBrowse(page);}}/>
+        <MonthQuickBrowseRail hidden={snapshot||viewMode!=='timeline'||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||isStoryLibraryOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} disabled={snapshot||feed.loading||feed.seeking} onNavigate={async (item)=>{const page=await feed.seek({ownerId:item.ownerId,id:item.id});if(page)landBrowse(page);}}/>
         {!snapshot&&feed.navigationTarget&&<div className="mb-4 flex items-center gap-3 text-sm text-stone-500" role="status">Browsing from {'month'in feed.navigationTarget?feed.navigationTarget.month:'selected memory'}<button className="min-h-11 px-3 underline" onClick={feed.newer}>{filters.sortDirection==='oldest'?'Back to start':'Back to latest'}</button></div>}
         {!snapshot&&feed.hasPrevious&&<div className="flex justify-center mb-4"><button id="feed-load-previous" disabled={feed.loading||feed.seeking} className="min-h-11 px-5 rounded-xl border border-stone-300 dark:border-stone-700" onClick={()=>pageWithAnchor(feed.loadPrevious)}>Load previous memories</button></div>}
         {/* View Switcher: Timeline, Compact List, or Gallery */}
@@ -1068,6 +1071,7 @@ export default function App() {
       </div>
       <div aria-hidden="true" className="h-24" />
       <DeferredUiBoundary key={`${user.id}:${authGenerationRef.current}:${overlayEpoch}`}>
+      {isStoryLibraryOpen && <StoryLibrary key={`${user.id}:${authGenerationRef.current}`} tracks={eventTracks} currentUserId={user.id} generation={authGenerationRef.current} initialTrackKey={selectedTrackKey} onClose={() => setIsStoryLibraryOpen(false)} onOpenMoment={openDetail} />}
       {/* Create / Edit Event Track Modal */}
       <ModalTransition>{isEventTrackModalOpen && <EventTrackModal key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isEventTrackModalOpen}

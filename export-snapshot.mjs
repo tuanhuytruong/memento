@@ -12,7 +12,7 @@ function verifyToken(userId, fingerprint, token, secret) {
 }
 
 export const EXPORT_PAGE_LIMIT = 200;
-const kinds = new Set(['moments', 'tracks', 'tags', 'perspectives']);
+const kinds = new Set(['moments', 'tracks', 'tags', 'perspectives', 'stories']);
 const fail = message => new ApiError(400, message);
 
 // One statement defines BOTH the fingerprint and the returned page. No exported
@@ -44,6 +44,15 @@ export function exportSnapshotSQL(qschema) {
       FROM ${qschema}.images i WHERE i.owner_id=m.owner_id AND i.moment_id=m.id
     ) im
     UNION ALL
+    SELECT 'stories',s.id::text,
+      jsonb_build_object('id',s.id,'ownerId',s.owner_id,'trackId',s.track_id,'title',s.title,'opening',s.opening,'closing',s.closing,
+        'version',s.version,'createdAt',s.created_at,'updatedAt',s.updated_at,'items',si.items),
+      jsonb_build_array(to_jsonb(s),si.items)
+    FROM ${qschema}.stories s CROSS JOIN LATERAL (
+      SELECT coalesce(jsonb_agg(jsonb_build_object('itemId',i.item_id,'momentId',i.moment_id,'position',i.position,'note',i.note) ORDER BY i.position),'[]'::jsonb) AS items
+      FROM ${qschema}.story_items i WHERE i.story_id=s.id AND i.owner_id=s.owner_id
+    ) si WHERE s.owner_id=$1
+    UNION ALL
     SELECT 'tags',to_jsonb(name)::text,to_jsonb(name),to_jsonb(name) FROM (
       SELECT name FROM ${qschema}.tags WHERE owner_id=$1
       UNION SELECT jsonb_array_elements_text(t.document->'tags') FROM tracks t WHERE t.owner_id<>$1
@@ -60,7 +69,7 @@ export function exportSnapshotSQL(qschema) {
     SELECT encode(sha256(convert_to($1::text || ':' || coalesce(string_agg(
       encode(sha256(convert_to(jsonb_build_array(kind,key,payload,proof)::text,'UTF8')),'hex'),'' ORDER BY kind COLLATE "C",key COLLATE "C"),''),'UTF8')),'hex') AS fingerprint,
       jsonb_build_object('moments',count(*) FILTER(WHERE kind='moments'),'tracks',count(*) FILTER(WHERE kind='tracks'),
-        'tags',count(*) FILTER(WHERE kind='tags'),'perspectives',count(*) FILTER(WHERE kind='perspectives')) AS counts
+        'tags',count(*) FILTER(WHERE kind='tags'),'perspectives',count(*) FILTER(WHERE kind='perspectives'),'stories',count(*) FILTER(WHERE kind='stories')) AS counts
     FROM entries
   ), page AS (
     SELECT key,payload FROM entries WHERE kind=$2 AND ($3::text IS NULL OR key COLLATE "C">$3 COLLATE "C")
@@ -97,7 +106,7 @@ export async function readExportSnapshot(pool, userId, input = {}, qschema, { sa
     await client.query('COMMIT');
     const result = { fingerprint: row.fingerprint, token: tokenFor(userId, row.fingerprint, signingSecret), counts: row.counts };
     if (action === 'finalize') return { ...result, complete: true };
-    if (action === 'start') return { ...result, scope: 'all-authorized-moments;owned-perspectives', images: 'references-to-stored-images-only' };
+    if (action === 'start') return { ...result, scope: 'all-authorized-moments;owned-perspectives;owned-stories;shared-stories-excluded', images: 'references-to-stored-images-only' };
     const page = row.items.slice(0, limit);
     const items = page.map(({ value }) => {
       if (kind !== 'moments') return value;

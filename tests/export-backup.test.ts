@@ -161,3 +161,10 @@ test('a complete payload records its own scope and version', async () => {
   assert.deepEqual(payload.customTags, ['du lịch']);
   assert.equal(payload.events.length, 2);
 });
+
+test('v5 backup includes verified owned stories and fails closed on malformed/shared/duplicate stories', async () => {
+ const options={ownerUserId:'A',tracks:[],tags:[],fetchMomentsPage:async()=>({moments:[],nextCursor:null}),fetchPerspectives:async()=>[]};
+ const story={id:'s',ownerId:'A',trackId:'t',title:'Story',opening:'',closing:'',version:1,createdAt:'2026-01-01',updatedAt:'2026-01-01',items:[{itemId:'i',momentId:'m',position:0,note:'bridge'}]};
+ const result=await buildCompleteBackup({...options,fetchStories:async()=>[story]});assert.equal(result.version,'5.0');assert.deepEqual(result.stories,[story]);
+ for(const stories of [undefined,[{...story,ownerId:'B'}],[story,story]])await assert.rejects(buildCompleteBackup({...options,fetchStories:async()=>stories as never}),/stories could not be verified/);
+});

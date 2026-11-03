@@ -1,5 +1,6 @@
 import {browseMonths,browsePreview,seekMoments} from './month-browse-queries.mjs';
 import { mountExportSnapshotRoutes } from './export-snapshot.mjs';
+import { mountStoryRoutes } from './story-routes.mjs';
 import { mountDiscoveryRoutes } from './discovery-routes.mjs';
 import { operationalMetrics, sampleOperationalState, cleanupExpiredSessions } from './operational-metrics.mjs';
 import { postcardRenderStats } from './postcard-renderer.mjs';
@@ -855,6 +856,7 @@ app.delete('/api/tags/:tag',auth,async(req,res)=>{
   res.json({ok:true});
 });
 
+mountStoryRoutes(app, { auth, pool, qschema, safeMoment });
 mountExportSnapshotRoutes(app, { auth, pool, qschema, safeMoment });
 mountDiscoveryRoutes(app, { auth: authenticate, pool, qschema, safeMoment });
 
