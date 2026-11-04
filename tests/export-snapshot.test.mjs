@@ -29,6 +29,8 @@ test('PostgreSQL exact full-scope export rejects same-count edits, revoke and re
       CREATE TEMP TABLE tags(owner_id uuid,name text);
       CREATE TEMP TABLE stories(id uuid,owner_id uuid,track_id text,title text,opening text,closing text,version int,created_at timestamptz,updated_at timestamptz);
       CREATE TEMP TABLE story_items(story_id uuid,item_id text,owner_id uuid,moment_id text,position int,note text);
+      CREATE TEMP TABLE future_letters(id uuid,owner_id uuid,title text,body text,release_at timestamptz,timezone text,sealed_at timestamptz,opened_at timestamptz,version int,created_at timestamptz,updated_at timestamptz);
+      CREATE TEMP TABLE future_letter_photos(letter_id uuid,owner_id uuid,position int,moment_id text,image_id text);
       CREATE TEMP TABLE users(id uuid,username text);
       CREATE TEMP TABLE moment_perspectives(id uuid,moment_owner_id uuid,moment_id text,author_id uuid,kind text,body text,version int,created_at timestamptz,updated_at timestamptz);`);
     await pool.query(`INSERT INTO tracks VALUES($1,'t','{"id":"t","tags":["shared"]}'),($2,'t','{"id":"t"}'),($3,'t','{"id":"t"}')`,[owner,viewer,stranger]);
@@ -44,7 +46,7 @@ test('PostgreSQL exact full-scope export rejects same-count edits, revoke and re
     for(const user of [owner,viewer,stranger])await pool.query(`INSERT INTO stories VALUES($1,$2,'t','Owned story','Intro','End',1,now(),now())`,[user===viewer?storyId:randomUUID(),user]);
     await pool.query(`INSERT INTO story_items VALUES($1,'item',$2,'m0',0,'bridge')`,[storyId,viewer]);
     const start=await call(viewer);
-    assert.deepEqual(start.counts,{moments:10,tracks:2,tags:2,perspectives:1,stories:1});
+    assert.deepEqual(start.counts,{moments:10,tracks:2,tags:2,perspectives:1,stories:1,futureLetters:0});
     const collected={};
     for(const kind of ['moments','tracks','tags','perspectives','stories']) {
       let cursor=null,items=[],pages=0;

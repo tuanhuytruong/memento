@@ -1,3 +1,4 @@
+import { useFutureLetterSummary } from './lib/useFutureLetters';
 import { ModalTransition } from './components/ModalTransition';
 import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { SaveProgress } from './components/EventModal';
@@ -33,6 +34,7 @@ const EventDetailModal = lazy(() => import('./components/EventDetailModal').then
 const ImageLightbox = lazy(() => import('./components/ImageLightbox').then(module => ({ default: module.ImageLightbox })));
 const BlindboxMemory = lazy(() => import('./components/BlindboxMemory').then(module => ({ default: module.BlindboxMemory })));
 // Postcard rendering is a heavy, rarely-used flow; it never joins the initial bundle.
+const FutureLetterLibrary = lazy(() => import('./components/FutureLetterLibrary').then(module => ({ default: module.FutureLetterLibrary })));
 const StoryLibrary = lazy(() => import('./components/StoryLibrary').then(module => ({ default: module.StoryLibrary })));
 const PostcardComposer = lazy(() => import('./components/PostcardComposer').then(module => ({ default: module.PostcardComposer })));
 import { FloatingMemoryActions } from './components/FloatingMemoryActions';
@@ -74,6 +76,7 @@ export default function App() {
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const [perspectiveError, setPerspectiveError] = useState('');
   const authGenerationRef = useRef(0);
+  const letterSummary = useFutureLetterSummary(user?.id || '', authGenerationRef.current);
   // Which card opened the detail view, so closing can return focus and scroll.
   const detailOpenerKey = useRef<string | null>(null);
   const uploadBusy = useRef(false);
@@ -238,6 +241,7 @@ export default function App() {
 
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
   const [isPostcardOpen, setIsPostcardOpen] = useState(false);
+  const [isLetterLibraryOpen, setIsLetterLibraryOpen] = useState(false);
   const [isStoryLibraryOpen, setIsStoryLibraryOpen] = useState(false);
   const [eventToEdit, setEventToEdit] = useState<TimelineEvent | null>(null);
   const [eventToView, setEventToView] = useState<TimelineEvent | null>(null);
@@ -264,7 +268,8 @@ export default function App() {
     uploadControllers.current.clear();
     reactionPending.current.clear();
     setSelectedTrackKey('all'); setVisits([]); visitWrites.current.clear();
-    setIsPostcardOpen(false); setIsStoryLibraryOpen(false);
+    setIsPostcardOpen(false);    setIsStoryLibraryOpen(false);
+    setIsLetterLibraryOpen(false);
     // No private draft crosses an account or session boundary.
     releaseAllMomentDrafts().forEach((url) => { try { URL.revokeObjectURL(url); } catch { /* already revoked */ } });
     clearUploadDiagnostics();
@@ -437,13 +442,14 @@ export default function App() {
     const generation = authGenerationRef.current;
     setPerspectiveError('');
     try {
-      const start = await dataApi.exportSnapshot('start', {});
+      if (!window.confirm('Complete backup reveals the full text of every future letter, including sealed letters before their opening time. The JSON is not encrypted. Continue?')) return;
+      const start = await dataApi.exportSnapshot('start', { includeSealedLetters: true });
       assertSession(generation);
       const collections: Record<string, any[]> = {};
-      for (const kind of ['moments', 'tracks', 'tags', 'perspectives', 'stories']) {
+      for (const kind of ['moments', 'tracks', 'tags', 'perspectives', 'stories', 'futureLetters']) {
         const items: any[] = []; const cursors = new Set<string>(); let cursor: string | null = null;
         do {
-          const page = await dataApi.exportSnapshot('page', { fingerprint: start.fingerprint, token: start.token, kind, cursor, limit: 100 });
+          const page = await dataApi.exportSnapshot('page', { fingerprint: start.fingerprint, token: start.token, kind, cursor, limit: 100, includeSealedLetters: true });
           assertSession(generation);
           if (!Array.isArray(page.items) || page.fingerprint !== start.fingerprint || (page.nextCursor !== null && typeof page.nextCursor !== 'string')) throw new Error('Invalid backup page.');
           items.push(...page.items); cursor = page.nextCursor;
@@ -454,14 +460,14 @@ export default function App() {
         if (new Set(keys).size !== keys.length) throw new Error('Duplicate backup identities.');
         collections[kind] = items;
       }
-      const final = await dataApi.exportSnapshot('finalize', { fingerprint: start.fingerprint, token: start.token });
+      const final = await dataApi.exportSnapshot('finalize', { fingerprint: start.fingerprint, token: start.token, includeSealedLetters: true });
       assertSession(generation);
       if (final.complete !== true || final.fingerprint !== start.fingerprint) throw new Error('Backup could not be finalized.');
       const payload = {
-        version: '5.0', complete: true, exportedAt: new Date().toISOString(),
-        scope: { ownerScope: 'all-authorized', ownerUserId: user.id, capturedUnder: 'server-validated-fingerprint', perspectives: 'owned-moments-only', stories: 'owned-only-shared-stories-excluded', images: 'references-to-stored-images-only' },
+        version: '6.0', complete: true, exportedAt: new Date().toISOString(),
+        scope: { ownerScope: 'all-authorized', ownerUserId: user.id, capturedUnder: 'server-validated-fingerprint', perspectives: 'owned-moments-only', stories: 'owned-only-shared-stories-excluded', futureLetters: 'owned-only-including-sealed-text-explicit-consent', images: 'references-to-stored-images-only' },
         counts: start.counts, events: collections.moments, eventTracks: collections.tracks,
-        customTags: collections.tags, perspectives: collections.perspectives, stories: collections.stories,
+        customTags: collections.tags, perspectives: collections.perspectives, stories: collections.stories, futureLetters: collections.futureLetters,
       };
       downloadBackup(payload);
     } catch (error) {
@@ -893,11 +899,12 @@ export default function App() {
           // partial backup escapes through.
           onExportJson={exportJsonWithPerspectives}
           onOpenStories={() => setIsStoryLibraryOpen(true)}
+          onOpenLetters={() => setIsLetterLibraryOpen(true)} readyLetterCount={letterSummary.readyCount}
           // Export is owner-only, so the entry point disappears without an owned track.
           onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
           canCreateEntry={canCreateEntry}
         />
-        <FloatingMemoryActions canCreate={canCreateEntry} onCreate={openCreateEntry} onDiscover={() => setIsBlindboxOpen(true)} hidden={isEventModalOpen || isEventTrackModalOpen || isBlindboxOpen || isPostcardOpen || isStoryLibraryOpen || !!eventToView || !!shareTrack || lightboxState.isOpen} />
+        <FloatingMemoryActions canCreate={canCreateEntry} onCreate={openCreateEntry} onDiscover={() => setIsBlindboxOpen(true)} hidden={isEventModalOpen || isEventTrackModalOpen || isBlindboxOpen || isPostcardOpen || isStoryLibraryOpen || isLetterLibraryOpen || !!eventToView || !!shareTrack || lightboxState.isOpen} />
         {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
         {selectedTrackKey === 'all' && (
           <MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} />
@@ -968,7 +975,7 @@ export default function App() {
           />
         </div>
 
-        <MonthQuickBrowseRail hidden={snapshot||viewMode!=='timeline'||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||isStoryLibraryOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} disabled={snapshot||feed.loading||feed.seeking} onNavigate={async (item)=>{const page=await feed.seek({ownerId:item.ownerId,id:item.id});if(page)landBrowse(page);}}/>
+        <MonthQuickBrowseRail hidden={snapshot||viewMode!=='timeline'||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||isStoryLibraryOpen||isLetterLibraryOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} disabled={snapshot||feed.loading||feed.seeking} onNavigate={async (item)=>{const page=await feed.seek({ownerId:item.ownerId,id:item.id});if(page)landBrowse(page);}}/>
         {!snapshot&&feed.navigationTarget&&<div className="mb-4 flex items-center gap-3 text-sm text-stone-500" role="status">Browsing from {'month'in feed.navigationTarget?feed.navigationTarget.month:'selected memory'}<button className="min-h-11 px-3 underline" onClick={feed.newer}>{filters.sortDirection==='oldest'?'Back to start':'Back to latest'}</button></div>}
         {!snapshot&&feed.hasPrevious&&<div className="flex justify-center mb-4"><button id="feed-load-previous" disabled={feed.loading||feed.seeking} className="min-h-11 px-5 rounded-xl border border-stone-300 dark:border-stone-700" onClick={()=>pageWithAnchor(feed.loadPrevious)}>Load previous memories</button></div>}
         {/* View Switcher: Timeline, Compact List, or Gallery */}
@@ -1071,6 +1078,7 @@ export default function App() {
       </div>
       <div aria-hidden="true" className="h-24" />
       <DeferredUiBoundary key={`${user.id}:${authGenerationRef.current}:${overlayEpoch}`}>
+      {isLetterLibraryOpen && <FutureLetterLibrary key={`${user.id}:${authGenerationRef.current}`} tracks={eventTracks} currentUserId={user.id} generation={authGenerationRef.current} onClose={() => setIsLetterLibraryOpen(false)} onChanged={letterSummary.refresh} />}
       {isStoryLibraryOpen && <StoryLibrary key={`${user.id}:${authGenerationRef.current}`} tracks={eventTracks} currentUserId={user.id} generation={authGenerationRef.current} initialTrackKey={selectedTrackKey} onClose={() => setIsStoryLibraryOpen(false)} onOpenMoment={openDetail} />}
       {/* Create / Edit Event Track Modal */}
       <ModalTransition>{isEventTrackModalOpen && <EventTrackModal key={`${user.id}:${authGenerationRef.current}`}

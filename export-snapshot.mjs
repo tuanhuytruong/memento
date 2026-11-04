@@ -1,18 +1,18 @@
 import { ApiError } from './mutation-safety.mjs';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-function tokenFor(userId, fingerprint, secret) {
+function tokenFor(userId, fingerprint, secret, consent = false) {
   if (typeof secret !== 'string' || secret.length < 32) throw new Error('Export signing secret must have at least 32 characters');
-  return createHmac('sha256', secret).update(JSON.stringify(['memento-export-v1', userId, fingerprint])).digest('hex');
+  return createHmac('sha256', secret).update(JSON.stringify(['memento-export-v2', userId, fingerprint, consent])).digest('hex');
 }
-function verifyToken(userId, fingerprint, token, secret) {
+function verifyToken(userId, fingerprint, token, secret, consent) {
   if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) throw fail('Signed export token required');
-  const expected = tokenFor(userId, fingerprint, secret);
+  const expected = tokenFor(userId, fingerprint, secret, consent);
   if (!timingSafeEqual(Buffer.from(token, 'hex'), Buffer.from(expected, 'hex'))) throw fail('Invalid export token');
 }
 
 export const EXPORT_PAGE_LIMIT = 200;
-const kinds = new Set(['moments', 'tracks', 'tags', 'perspectives', 'stories']);
+const kinds = new Set(['moments', 'tracks', 'tags', 'perspectives', 'stories', 'futureLetters']);
 const fail = message => new ApiError(400, message);
 
 // One statement defines BOTH the fingerprint and the returned page. No exported
@@ -53,6 +53,17 @@ export function exportSnapshotSQL(qschema) {
       FROM ${qschema}.story_items i WHERE i.story_id=s.id AND i.owner_id=s.owner_id
     ) si WHERE s.owner_id=$1
     UNION ALL
+    SELECT 'futureLetters',l.id::text,
+      jsonb_build_object('id',l.id,'ownerId',l.owner_id,'title',l.title,'body',l.body,'releaseAt',l.release_at,'timezone',l.timezone,
+        'sealedAt',l.sealed_at,'openedAt',l.opened_at,'version',l.version,'createdAt',l.created_at,'updatedAt',l.updated_at,
+        'state',CASE WHEN l.opened_at IS NOT NULL THEN 'opened' WHEN l.sealed_at IS NULL THEN 'draft' WHEN l.release_at<=statement_timestamp() THEN 'ready' ELSE 'sealed' END,'photos',lp.photos),
+      jsonb_build_array(to_jsonb(l),lp.photos)
+    FROM ${qschema}.future_letters l CROSS JOIN LATERAL (
+      SELECT coalesce(jsonb_agg(jsonb_build_object('momentId',p.moment_id,'imageId',p.image_id,'position',p.position,'available',im.id IS NOT NULL) ORDER BY p.position),'[]'::jsonb) AS photos
+      FROM ${qschema}.future_letter_photos p LEFT JOIN ${qschema}.moments m ON m.owner_id=l.owner_id AND m.id=p.moment_id
+      LEFT JOIN ${qschema}.images im ON im.owner_id=m.owner_id AND im.moment_id=m.id AND im.id::text=p.image_id WHERE p.letter_id=l.id AND p.owner_id=l.owner_id
+    ) lp WHERE l.owner_id=$1
+    UNION ALL
     SELECT 'tags',to_jsonb(name)::text,to_jsonb(name),to_jsonb(name) FROM (
       SELECT name FROM ${qschema}.tags WHERE owner_id=$1
       UNION SELECT jsonb_array_elements_text(t.document->'tags') FROM tracks t WHERE t.owner_id<>$1
@@ -69,7 +80,7 @@ export function exportSnapshotSQL(qschema) {
     SELECT encode(sha256(convert_to($1::text || ':' || coalesce(string_agg(
       encode(sha256(convert_to(jsonb_build_array(kind,key,payload,proof)::text,'UTF8')),'hex'),'' ORDER BY kind COLLATE "C",key COLLATE "C"),''),'UTF8')),'hex') AS fingerprint,
       jsonb_build_object('moments',count(*) FILTER(WHERE kind='moments'),'tracks',count(*) FILTER(WHERE kind='tracks'),
-        'tags',count(*) FILTER(WHERE kind='tags'),'perspectives',count(*) FILTER(WHERE kind='perspectives'),'stories',count(*) FILTER(WHERE kind='stories')) AS counts
+        'tags',count(*) FILTER(WHERE kind='tags'),'perspectives',count(*) FILTER(WHERE kind='perspectives'),'stories',count(*) FILTER(WHERE kind='stories'),'futureLetters',count(*) FILTER(WHERE kind='futureLetters')) AS counts
     FROM entries
   ), page AS (
     SELECT key,payload FROM entries WHERE kind=$2 AND ($3::text IS NULL OR key COLLATE "C">$3 COLLATE "C")
@@ -81,7 +92,9 @@ export function exportSnapshotSQL(qschema) {
 /** Inputs are consistency assertions, never authorization credentials. */
 export async function readExportSnapshot(pool, userId, input = {}, qschema, { safeMoment, signingSecret = process.env.SESSION_SECRET } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail('Invalid export body');
-  if (Object.keys(input).some(key => !['action','fingerprint','token','kind','limit','cursor'].includes(key))) throw fail('Unexpected export input');
+  if (Object.keys(input).some(key => !['action','fingerprint','token','kind','limit','cursor','includeSealedLetters'].includes(key))) throw fail('Unexpected export input');
+  if (input.includeSealedLetters !== undefined && typeof input.includeSealedLetters !== 'boolean') throw fail('Invalid export consent');
+  const consent = input.includeSealedLetters === true;
   const action = input.action ?? 'start';
   if (!['start', 'page', 'finalize'].includes(action)) throw fail('Invalid export action');
   if (action !== 'start' && !/^[a-f0-9]{64}$/.test(input.fingerprint ?? '')) throw fail('Export fingerprint required');
@@ -92,21 +105,26 @@ export async function readExportSnapshot(pool, userId, input = {}, qschema, { sa
   let after = null;
   if (input.cursor != null) {
     if (typeof input.cursor !== 'string' || input.cursor.length > 4096) throw fail('Invalid export cursor');
+    const [raw,signature,...extra]=input.cursor.split('.');
+    if(extra.length || !raw || !signature)throw fail('Invalid export cursor');
+    const cursorProof=createHmac('sha256',signingSecret).update('memento-export-cursor-v2:'+raw).digest('hex');
+    if(!/^[a-f0-9]{64}$/.test(signature)||!timingSafeEqual(Buffer.from(signature),Buffer.from(cursorProof)))throw fail('Invalid export cursor');
     let cursor;
-    try { cursor = JSON.parse(Buffer.from(input.cursor, 'base64url').toString()); } catch { throw fail('Invalid export cursor'); }
-    if (cursor.userId !== userId || cursor.kind !== kind || cursor.fingerprint !== input.fingerprint || typeof cursor.key !== 'string') throw fail('Export cursor scope changed');
+    try { cursor = JSON.parse(Buffer.from(raw, 'base64url').toString()); } catch { throw fail('Invalid export cursor'); }
+    if (cursor.userId !== userId || cursor.includeSealedLetters !== consent || cursor.kind !== kind || cursor.fingerprint !== input.fingerprint || typeof cursor.key !== 'string') throw fail('Export cursor scope changed');
     after = cursor.key;
   }
-  if (action !== 'start') verifyToken(userId, input.fingerprint, input.token, signingSecret);
+  if (action !== 'start') verifyToken(userId, input.fingerprint, input.token, signingSecret, consent);
   const client = await pool.connect();
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     const { rows: [row] } = await client.query(exportSnapshotSQL(qschema), [userId, action === 'page' ? kind : null, after, action === 'page' ? limit + 1 : 0]);
+    if (!consent && Number(row.counts.futureLetters) > 0) throw new ApiError(400, 'Complete backup reveals future letters; explicit consent required', { code: 'SEALED_LETTERS_CONSENT_REQUIRED' });
     if (action !== 'start' && row.fingerprint !== input.fingerprint) throw new ApiError(409, 'Export scope changed; restart export', { code: 'EXPORT_SCOPE_CHANGED' });
     await client.query('COMMIT');
-    const result = { fingerprint: row.fingerprint, token: tokenFor(userId, row.fingerprint, signingSecret), counts: row.counts };
+    const result = { fingerprint: row.fingerprint, token: tokenFor(userId, row.fingerprint, signingSecret, consent), counts: row.counts };
     if (action === 'finalize') return { ...result, complete: true };
-    if (action === 'start') return { ...result, scope: 'all-authorized-moments;owned-perspectives;owned-stories;shared-stories-excluded', images: 'references-to-stored-images-only' };
+    if (action === 'start') return { ...result, scope: 'all-authorized-moments;owned-perspectives;owned-stories;owned-future-letters;shared-stories-excluded', images: 'references-to-stored-images-only' };
     const page = row.items.slice(0, limit);
     const items = page.map(({ value }) => {
       if (kind !== 'moments') return value;
@@ -116,7 +134,7 @@ export async function readExportSnapshot(pool, userId, input = {}, qschema, { sa
       delete moment.reactions;
       return moment;
     });
-    return { ...result, items, nextCursor: row.items.length > limit ? Buffer.from(JSON.stringify({ userId, kind, fingerprint: row.fingerprint, key: page.at(-1).key })).toString('base64url') : null };
+    return { ...result, items, nextCursor: row.items.length > limit ? (() => {const raw=Buffer.from(JSON.stringify({userId,kind,includeSealedLetters:consent,fingerprint:row.fingerprint,key:page.at(-1).key})).toString('base64url');return raw+'.'+createHmac('sha256',signingSecret).update('memento-export-cursor-v2:'+raw).digest('hex');})() : null };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     throw error;

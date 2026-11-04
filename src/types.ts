@@ -157,6 +157,10 @@ export interface AccountOverview {
   years: string[];
 }
 
+export interface FutureLetterPhoto { momentId:string; imageId:string; available?:boolean; image?:string }
+export interface FutureLetterDraft { title:string; body:string; photos:FutureLetterPhoto[] }
+export interface FutureLetter { id:string; ownerId:string; title:string; body?:string; photos?:FutureLetterPhoto[]; attachmentCount:number; releaseAt:string|null; timezone:string|null; state:'draft'|'sealed'|'ready'|'opened'; version:number; sealedAt:string|null; openedAt:string|null; updatedAt:string }
+
 export interface StoryItem { itemId: string; momentId: string; note: string; moment?: TimelineEvent | null; unavailable?: boolean }
 export interface StoryDraft { trackId: string; title: string; opening: string; closing: string; items: StoryItem[] }
 export interface StorySummary { id: string; ownerId: string; trackId: string; title: string; opening: string; closing: string; version: number; updatedAt: string; itemCount?: number }

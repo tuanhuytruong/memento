@@ -252,3 +252,20 @@ node tests/ui-remediation.cjs          # exits 0 on success; prints JSON with on
 
 ### Supported search fold: Greek sigma
 Main-feed corpus and needles normalize final sigma `ς` to `σ` after lowercase, so `ΟΣ`, `ος`, and `οσ` match identically (also `ΣΟΣ`/`σος`/`σοσ`). Display/source documents remain unchanged. This is a supported context-free fold, not a claim of universal Unicode locale casing parity. Migration 012 updates the DEV-qualified canonical function; run the DEV-only bounded backfill with `--apply --confirm=dwh.memento_dev --recompute` to repair non-null old corpora, verifying zero mismatches before code release. Existing trigger and GIN index remain active.
+
+
+## Future letters (Phase B)
+All routes require a current session and return `Cache-Control: no-store`. Letters are account-private; other-owner and missing IDs both return 404. No storage writes.
+
+- POST `/api/future-letters/query` `{state?,cursor?,limit?}` -> `{letters,nextCursor}`; 20 default, 50 maximum; signed caller/filter/navigation-domain cursor. All list entries are metadata only, including drafts/opened.
+- GET `/api/future-letters/summary` -> `{readyCount,nextReleaseAt,serverNow}` (database clock).
+- GET `/api/future-letters/:id`, POST create, PUT draft, POST seal/open -> `{letter}`.
+- Create requires `Idempotency-Key`, draft `{title,body,photos:[{momentId,imageId}],releaseAt?,timezone?,localTime?,offsetMinutes?}`. Draft body may be empty; nonempty required for seal. Title 1–120, body <=10000, <=6 unique owned live photo references.
+- PUT requires numeric `expectedVersion` or `If-Match`; only drafts editable. DELETE any state requires version -> `{ok:true}`.
+- Seal `{expectedVersion,operationId,releaseAt,timezone,localTime,offsetMinutes}`; localTime `YYYY-MM-DDTHH:mm`, ISO UTC releaseAt minute precision, offsetMinutes east of UTC. Server verifies exact IANA local/offset/instant equality, rejects DST gaps, requires chosen offset for overlaps, and requires future DB time. Immutable after seal.
+- Open `{operationId}`; before due 409 `LETTER_NOT_READY`; repeated open preserves first openedAt. Durable operation key/hash binding across create/seal/open; changed replay 409, deleted replay 410.
+- Letter metadata: `id,ownerId,title,attachmentCount,releaseAt,timezone,state,version,sealedAt,openedAt,createdAt,updatedAt`. Detail/create/update/open adds `body,photos` only for draft/opened. Photo shape `{momentId,imageId,available,image?}` uses live authenticated image references; unavailable source has no image URL. Sealed/ready unopened never returns body or photo identities.
+
+### Complete backup 6.0
+Add `futureLetters` component (owned only), with full body, ordered live source photo references (not bytes), state, times, timezone, version. Export never opens letters. This is not an encrypted time vault.
+All start/page/finalize requests must carry `includeSealedLetters:true` after dedicated warning confirmation. If any letter exists without consent, refuse whole backup: 400 `SEALED_LETTERS_CONSENT_REQUIRED`. Consent is bound into signed token and signed cursors; caller cannot reuse a nonconsenting token to fetch letter bodies. Every page and finalize computes full-scope content/photo/availability proof and page in the same SQL snapshot; any change returns 409 `EXPORT_SCOPE_CHANGED`. Declining warning cancels download, never silently omits letters. No import is advertised.

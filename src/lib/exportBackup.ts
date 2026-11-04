@@ -16,7 +16,12 @@ export interface BackupStory {
   version: number; createdAt: string; updatedAt: string;
   items: { itemId: string; momentId: string; position: number; note: string }[];
 }
-/** Serialised backup, version 5.0: owned stories, shared stories excluded. */
+export interface BackupFutureLetter {
+ id:string;ownerId:string;title:string;body:string;releaseAt:string|null;timezone:string|null;
+ state:'draft'|'sealed'|'ready'|'opened';version:number;sealedAt:string|null;openedAt:string|null;createdAt:string;updatedAt:string;
+ photos:{momentId:string;imageId:string;position:number;available:boolean}[];
+}
+/** Serialised backup, version 6.0 requires an explicit complete letters source. */
 export interface TimelineBackupPayload {
   version: string;
   exportedAt: string;
@@ -25,6 +30,7 @@ export interface TimelineBackupPayload {
   customTags: string[];
   perspectives: MomentPerspective[];
   stories?: BackupStory[];
+  futureLetters?: BackupFutureLetter[];
   scope: {
     /** Who the export was taken for, so a later reader can tell whose it is. */
     ownerScope: 'current-account';
@@ -107,6 +113,8 @@ export async function buildCompleteBackup(options: {
   fetchMomentsPage: (cursor: string | null) => Promise<Page<TimelineEvent>>;
   fetchPerspectives: () => Promise<MomentPerspective[]>;
   fetchStories?: () => Promise<BackupStory[]>;
+  fetchFutureLetters?: () => Promise<BackupFutureLetter[]>;
+  includeSealedLetters?: boolean;
   now?: Date;
 }): Promise<TimelineBackupPayload> {
   const { ownerUserId, tracks, tags, fetchMomentsPage, fetchPerspectives } = options;
@@ -144,8 +152,12 @@ export async function buildCompleteBackup(options: {
   if (options.fetchStories && (!Array.isArray(stories) || stories.some(s => !s || !s.id || s.ownerId !== ownerUserId) || new Set(stories.map(s => s.id)).size !== stories.length)) {
     throw new Error('Export stopped: owned stories could not be verified.');
   }
+  if(options.fetchFutureLetters && options.includeSealedLetters!==true)throw new Error('Explicit consent required: backup reveals future letters.');
+  const futureLetters=options.fetchFutureLetters?await options.fetchFutureLetters():undefined;
+  if(options.fetchFutureLetters && (!stories || !Array.isArray(futureLetters) || futureLetters.some(l=>!l || !l.id || l.ownerId!==ownerUserId || typeof l.body!=='string' || !Array.isArray(l.photos)) || new Set(futureLetters.map(l=>l.id)).size!==futureLetters.length))throw new Error('Export stopped: owned future letters could not be verified.');
   return {
-    version: stories ? '5.0' : '4.0',
+    ...(futureLetters?{futureLetters}:{}),
+    version: futureLetters ? '6.0' : stories ? '5.0' : '4.0',
     ...(stories ? { stories } : {}),
     exportedAt: (options.now ?? new Date()).toISOString(),
     eventTracks: tracks,

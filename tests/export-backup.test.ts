@@ -168,3 +168,10 @@ test('v5 backup includes verified owned stories and fails closed on malformed/sh
  const result=await buildCompleteBackup({...options,fetchStories:async()=>[story]});assert.equal(result.version,'5.0');assert.deepEqual(result.stories,[story]);
  for(const stories of [undefined,[{...story,ownerId:'B'}],[story,story]])await assert.rejects(buildCompleteBackup({...options,fetchStories:async()=>stories as never}),/stories could not be verified/);
 });
+
+test('v6 helper requires dedicated consent and verified complete owned letters/stories',async()=>{
+ const options={ownerUserId:'u',tracks:[],tags:[],fetchMomentsPage:async()=>({moments:[],nextCursor:null}),fetchPerspectives:async()=>[],fetchStories:async()=>[],fetchFutureLetters:async()=>[]};
+ await assert.rejects(buildCompleteBackup(options),/consent/);
+ assert.equal((await buildCompleteBackup({...options,includeSealedLetters:true})).version,'6.0');
+ await assert.rejects(buildCompleteBackup({...options,includeSealedLetters:true,fetchFutureLetters:async()=>[{id:'bad',ownerId:'foreign'} as any]}),/verified/);
+});

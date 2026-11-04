@@ -1,3 +1,4 @@
+import { mountFutureLetterRoutes } from './future-letter-routes.mjs';
 import {browseMonths,browsePreview,seekMoments} from './month-browse-queries.mjs';
 import { mountExportSnapshotRoutes } from './export-snapshot.mjs';
 import { mountStoryRoutes } from './story-routes.mjs';
@@ -857,6 +858,7 @@ app.delete('/api/tags/:tag',auth,async(req,res)=>{
 });
 
 mountStoryRoutes(app, { auth, pool, qschema, safeMoment });
+mountFutureLetterRoutes(app, { auth, pool, qschema });
 mountExportSnapshotRoutes(app, { auth, pool, qschema, safeMoment });
 mountDiscoveryRoutes(app, { auth: authenticate, pool, qschema, safeMoment });
 
