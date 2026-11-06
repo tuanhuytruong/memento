@@ -1042,8 +1042,6 @@ export default function App() {
 
           {!initialWaiting && !(feed.error && !feed.items.length) && viewMode === 'compact' && (
             <CompactListView
-              onToggleReaction={handleToggleReaction}
-              currentUsername={user.username}
               events={filteredEvents}
               tracks={eventTracks}
               onSelectTrack={handleSelectTrack}

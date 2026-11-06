@@ -215,16 +215,11 @@ const base = 'https://memento-dev.srv.io.vn';
     report.checks.push('100 genuine DB reaction rows: exact accessible 100 and mobile 99+');
     await page.setViewportSize({width:1440,height:900});
     await page.getByRole('button',{name:'Compact list view',exact:true}).click();
-    const listControls=page.locator('#compact-list-table-wrap [data-reaction-controls]');
-    await listControls.waitFor();
-    assert.equal(await listControls.locator('button[aria-label^="React "]').count(),6);
-    const listZero=listControls.getByRole('button',{name:/React 🎉/}); await listZero.click();
-    await page.waitForFunction(()=>document.querySelector('#compact-list-table-wrap button[aria-label^="React 🎉"]')?.getAttribute('aria-busy')==='false');
-    assert.equal(await listZero.getAttribute('aria-pressed'),'true'); assert.equal(await page.locator('#event-detail-card').count(),0);
-    await listZero.click();
-    await page.waitForFunction(()=>document.querySelector('#compact-list-table-wrap button[aria-label^="React 🎉"]')?.getAttribute('aria-busy')==='false');
-    assert.equal(await listZero.getAttribute('aria-pressed'),'false');
-    report.checks.push('Compact List: six shared controls, persisted add/remove, click propagation does not open detail');
+    const compactRows=page.locator('#compact-list-table-wrap tbody tr');
+    await compactRows.first().waitFor();
+    assert.equal(await page.locator('#compact-list-table-wrap [data-reaction-controls]').count(),0);
+    assert.ok(await compactRows.first().locator('svg').count()>0,'photo metadata remains available in compact rows');
+    report.checks.push('Compact List: reaction controls are intentionally absent; compact metadata remains visible');
     assert.deepEqual(report.pageerrors, []); report.passed = true;
   } catch (error) { report.passed = false; report.error = error.stack; process.exitCode = 1; }
   finally {
