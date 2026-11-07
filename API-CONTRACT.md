@@ -2,6 +2,20 @@
 
 Base URL: same origin, `/api`. All endpoints except register/login require a valid session cookie where noted. Mutation requests (`POST`, `PUT`, `DELETE`) require a same-origin `Origin` header. JSON responses use `application/json`; errors use `{ "error": "..." }`.
 
+## Stories (Phase A; backup 5.0)
+
+All story routes authenticate current sessions, retain same-origin mutation protection and return `Cache-Control: no-store` (including route errors). Stories belong to one owned track. Accepted viewers/editors may read; only the owner curates. Pending, revoked, unrelated and unknown resources return 404. Acceptance remains valid after the invitation deadline.
+
+- `POST /stories/query` body `{trackOwnerId,trackId,cursor?,limit?}` returns `{stories,nextCursor}`. Default 20/max 50. Descending `(updatedAt,id)` keyset. HMAC cursor uses a story-specific domain, account and exact track scope, 1-hour expiry and 2048-byte bound. Revalidate current track access on every page; concurrent edits may change the library (not a snapshot).
+- `GET /stories/:id` returns `{story,items,capabilities:{canEdit,canDelete}}`. Camelcase story: `id,ownerId,trackId,title,opening,closing,version,createdAt,updatedAt,itemCount`. Items: `itemId,momentId,position,note,moment:TimelineEvent|null`. Resolve live source by exact owner+moment+same track, with authenticated image references only. Missing/moved links reveal no former text/image data. Notes and positions remain.
+- `POST /stories` requires `Idempotency-Key` (8–128 ASCII alphanumerics/underscore/hyphen) and `{trackId,title,opening,closing,items:[{itemId,momentId,note}]}`. Title 1–120; opening/closing max 4000 each; 1–50 unique item IDs and moment IDs; note max 2000. Array order sets position. Foreign/missing/newly invented source links rejected with 400. Canonical frozen payload/key replay returns the same live story; changed payload 409; deleted replay 410, including track-cascade deletion. Ledger survives story/track deletion and is cleaned only with the account.
+- `PUT /stories/:id` requires numeric `expectedVersion` (or If-Match), plus the complete create document. Track immutable. Stored exact item/moment pairs may retain missing links; new missing pairs cannot be submitted. Replacement and version increment atomic under schema/owner write lock.
+- `DELETE /stories/:id` requires expected version, deletes only story/items and tombstones create operations, never source moments/photos. Missing version 428; stale version 409.
+
+Picker uses existing bounded `POST /moments/query` scoped by exact owned `trackKey`; story writes independently enforce ownership and exact references under the owner mutation lock. Reads do not acquire the write lock; ACL and source projection share a single statement snapshot.
+
+Signed export adds kind `stories` and `counts.stories`. Only owned stories are included; shared stories explicitly excluded. Story payload contains metadata plus ordered `{itemId,momentId,position,note}` references, never copied moment content. Every start/page/finalize digest includes the exact same fresh story/item payload in the statement snapshot, so same-count note/order/reference/title edits invalidate the token. Active app backup version is `5.0`; no import support. The legacy helper preserves v4 for callers without an explicit stories source; supplying verified owned stories produces v5. Photos remain references, not bytes.
+
 ## Frozen compatibility and privacy contracts (Phase 0)
 
 These are named contracts, enforced by tests, not aspirations:
@@ -238,3 +252,20 @@ node tests/ui-remediation.cjs          # exits 0 on success; prints JSON with on
 
 ### Supported search fold: Greek sigma
 Main-feed corpus and needles normalize final sigma `ς` to `σ` after lowercase, so `ΟΣ`, `ος`, and `οσ` match identically (also `ΣΟΣ`/`σος`/`σοσ`). Display/source documents remain unchanged. This is a supported context-free fold, not a claim of universal Unicode locale casing parity. Migration 012 updates the DEV-qualified canonical function; run the DEV-only bounded backfill with `--apply --confirm=dwh.memento_dev --recompute` to repair non-null old corpora, verifying zero mismatches before code release. Existing trigger and GIN index remain active.
+
+
+## Future letters (Phase B)
+All routes require a current session and return `Cache-Control: no-store`. Letters are account-private; other-owner and missing IDs both return 404. No storage writes.
+
+- POST `/api/future-letters/query` `{state?,cursor?,limit?}` -> `{letters,nextCursor}`; 20 default, 50 maximum; signed caller/filter/navigation-domain cursor. All list entries are metadata only, including drafts/opened.
+- GET `/api/future-letters/summary` -> `{readyCount,nextReleaseAt,serverNow}` (database clock).
+- GET `/api/future-letters/:id`, POST create, PUT draft, POST seal/open -> `{letter}`.
+- Create requires `Idempotency-Key`, draft `{title,body,photos:[{momentId,imageId}],releaseAt?,timezone?,localTime?,offsetMinutes?}`. Draft body may be empty; nonempty required for seal. Title 1–120, body <=10000, <=6 unique owned live photo references.
+- PUT requires numeric `expectedVersion` or `If-Match`; only drafts editable. DELETE any state requires version -> `{ok:true}`.
+- Seal `{expectedVersion,operationId,releaseAt,timezone,localTime,offsetMinutes}`; localTime `YYYY-MM-DDTHH:mm`, ISO UTC releaseAt minute precision, offsetMinutes east of UTC. Server verifies exact IANA local/offset/instant equality, rejects DST gaps, requires chosen offset for overlaps, and requires future DB time. Immutable after seal.
+- Open `{operationId}`; before due 409 `LETTER_NOT_READY`; repeated open preserves first openedAt. Durable operation key/hash binding across create/seal/open; changed replay 409, deleted replay 410.
+- Letter metadata: `id,ownerId,title,attachmentCount,releaseAt,timezone,state,version,sealedAt,openedAt,createdAt,updatedAt`. Detail/create/update/open adds `body,photos` only for draft/opened. Photo shape `{momentId,imageId,available,image?}` uses live authenticated image references; unavailable source has no image URL. Sealed/ready unopened never returns body or photo identities.
+
+### Complete backup 6.0
+Add `futureLetters` component (owned only), with full body, ordered live source photo references (not bytes), state, times, timezone, version. Export never opens letters. This is not an encrypted time vault.
+All start/page/finalize requests must carry `includeSealedLetters:true` after dedicated warning confirmation. If any letter exists without consent, refuse whole backup: 400 `SEALED_LETTERS_CONSENT_REQUIRED`. Consent is bound into signed token and signed cursors; caller cannot reuse a nonconsenting token to fetch letter bodies. Every page and finalize computes full-scope content/photo/availability proof and page in the same SQL snapshot; any change returns 409 `EXPORT_SCOPE_CHANGED`. Declining warning cancels download, never silently omits letters. No import is advertised.

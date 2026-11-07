@@ -10,6 +10,16 @@ const { app, validateDocument } = await import('../server.mjs');
 const { pool, createInvite, hashInvite, qschema } = await import('../memento-db.mjs');
 const { transaction } = await import('../mutation-safety.mjs');
 
+test('actual story routes require authentication and preserve origin guard', async () => {
+ const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const origin=`http://127.0.0.1:${server.address().port}`;
+ try {
+  for(const [method,path] of [['POST','/api/stories/query'],['GET','/api/stories/00000000-0000-4000-8000-000000000000'],['POST','/api/stories'],['PUT','/api/stories/00000000-0000-4000-8000-000000000000'],['DELETE','/api/stories/00000000-0000-4000-8000-000000000000']]) {
+   const result=await fetch(origin+path,{method,headers:{Origin:origin,'Content-Type':'application/json'},body:method==='GET'?undefined:'{}'});assert.equal(result.status,401);assert.equal(result.headers.get('cache-control'),'no-store');
+  }
+  assert.equal((await fetch(origin+'/api/stories',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,403);
+ }finally{await new Promise(r=>server.close(r));}
+});
+
 test('document validation preserves event fields and rejects invalid dates', () => {
   const track = validateDocument({ title: 'Roadmap', description: '', color: 'indigo', icon: 'Cpu', tags: [] }, 'track');
   assert.equal(track.title, 'Roadmap');

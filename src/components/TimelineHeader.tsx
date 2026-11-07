@@ -21,6 +21,9 @@ interface TimelineHeaderProps {
   onExportJson: () => void | Promise<void>;
   /** Hidden entirely when the signed-in user owns no track. */
   onCreatePostcard?: () => void;
+  onOpenStories?: () => void;
+  onOpenLetters?: () => void;
+  readyLetterCount?: number;
   username?: string;
   onLogout?: () => void;
   canCreateEntry?: boolean;
@@ -32,6 +35,9 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
   onAddNewEvent,
   onExportJson,
   onCreatePostcard,
+  onOpenStories,
+  onOpenLetters,
+  readyLetterCount = 0,
   username,
   onLogout,
   canCreateEntry = true,
@@ -112,6 +118,8 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
                   <Download className="w-3.5 h-3.5 text-stone-500" />
                   Export backup (JSON)
                 </button>
+                {onOpenStories && <button type="button" role="menuitem" id="open-stories" className="min-h-11 w-full rounded-lg px-3 py-2 text-left text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800" onClick={() => { setMenuOpen(false); onOpenStories(); }}>Stories</button>}
+                {onOpenLetters && <button type="button" role="menuitem" id="open-future-letters" className="min-h-11 w-full rounded-lg px-3 py-2 text-left text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800" onClick={() => { setMenuOpen(false); onOpenLetters(); }}>Letters to future me{readyLetterCount>0 && <span className="ml-1">· {readyLetterCount} ready</span>}</button>}
                 {onCreatePostcard && (
                   <button
                     type="button"

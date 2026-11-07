@@ -80,7 +80,7 @@ function now(): number {
   return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
 }
 
-async function request<T>(path: string, init: RequestInit = {}, onTiming?: (timing: RequestTiming) => void): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}, onTiming?: (timing: RequestTiming) => void): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');

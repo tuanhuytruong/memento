@@ -27,6 +27,10 @@ test('PostgreSQL exact full-scope export rejects same-count edits, revoke and re
       CREATE TEMP TABLE track_collaborators(owner_id uuid,track_id text,recipient_id uuid,role text,accepted_at timestamptz,revoked_at timestamptz);
       CREATE TEMP TABLE images(owner_id uuid,moment_id text,id text,created_at timestamptz,object_key text);
       CREATE TEMP TABLE tags(owner_id uuid,name text);
+      CREATE TEMP TABLE stories(id uuid,owner_id uuid,track_id text,title text,opening text,closing text,version int,created_at timestamptz,updated_at timestamptz);
+      CREATE TEMP TABLE story_items(story_id uuid,item_id text,owner_id uuid,moment_id text,position int,note text);
+      CREATE TEMP TABLE future_letters(id uuid,owner_id uuid,title text,body text,release_at timestamptz,timezone text,sealed_at timestamptz,opened_at timestamptz,version int,created_at timestamptz,updated_at timestamptz);
+      CREATE TEMP TABLE future_letter_photos(letter_id uuid,owner_id uuid,position int,moment_id text,image_id text);
       CREATE TEMP TABLE users(id uuid,username text);
       CREATE TEMP TABLE moment_perspectives(id uuid,moment_owner_id uuid,moment_id text,author_id uuid,kind text,body text,version int,created_at timestamptz,updated_at timestamptz);`);
     await pool.query(`INSERT INTO tracks VALUES($1,'t','{"id":"t","tags":["shared"]}'),($2,'t','{"id":"t"}'),($3,'t','{"id":"t"}')`,[owner,viewer,stranger]);
@@ -38,10 +42,13 @@ test('PostgreSQL exact full-scope export rejects same-count edits, revoke and re
     await pool.query(`INSERT INTO tags VALUES($1,'fresh')`,[owner]);
     await pool.query(`INSERT INTO users VALUES($1,'author')`,[owner]);
     await pool.query(`INSERT INTO moment_perspectives VALUES($1,$2,'m0',$2,'note','owned perspective',1,now(),now()),($3,$4,'m0',$2,'note','viewer-owned perspective',1,now(),now())`,[randomUUID(),owner,randomUUID(),viewer]);
+    const storyId=randomUUID();
+    for(const user of [owner,viewer,stranger])await pool.query(`INSERT INTO stories VALUES($1,$2,'t','Owned story','Intro','End',1,now(),now())`,[user===viewer?storyId:randomUUID(),user]);
+    await pool.query(`INSERT INTO story_items VALUES($1,'item',$2,'m0',0,'bridge')`,[storyId,viewer]);
     const start=await call(viewer);
-    assert.deepEqual(start.counts,{moments:10,tracks:2,tags:2,perspectives:1});
+    assert.deepEqual(start.counts,{moments:10,tracks:2,tags:2,perspectives:1,stories:1,futureLetters:0});
     const collected={};
-    for(const kind of ['moments','tracks','tags','perspectives']) {
+    for(const kind of ['moments','tracks','tags','perspectives','stories']) {
       let cursor=null,items=[],pages=0;
       do {
         const page=await call(viewer,{action:'page',fingerprint:start.fingerprint,token:start.token,kind,limit:2,cursor});
@@ -76,6 +83,10 @@ test('PostgreSQL exact full-scope export rejects same-count edits, revoke and re
     await pool.query(`INSERT INTO tags VALUES($1,'own-tag')`,[viewer]);
     await rejected(()=>pool.query(`UPDATE tags SET name='replacement-tag' WHERE owner_id=$1`,[viewer]));
     await rejected(()=>pool.query(`UPDATE moment_perspectives SET body='same count perspective',version=version+1 WHERE moment_owner_id=$1`,[viewer]));
+    assert.equal(collected.stories[0].ownerId,viewer);assert.equal(collected.stories[0].items[0].note,'bridge');assert(!('moment' in collected.stories[0].items[0]));
+    await rejected(()=>pool.query(`UPDATE stories SET title='changed story' WHERE owner_id=$1`,[viewer]));
+    await rejected(()=>pool.query(`UPDATE story_items SET note='changed bridge' WHERE owner_id=$1`,[viewer]));
+    await rejected(()=>pool.query(`UPDATE story_items SET moment_id='replacement-link' WHERE owner_id=$1`,[viewer]));
     await rejected(()=>pool.query(`UPDATE images SET id='replacement-image' WHERE owner_id=$1`,[owner]));
     await rejected(()=>pool.query(`UPDATE moments SET id='replacement-moment',document=document||'{"id":"replacement-moment"}' WHERE owner_id=$1 AND id='m4'`,[owner]));
     // Revoke one track while replacing its five moments with newly owned rows:
