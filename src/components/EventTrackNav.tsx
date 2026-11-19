@@ -1,5 +1,4 @@
 import React from 'react';
-import { ChevronDown } from 'lucide-react';
 import { AccountOverview, EventTrack } from '../types';
 import { trackIdentity } from '../lib/resourceIdentity';
 
@@ -38,7 +37,7 @@ export const EventTrackNav: React.FC<EventTrackNavProps> = ({tracks, overview, s
   const groups = [ ['Own', tracks.filter(t => t.accessRole === 'owner' && !t.sharedByYou)], ['Shared by you', tracks.filter(t => t.accessRole === 'owner' && t.sharedByYou)], ['Shared with you', tracks.filter(t => t.accessRole !== 'owner')] ] as const;
   const select = (t: EventTrack | null) => { onSelectTrack(t); setOpen(false); trigger.current?.focus(); };
   return <div ref={root} className="journal-track-nav">
-    <button ref={trigger} id="track-picker-trigger" className="journal-control" aria-expanded={open} aria-controls="track-picker" onClick={() => setOpen(v => !v)}><span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{active?.title || 'All tracks'}</span><ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0" /></button>
+    <button ref={trigger} id="track-picker-trigger" className="journal-control" aria-expanded={open} aria-controls="track-picker" onClick={() => setOpen(v => !v)}>{active?.title || 'All tracks'} <span aria-hidden="true">⌄</span></button>
     {open && <section id="track-picker" aria-label="Choose track" className="journal-track-picker">
       <label htmlFor="track-nav-search">Find a track</label>
       <input id="track-nav-search" type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search tracks…" />

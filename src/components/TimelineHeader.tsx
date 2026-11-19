@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Calendar,
   Plus,
@@ -47,9 +47,6 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
 }) => {
   const [accountOpen, setAccountOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [libraryOpen, setLibraryOpen] = useState(false);
-  const libraryTrigger = useRef<HTMLButtonElement>(null);
-  const overflowTrigger = useRef<HTMLButtonElement>(null);
 
   // Close dropdowns on outside click.
   useEffect(() => {
@@ -57,17 +54,10 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
       const target = e.target as HTMLElement;
       if (!target.closest('[data-account-menu]')) setAccountOpen(false);
       if (!target.closest('[data-overflow-menu]')) setMenuOpen(false);
-      if (!target.closest('[data-library-menu]')) setLibraryOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      if (libraryOpen) { setLibraryOpen(false); libraryTrigger.current?.focus(); }
-      if (menuOpen) { setMenuOpen(false); overflowTrigger.current?.focus(); }
     };
     document.addEventListener('click', onDocClick);
-    document.addEventListener('keydown', onKeyDown);
-    return () => { document.removeEventListener('click', onDocClick); document.removeEventListener('keydown', onKeyDown); };
-  }, [libraryOpen, menuOpen]);
+    return () => document.removeEventListener('click', onDocClick);
+  }, []);
 
   // Read straight from the summary; nothing here is derived from a page.
   const totalEvents = overview?.total ?? 0;
@@ -93,33 +83,16 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
         <nav className="journal-navigation" aria-label="Primary navigation">
           <button type="button" aria-current="page" onClick={() => window.scrollTo({top:0,behavior:'smooth'})}>Memories</button>
           <button type="button" onClick={onRediscover}>Rediscover</button>
-          <div className="relative" data-library-menu>
-            <button
-              ref={libraryTrigger}
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded={libraryOpen}
-              onClick={() => { setLibraryOpen(value => !value); setMenuOpen(false); }}
-            >
-              Library{readyLetterCount > 0 ? ` · ${readyLetterCount}` : ''}
-            </button>
-            {libraryOpen && (
-              <div role="menu" className="journal-library-menu absolute left-0 mt-2 w-48 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 shadow-lg p-1.5 z-50">
-                {onOpenStories && <button type="button" role="menuitem" id="open-stories" className="min-h-11 w-full rounded-lg px-3 py-2 text-left text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800" onClick={() => { setLibraryOpen(false); onOpenStories(); }}>Stories</button>}
-                {onOpenLetters && <button type="button" role="menuitem" id="open-future-letters" className="min-h-11 w-full rounded-lg px-3 py-2 text-left text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800" onClick={() => { setLibraryOpen(false); onOpenLetters(); }}>Letters to future me{readyLetterCount>0 && <span className="ml-1">· {readyLetterCount} ready</span>}</button>}
-              </div>
-            )}
-          </div>
+          <button type="button" data-overflow-menu onClick={() => { setMenuOpen(v => !v); }}>Library{readyLetterCount > 0 ? ` · ${readyLetterCount}` : ''}</button>
         </nav>
         {/* Account utilities and existing safe library entry points */}
         <div className="flex items-center gap-2 shrink-0">
           <div className="relative" data-overflow-menu>
             <button
-              ref={overflowTrigger}
               type="button"
               aria-haspopup="menu"
               aria-expanded={menuOpen}
-              onClick={() => { setMenuOpen((v) => !v); setLibraryOpen(false); }}
+              onClick={() => setMenuOpen((v) => !v)}
               title="More actions"
               className="min-h-11 min-w-11 px-3 py-2 rounded-xl text-xs font-semibold border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700"
             >
@@ -141,6 +114,8 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
                   <Download className="w-3.5 h-3.5 text-stone-500" />
                   Export backup (JSON)
                 </button>
+                {onOpenStories && <button type="button" role="menuitem" id="open-stories" className="min-h-11 w-full rounded-lg px-3 py-2 text-left text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800" onClick={() => { setMenuOpen(false); onOpenStories(); }}>Stories</button>}
+                {onOpenLetters && <button type="button" role="menuitem" id="open-future-letters" className="min-h-11 w-full rounded-lg px-3 py-2 text-left text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800" onClick={() => { setMenuOpen(false); onOpenLetters(); }}>Letters to future me{readyLetterCount>0 && <span className="ml-1">· {readyLetterCount} ready</span>}</button>}
                 {onCreatePostcard && (
                   <button
                     type="button"
