@@ -2,9 +2,12 @@ import {StrictMode, Suspense, lazy} from 'react';
 import {createRoot} from 'react-dom/client';
 import './index.css';
 
-const Entry = new URLSearchParams(window.location.search).get('uiPreview') === 'ivora'
-  ? lazy(() => import('./previews/IvoraPreview.tsx'))
-  : lazy(() => import('./App.tsx'));
+const params = new URLSearchParams(window.location.search);
+const Entry = params.get('preview') === 'photo-diary'
+  ? lazy(() => import('./previews/PhotoDiaryPreview.tsx'))
+  : params.get('uiPreview') === 'ivora'
+    ? lazy(() => import('./previews/IvoraPreview.tsx'))
+    : lazy(() => import('./App.tsx'));
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode><Suspense fallback={<EntryLoadingShell />}><Entry /></Suspense></StrictMode>,
