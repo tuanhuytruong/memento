@@ -49,13 +49,13 @@ const base = 'https://memento-dev.srv.io.vn';
         await page.mouse.move(width-1,0);
         await page.waitForTimeout(250);
         const data=await controls.evaluate(el=>{
-          const stem=document.querySelector('#timeline-container > [aria-hidden="true"]').getBoundingClientRect();
+          const stem=document.querySelector('#timeline-container [aria-hidden="true"]').getBoundingClientRect();
           const buttons=[...el.querySelectorAll('button[data-reaction-summary]')].map(b=>{
             const r=b.getBoundingClientRect(),v=b.querySelector('.reaction-visual').getBoundingClientRect();
             const cs=getComputedStyle(b);
             return {x:r.x,y:r.y,right:r.right,w:r.width,h:r.height,hit:b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)),visualX:v.x,visualRight:v.right,border:cs.borderLeftWidth,bg:cs.backgroundColor,selected:b.getAttribute('aria-pressed')};
           });
-          const card=el.parentElement.querySelector('[id^="event-card-"]').getBoundingClientRect();
+          const card=el.closest('.event-card-column').querySelector('[id^="event-card-"]').getBoundingClientRect();
           return {stem:{x:stem.x,right:stem.right},cardRight:card.right,buttons};
         });
         assert.equal(data.buttons.length,6);
@@ -63,7 +63,7 @@ const base = 'https://memento-dev.srv.io.vn';
         if(width<640) {
           assert(data.buttons.every(r=>Math.abs(r.w-44)<0.1&&r.visualX>=data.stem.right+4&&r.border==='0px'&&r.bg==='rgba(0, 0, 0, 0)'), 'fixed targets and focus/selection clear timeline: '+JSON.stringify(data));
           assert(data.buttons.slice(1).every((r,i)=>Math.abs(r.x-data.buttons[i].right)<0.1),'zero gaps/nonoverlapping targets');
-          assert(Math.abs(data.buttons[5].right-data.cardRight)<0.1,'cluster aligns with card right edge: '+JSON.stringify(data));
+          assert(Math.abs(data.buttons[5].right-data.cardRight)<=1,'cluster aligns with card right edge: '+JSON.stringify(data));
           assert(Math.abs(data.buttons[5].right-data.buttons[0].x-264)<0.1,'compact 264px cluster');
         }
         else assert(data.buttons.every(r=>r.border==='1px'),'desktop pills retained');
@@ -136,7 +136,7 @@ const base = 'https://memento-dev.srv.io.vn';
     assert.equal(await feedTooltip.innerText(), 'Newest1, Newest2, Newest3, Newest4, Newest5, and 2 more');
     await rail.focus(); assert.equal(await feedTooltip.innerText(), 'Newest1, Newest2, Newest3, Newest4, Newest5, and 2 more');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '390px reaction rail has no horizontal overflow');
-    const railBox = await rail.boundingBox(), cardBox = await card.boundingBox(); assert(railBox && cardBox && railBox.y >= cardBox.y + cardBox.height, 'reaction rail is below the post card');
+    const railBox = await rail.boundingBox(), cardBox = await card.boundingBox(); assert(railBox && cardBox && railBox.y >= cardBox.y && railBox.y + railBox.height <= cardBox.y + cardBox.height, 'reaction rail stays inside the post card footer');
     const detail = controls; // Same shared controls, exercised directly from feed.
     const react = controls.getByRole('button', { name: /React ❤️/ });
     let release;

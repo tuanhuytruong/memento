@@ -59,10 +59,10 @@ export const EventCard: React.FC<EventCardProps> = ({
 
   return (
     <div
-      className="relative flex items-start gap-4 sm:gap-6 group"
+      className="event-card-row relative flex items-start gap-4 sm:gap-6 group"
     >
       {/* Node Marker on the timeline stem */}
-      <div className="relative z-10 flex flex-col items-center mt-1.5 shrink-0">
+      <div className="event-card-marker relative z-10 flex flex-col items-center mt-1.5 shrink-0">
         <div
           className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center border-2 transition-transform duration-300 group-hover:scale-110 shadow-sm ${
             event.isMilestone
@@ -85,7 +85,7 @@ export const EventCard: React.FC<EventCardProps> = ({
       </div>
 
       {/* Post card and its separate reaction rail share the timeline column. */}
-      <div className="min-w-0 flex-1">
+      <div className="event-card-column min-w-0 flex-1">
       <div
         id={`event-card-${momentIdentity(event)}`}
         data-memory-date={event.date??''}
@@ -322,8 +322,10 @@ export const EventCard: React.FC<EventCardProps> = ({
             ))}
           </div>
         )}
+      <div className="reaction-card-footer border-t border-stone-100 dark:border-stone-800/80 mt-3 pt-2">
+        <ReactionControls event={event} onToggleReaction={onToggleReaction} currentUsername={currentUsername} className="reaction-feed-rail" />
       </div>
-      <ReactionControls event={event} onToggleReaction={onToggleReaction} currentUsername={currentUsername} className="reaction-feed-rail mt-2 ml-1" />
+      </div>
       </div>
     </div>
   );

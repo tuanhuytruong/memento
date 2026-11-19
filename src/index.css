@@ -57,10 +57,10 @@ body {
 .reaction-visual { display: contents; }
 @media (max-width: 639px) {
   /* Reclaim only the gutter needed for six targets; keep the cluster on the card's right edge. */
-  .reaction-feed-rail {
-    margin-left: min(0px, calc(100% - 264px));
-    width: max(100%, 264px);
-  }
+  .event-card-row { display:block; }
+  .event-card-marker { position:absolute; left:6px; top:0; }
+  .event-card-column > [id^="event-card-"] { padding-left:60px; }
+  .reaction-card-footer { margin-left:-44px; width:calc(100% + 60px); }
   .reaction-feed-rail,
   #compact-list-table-wrap [data-reaction-controls] {
     position: relative;
@@ -132,6 +132,13 @@ body {
 .journal-header h1 {font-size:24px;letter-spacing:.12em;font-weight:500;}
 .journal-header h1 + p {display:none;}
 .journal-header > div:first-child > div:first-child .w-8 {display:none;}
+.quiet-journal :is(button,input,select,textarea) {font-family:var(--font-sans);}
+.journal-header h2,.journal-track-picker h3 {font-family:var(--font-display);}
+.journal-track-picker input {font-family:var(--font-sans);font-size:13px;line-height:1.45;color:var(--journal-ink);}
+.journal-track-picker input:focus {outline:2px solid var(--journal-accent);outline-offset:2px;}
+.journal-track-picker button {font-family:var(--font-sans);font-weight:500;line-height:1.4;}
+.reaction-card-footer {min-width:0;}
+.reaction-card-footer .reaction-feed-rail {justify-content:flex-end;}
 .journal-navigation {display:flex;gap:24px;align-items:center;}
 .journal-navigation button {min-height:44px;font-size:13px;color:var(--journal-muted);border-bottom:2px solid transparent;}
 .journal-navigation [aria-current=page] {color:var(--journal-accent);border-color:var(--journal-accent);font-weight:600;}
@@ -178,7 +185,7 @@ body {
 .quiet-journal [data-testid="month-edge-rail"] > div[aria-hidden] {background:var(--journal-surface);border-color:var(--journal-line);color:var(--journal-muted);}
 .quiet-journal [data-testid="edge-film-preview"] {background:var(--journal-surface);border-color:var(--journal-line);box-shadow:0 12px 40px #30292218;border-radius:14px;padding:14px;}
 .quiet-journal [data-testid="edge-film-preview"] h3 {font-family:var(--font-display);font-size:18px;line-height:1.4;font-weight:500;}
-@media(max-width:639px){.quiet-journal [data-overflow-menu] [role=menu] {position:fixed;top:auto;bottom:calc(76px + env(safe-area-inset-bottom));right:16px;max-height:65dvh;overflow:auto;}}
+@media(max-width:639px){.quiet-journal [data-overflow-menu] [role=menu],.quiet-journal [data-library-menu] [role=menu] {position:fixed;top:auto;bottom:calc(76px + env(safe-area-inset-bottom));right:16px;left:16px;max-height:65dvh;overflow:auto;}}
 
 .journal-presentation-controls:not([hidden]) {display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .journal-presentation-controls[hidden]{display:none;}
