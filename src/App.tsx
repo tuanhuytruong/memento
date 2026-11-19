@@ -37,8 +37,8 @@ const BlindboxMemory = lazy(() => import('./components/BlindboxMemory').then(mod
 const FutureLetterLibrary = lazy(() => import('./components/FutureLetterLibrary').then(module => ({ default: module.FutureLetterLibrary })));
 const StoryLibrary = lazy(() => import('./components/StoryLibrary').then(module => ({ default: module.StoryLibrary })));
 const PostcardComposer = lazy(() => import('./components/PostcardComposer').then(module => ({ default: module.PostcardComposer })));
-import { MemoryResurfacing } from './components/MemoryResurfacing';
 import { FloatingMemoryActions } from './components/FloatingMemoryActions';
+import { MemoryResurfacing } from './components/MemoryResurfacing';
 import type { MemoryVisit } from './lib/memoryResurfacing';
 import { DeferredUiBoundary } from './components/DeferredUiBoundary';
 
@@ -73,7 +73,6 @@ export default function App() {
   const visitWrites = useRef(new Map<string, number>());
   const [overlayEpoch, setOverlayEpoch] = useState(0);
   const [shareTrack, setShareTrack] = useState<EventTrack | null>(null);
-  const [rediscoverOpen, setRediscoverOpen] = useState(false);
   const [isBlindboxOpen, setIsBlindboxOpen] = useState(false);
   const [perspectiveError, setPerspectiveError] = useState('');
   const authGenerationRef = useRef(0);
@@ -259,7 +258,7 @@ export default function App() {
   });
 
   function resetSnapshots() {
-    setRediscoverOpen(false); setShareTrack(null); setCollaborationInvitations([]); setIsBlindboxOpen(false);
+    setShareTrack(null); setCollaborationInvitations([]); setIsBlindboxOpen(false);
     setIsEventModalOpen(false); setEventToEdit(null); setEventToView(null);
     setIsEventTrackModalOpen(false); setTrackToEdit(null);
     setLightboxState({ images: [], index: 0, isOpen: false });
@@ -492,9 +491,7 @@ export default function App() {
   // derived from server-authoritative roles rather than local UI state.
   const canCreateEntry = eventTracks.some((track) => track.accessRole === 'owner' || track.accessRole === 'editor');
 
-  const canCreateInScope = selectedTrack ? canEditSelectedTrack : canCreateEntry;
-  const isTimelineFiltered = Boolean(filters.search || filters.dateFrom || filters.dateTo || filters.savedOnly) || filters.selectedTags.length > 0 || filters.selectedEmotions.length > 0 || filters.selectedYear !== 'all' || filters.milestonesOnly || filters.hasImagesOnly;
-  const openCreateEntry = () => { if (canCreateInScope) { setEventToEdit(null); setIsEventModalOpen(true); } };
+  const openCreateEntry = () => { if (canCreateEntry) { setEventToEdit(null); setIsEventModalOpen(true); } };
 
   // Persist each change before reflecting it in the UI; failed requests leave the prior data intact.
   const handleSaveTrack = async (
@@ -593,7 +590,6 @@ export default function App() {
   const snapshot = feed.snapshot || search.pending;
   const waiting = search.pending || feed.loading || (!feed.settled && !feed.error);
   const initialWaiting = !feed.items.length && waiting;
-  const hasOnboardingCTA = viewMode === 'timeline' && !initialWaiting && !feed.error && !feed.items.length && !isTimelineFiltered && (!eventTracks.length || canCreateInScope);
   const filteredEvents = feed.items.map(item => events.find(local => momentIdentity(local) === momentIdentity(item) && (local.version??0)>=(item.version??0)) ?? item);
 
   const browseScope=feedScopeHash(feedQuery,authGenerationRef.current);
@@ -883,7 +879,7 @@ export default function App() {
 
   return (
     <LocalPhotoProvider ownerId={user.id}>
-    <div className="quiet-journal min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
+    <div className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
         {uploadRunning && pendingImageRetry && <div role="status" aria-live="polite" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">Moment saved · Saving {pendingImageRetry.files.length} photo{pendingImageRetry.files.length === 1 ? '' : 's'} in the background…</div>}
         {!uploadRunning && pendingImageRetry && <div role="status" aria-live="polite" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200"><span>{pendingImageRetry.files.length === 1 ? '1 photo has not reached the server yet. It is kept on this device.' : `${pendingImageRetry.files.length} photos have not reached the server yet. They are kept on this device.`}</span><button className="font-semibold underline" onClick={() => void retryImageUploads()}>Retry photo upload</button></div>}
@@ -894,7 +890,6 @@ export default function App() {
         {invitationError && <p role="status">{invitationError} <button onClick={() => { setInvitationError(''); void loadData(); }}>Retry invitations</button></p>}
         {visitError && <p role="status">{visitError} <button onClick={() => { const generation = authGenerationRef.current; void dataApi.trackVisits().then(rows => { if (generation === authGenerationRef.current) { setVisits(rows); setVisitError(''); } }).catch(() => { if (generation === authGenerationRef.current) setVisitError('Visit history unavailable.'); }); }}>Retry visit history</button></p>}
         <TimelineHeader
-          onRediscover={() => setRediscoverOpen(v => !v)} selectedTitle={selectedTrack?.title}
           overview={overview}
           trackCount={eventTracks.length}
           username={user.username}
@@ -907,10 +902,13 @@ export default function App() {
           onOpenLetters={() => setIsLetterLibraryOpen(true)} readyLetterCount={letterSummary.readyCount}
           // Export is owner-only, so the entry point disappears without an owned track.
           onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
-          canCreateEntry={canCreateInScope && !hasOnboardingCTA}
+          canCreateEntry={canCreateEntry}
         />
-        <FloatingMemoryActions canCreate={canCreateInScope} onCreate={openCreateEntry} onDiscover={() => setIsBlindboxOpen(true)} hidden={hasOnboardingCTA || isEventModalOpen || isEventTrackModalOpen || isBlindboxOpen || isPostcardOpen || isStoryLibraryOpen || isLetterLibraryOpen || !!eventToView || !!shareTrack || lightboxState.isOpen} />
-        {rediscoverOpen && <section aria-label="Rediscover memories" className="mb-6 rounded-2xl border border-stone-200 dark:border-stone-700 p-4"><div className="flex justify-between items-center"><h2 className="font-display text-2xl">Rediscover</h2><button className="journal-control" onClick={() => setRediscoverOpen(false)}>Back to memories</button></div><MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} /><button className="journal-control" onClick={() => setIsBlindboxOpen(true)}>Open a random memory</button></section>}
+        <FloatingMemoryActions canCreate={canCreateEntry} onCreate={openCreateEntry} onDiscover={() => setIsBlindboxOpen(true)} hidden={isEventModalOpen || isEventTrackModalOpen || isBlindboxOpen || isPostcardOpen || isStoryLibraryOpen || isLetterLibraryOpen || !!eventToView || !!shareTrack || lightboxState.isOpen} />
+        {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
+        {selectedTrackKey === 'all' && (
+          <MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} />
+        )}
         {/* Event-Based Timeline Navigation & Overview */}
         <EventTrackNav
           tracks={eventTracks}
@@ -929,14 +927,14 @@ export default function App() {
           onAddNewMoment={() => {
             // Role decides the CTA, including in the merged overview where no
             // single track is selected.
-            if (!canCreateInScope) return;
+            if (!canCreateEntry) return;
             setEventToEdit(null);
             setIsEventModalOpen(true);
           }}
           onShareTrack={(track) => {
             if (track.accessRole === 'owner') setShareTrack(track);
           }}
-          canEditSelectedTrack={canCreateInScope}
+          canEditSelectedTrack={canCreateEntry}
         />
 
         {/* Filter and Control Toolbar */}
@@ -1031,7 +1029,14 @@ export default function App() {
                   sortDirection: 'newest',
                 })
               }
-              isFiltered={isTimelineFiltered}
+              isFiltered={
+                Boolean(filters.search) ||
+                filters.selectedTags.length > 0 ||
+                filters.selectedEmotions.length > 0 ||
+                filters.selectedYear !== 'all' ||
+                filters.milestonesOnly ||
+                filters.hasImagesOnly
+              }
             />
           )}
 

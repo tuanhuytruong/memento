@@ -103,7 +103,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             onKeyDown={(e) => { if(e.key === 'Enter' && !e.nativeEvent.isComposing) onSearchEnter?.(); }}
             onCompositionStart={onSearchCompositionStart}
             onCompositionEnd={onSearchCompositionEnd}
-            aria-label="Search memories" placeholder="Search memories…"
+            placeholder="Search events, ideas, emotions, cities, or stories..."
             className="w-full pl-9 pr-8 py-2 rounded-xl text-xs sm:text-sm border border-stone-200 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition"
           />
           {filters.search && (
@@ -120,7 +120,6 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 
         {/* View Mode Switcher + Sort + Advanced Toggle */}
         <div className="flex flex-wrap items-center gap-2 justify-between sm:justify-end">
-          <div hidden={!showAdvanced} className="journal-presentation-controls">
           {/* View toggle tabs */}
           <div className="flex items-center p-1 rounded-xl bg-stone-100 dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700">
             <button
@@ -154,7 +153,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
               title="Compact Table List"
             >
               <Columns className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">Compact</span>
+              <span className="hidden md:inline">List</span>
             </button>
 
             <button
@@ -171,7 +170,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
               title="Gallery Grid"
             >
               <GalleryThumbnails className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">Photos</span>
+              <span className="hidden md:inline">Cards</span>
             </button>
           </div>
 
@@ -193,24 +192,6 @@ export const FilterBar: React.FC<FilterBarProps> = ({
               {filters.sortDirection === 'newest' ? 'Newest first' : 'Oldest first'}
             </span>
           </button>
-
-          </div>
-        {/* Saved is the caller's own list: a chip beside the other filters,
-            never a new global tab and never a milestone or a reaction. */}
-        <button
-          type="button"
-          id="filter-saved-only"
-          aria-pressed={filters.savedOnly}
-          onClick={() => onFilterChange({ savedOnly: !filters.savedOnly })}
-          className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
-            filters.savedOnly
-              ? 'bg-amber-500 text-white shadow-xs'
-              : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
-          }`}
-        >
-          {filters.savedOnly ? <BookmarkCheck className="w-3 h-3" /> : <Bookmark className="w-3 h-3" />} Saved
-          <span className="ml-0.5 text-[11px] font-bold opacity-80">{savedCount}</span>
-        </button>
 
           {/* More Filters Toggle */}
           <button
@@ -236,7 +217,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
       </div>
 
       {/* Quick year pills */}
-      <div className={`journal-secondary-filters flex flex-wrap items-center gap-1.5 pb-1 text-xs ${showAdvanced ? "is-expanded" : ""}`}>
+      <div className="flex flex-wrap items-center gap-1.5 pb-1 text-xs">
         <span className="text-stone-400 font-medium mr-1 shrink-0 flex items-center gap-1">
           <Calendar className="w-3 h-3" /> Year:
         </span>
@@ -288,6 +269,22 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           <Star className="w-3 h-3 fill-current" /> Milestones
         </button>
 
+        {/* Saved is the caller's own list: a chip beside the other filters,
+            never a new global tab and never a milestone or a reaction. */}
+        <button
+          type="button"
+          id="filter-saved-only"
+          aria-pressed={filters.savedOnly}
+          onClick={() => onFilterChange({ savedOnly: !filters.savedOnly })}
+          className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
+            filters.savedOnly
+              ? 'bg-amber-500 text-white shadow-xs'
+              : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
+          }`}
+        >
+          {filters.savedOnly ? <BookmarkCheck className="w-3 h-3" /> : <Bookmark className="w-3 h-3" />} Saved
+          <span className="ml-0.5 text-[11px] font-bold opacity-80">{savedCount}</span>
+        </button>
 
         <button
           type="button"
@@ -407,18 +404,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2" aria-label="Applied filters">
-        {filters.selectedYear !== 'all' && <button className="journal-control" onClick={() => onFilterChange({selectedYear:'all'})}>{filters.selectedYear} ×</button>}
-        {(filters.dateFrom || filters.dateTo) && <button className="journal-control" onClick={() => onFilterChange({dateFrom:'',dateTo:''})}>{filters.dateFrom || 'Any date'} — {filters.dateTo || 'No end date'} ×</button>}
-        {filters.milestonesOnly && <button className="journal-control" onClick={() => onFilterChange({milestonesOnly:false})}>Milestones ×</button>}
-        {filters.hasImagesOnly && <button className="journal-control" onClick={() => onFilterChange({hasImagesOnly:false})}>With photos ×</button>}
-        {filters.selectedTags.map(tag => <button key={tag} className="journal-control" onClick={() => toggleTag(tag)}>#{tag} ×</button>)}
-        {filters.selectedEmotions.map(emotion => <button key={emotion} className="journal-control" onClick={() => toggleEmotion(emotion)}>{emotion} ×</button>)}
-      </div>
       {/* Filter status summary */}
       <div className="flex items-center justify-between text-xs text-stone-500 dark:text-stone-400 pt-1">
         <span role="status" aria-live="polite" aria-busy={searchPending}>
-          {searchPending ? 'Updating memories…' : <>Showing <strong className="text-stone-900 dark:text-stone-100">{totalFilteredCount}</strong> of{' '}{totalCount} memories</>}
+          {searchPending ? 'Updating memories…' : <>Showing <strong className="text-stone-900 dark:text-stone-100">{totalFilteredCount}</strong> of{' '}{totalCount} events</>}
         </span>
         {activeFiltersCount > 0 && (
           <span className="text-amber-700 dark:text-amber-400 font-medium">

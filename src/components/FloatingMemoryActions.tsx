@@ -11,13 +11,6 @@ type Props = { hidden: boolean; canCreate: boolean; onCreate: () => void; onDisc
 export function FloatingMemoryActions({ hidden, canCreate, onCreate, onDiscover }: Props) {
   const overlayMotion = useOverlayMotion();
   const [open, setOpen] = useState(false);
-  const [primaryVisible, setPrimaryVisible] = useState(true);
-  useEffect(() => {
-    const target = document.getElementById("open-create-event-modal");
-    if (!target) { setPrimaryVisible(false); return; }
-    const observer = new IntersectionObserver(([entry]) => setPrimaryVisible(entry.isIntersecting));
-    observer.observe(target); return () => observer.disconnect();
-  }, [canCreate, hidden]);
   const [lift, setLift] = useState(0);
   useEffect(() => {
     const position = () => {
@@ -40,7 +33,7 @@ export function FloatingMemoryActions({ hidden, canCreate, onCreate, onDiscover 
     document.addEventListener('pointerdown', close); document.addEventListener('keydown', key);
     return () => { document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', key); };
   }, [open]);
-  return <div ref={root} hidden={hidden || primaryVisible} style={lift ? { bottom: EDGE + lift } : undefined} className="fixed z-40 right-4 bottom-[max(1rem,env(safe-area-inset-bottom))] sm:right-6" data-floating-actions>
+  return <div ref={root} hidden={hidden} style={lift ? { bottom: EDGE + lift } : undefined} className="fixed z-40 right-4 bottom-[max(1rem,env(safe-area-inset-bottom))] sm:right-6" data-floating-actions>
     <AnimatePresence>{open && <PopupPanel {...overlayMotion.panel} id="memory-actions" style={{ position: 'fixed', right: EDGE, bottom: Math.min(EDGE + ACTION_SIZE + MENU_GAP + lift, window.innerHeight - (canCreate ? 116 : 72) - 8) }} className="absolute bottom-16 right-0 w-48 rounded-2xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 p-2 shadow-xl flex flex-col gap-1" aria-label="Memory actions">
       {canCreate && <button type="button" className="ui-action min-h-11 px-3 flex items-center gap-2 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 text-sm" onClick={() => { setOpen(false); trigger.current?.focus({ preventScroll: true }); onCreate(); }}><Plus size={18} />New entry</button>}
       <button type="button" aria-label="Open a random memory" className="ui-action min-h-11 px-3 flex items-center gap-2 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 text-sm" onClick={() => { setOpen(false); trigger.current?.focus({ preventScroll: true }); onDiscover(); }}><Dices size={18} />Open a memory</button>
