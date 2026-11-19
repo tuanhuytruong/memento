@@ -35,7 +35,9 @@ export function useMonthRailPreview({ active, warm, month, query, generation }: 
   // Retry must replay the failed cursor operation, never the month's first page.
   const failed = useRef<{ cursor: string | null; navigation: RailDirection } | null>(null);
 
+  const started = useRef('');
   const reset = useCallback(() => {
+    started.current = '';
     controller.current?.abort();
     controller.current = null;
     sequence.current += 1;
@@ -85,7 +87,6 @@ export function useMonthRailPreview({ active, warm, month, query, generation }: 
     }
   }, [month, query]);
 
-  const started = useRef('');
   useEffect(() => {
     if (!active && !warm) return;
     if (started.current === key) return;

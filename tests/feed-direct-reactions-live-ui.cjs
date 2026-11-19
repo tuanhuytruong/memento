@@ -214,6 +214,7 @@ const base = 'https://memento-dev.srv.io.vn';
     assert.equal(await controls.locator('[data-reaction-summary="❤️"] .reaction-count-compact').innerText(),'99+');
     report.checks.push('100 genuine DB reaction rows: exact accessible 100 and mobile 99+');
     await page.setViewportSize({width:1440,height:900});
+    await page.locator('#toggle-advanced-filters').click();
     await page.getByRole('button',{name:'Compact list view',exact:true}).click();
     const compactRows=page.locator('#compact-list-table-wrap tbody tr');
     await compactRows.first().waitFor();

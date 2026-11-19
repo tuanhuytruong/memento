@@ -27,9 +27,12 @@ interface TimelineHeaderProps {
   username?: string;
   onLogout?: () => void;
   canCreateEntry?: boolean;
+  onRediscover?: () => void;
+  selectedTitle?: string;
 }
 
 export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
+  onRediscover, selectedTitle,
   overview,
   trackCount,
   onAddNewEvent,
@@ -63,7 +66,7 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
   const uniquePlaces = overview?.places ?? 0;
 
   return (
-    <header className="mb-6 sm:mb-8">
+    <header className="journal-header mb-6 sm:mb-8">
       {/* Top Banner — single lean row */}
       <div className="flex flex-wrap items-center justify-between gap-3 pb-5 border-b border-stone-200 dark:border-stone-800">
         <div className="min-w-0">
@@ -75,22 +78,15 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
               Memento
             </h1>
           </div>
-          <p className="text-xs sm:text-sm text-stone-500 dark:text-stone-400 max-w-xl">
-            Mend your memory, together.
-          </p>
         </div>
 
-        {/* Actions: 1 primary + overflow + avatar */}
+        <nav className="journal-navigation" aria-label="Primary navigation">
+          <button type="button" aria-current="page" onClick={() => window.scrollTo({top:0,behavior:'smooth'})}>Memories</button>
+          <button type="button" onClick={onRediscover}>Rediscover</button>
+          <button type="button" data-overflow-menu onClick={() => { setMenuOpen(v => !v); }}>Library{readyLetterCount > 0 ? ` · ${readyLetterCount}` : ''}</button>
+        </nav>
+        {/* Account utilities and existing safe library entry points */}
         <div className="flex items-center gap-2 shrink-0">
-          {canCreateEntry && <button
-            id="open-create-event-modal"
-            onClick={onAddNewEvent}
-            className="min-h-11 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition flex items-center gap-2 active:scale-98 whitespace-nowrap"
-          >
-            <Plus className="w-4 h-4" />
-            <span>New entry</span>
-          </button>}
-
           <div className="relative" data-overflow-menu>
             <button
               type="button"
@@ -170,13 +166,23 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
         </div>
       </div>
 
+      <div className="journal-page-heading"><h2 className="font-display">{selectedTitle || "Your memories."}</h2>          {canCreateEntry && <button
+            id="open-create-event-modal"
+            onClick={onAddNewEvent}
+            className="min-h-11 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition flex items-center gap-2 active:scale-98 whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4" />
+            <span>New memory</span>
+          </button>}
+
+</div>
       <div id="memory-summary" data-summary className="mt-3 rounded-xl bg-stone-100/60 dark:bg-stone-800/40 px-3 py-2 text-xs text-stone-600 dark:text-stone-300">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{totalEvents}</strong> {totalEvents === 1 ? 'memory' : 'memories'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{overview ? totalEvents : "—"}</strong> {totalEvents === 1 ? 'memory' : 'memories'}</span></span>
           <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{trackCount}</strong> {trackCount === 1 ? 'timeline' : 'timelines'}</span></span>
-          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><ImageIcon size={13} /><span><strong>{totalPhotos}</strong> {totalPhotos === 1 ? 'photo' : 'photos'}</span></span>
-          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{milestonesCount}</strong> {milestonesCount === 1 ? 'milestone' : 'milestones'}</span></span>
-          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{uniquePlaces}</strong> {uniquePlaces === 1 ? 'place' : 'places'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><ImageIcon size={13} /><span><strong>{overview ? totalPhotos : "—"}</strong> {totalPhotos === 1 ? 'photo' : 'photos'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{overview ? milestonesCount : "—"}</strong> {milestonesCount === 1 ? 'milestone' : 'milestones'}</span></span>
+          <span data-summary-metric className="inline-flex items-center gap-1 whitespace-nowrap"><span><strong>{overview ? uniquePlaces : "—"}</strong> {uniquePlaces === 1 ? 'place' : 'places'}</span></span>
         </div>
       </div>
     </header>
