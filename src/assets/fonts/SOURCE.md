@@ -1,0 +1,28 @@
+# Self-hosted Google Fonts
+
+Unmodified WOFF2 web subsets (Latin, Latin Extended, Vietnamese) from the official Google Fonts CSS API, with each family’s original SIL Open Font License 1.1 notice. Only the styles and subsets used on the page are requested by the browser.
+
+- [fraunces-italic-vietnamese.woff2](https://fonts.gstatic.com/s/fraunces/v38/6NU58FyLNQOQZAnv9ZwNjucMHVn85Ni7emAe9lKqZTnbB-gzTK0K1ChjdfeQ_5Y.woff2)
+- [fraunces-italic-latin-ext.woff2](https://fonts.gstatic.com/s/fraunces/v38/6NU58FyLNQOQZAnv9ZwNjucMHVn85Ni7emAe9lKqZTnbB-gzTK0K1ChjdPeQ_5Y.woff2)
+- [fraunces-italic-latin.woff2](https://fonts.gstatic.com/s/fraunces/v38/6NU58FyLNQOQZAnv9ZwNjucMHVn85Ni7emAe9lKqZTnbB-gzTK0K1ChjeveQ.woff2)
+- [fraunces-normal-vietnamese.woff2](https://fonts.gstatic.com/s/fraunces/v38/6NU78FyLNQOQZAnv9bYEvDiIdE9Ea92uemAk_WBq8U_9v0c2Wa0KxCBTeO-U.woff2)
+- [fraunces-normal-latin-ext.woff2](https://fonts.gstatic.com/s/fraunces/v38/6NU78FyLNQOQZAnv9bYEvDiIdE9Ea92uemAk_WBq8U_9v0c2Wa0KxCFTeO-U.woff2)
+- [fraunces-normal-latin.woff2](https://fonts.gstatic.com/s/fraunces/v38/6NU78FyLNQOQZAnv9bYEvDiIdE9Ea92uemAk_WBq8U_9v0c2Wa0KxC9TeA.woff2)
+- [ibmplexmono-400-vietnamese.woff2](https://fonts.gstatic.com/s/ibmplexmono/v23/-F63fjptAgt5VM-kVkqdyU8n1iAq129k.woff2)
+- [ibmplexmono-400-latin-ext.woff2](https://fonts.gstatic.com/s/ibmplexmono/v23/-F63fjptAgt5VM-kVkqdyU8n1iEq129k.woff2)
+- [ibmplexmono-400-latin.woff2](https://fonts.gstatic.com/s/ibmplexmono/v23/-F63fjptAgt5VM-kVkqdyU8n1i8q1w.woff2)
+- [ibmplexmono-500-vietnamese.woff2](https://fonts.gstatic.com/s/ibmplexmono/v23/-F6qfjptAgt5VM-kVkqdyU8n3twJwl9FgtIU.woff2)
+- [ibmplexmono-500-latin-ext.woff2](https://fonts.gstatic.com/s/ibmplexmono/v23/-F6qfjptAgt5VM-kVkqdyU8n3twJwl5FgtIU.woff2)
+- [ibmplexmono-500-latin.woff2](https://fonts.gstatic.com/s/ibmplexmono/v23/-F6qfjptAgt5VM-kVkqdyU8n3twJwlBFgg.woff2)
+- [ibmplexmono-600-vietnamese.woff2](https://fonts.gstatic.com/s/ibmplexmono/v23/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl9FgtIU.woff2)
+- [ibmplexmono-600-latin-ext.woff2](https://fonts.gstatic.com/s/ibmplexmono/v23/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl5FgtIU.woff2)
+- [ibmplexmono-600-latin.woff2](https://fonts.gstatic.com/s/ibmplexmono/v23/-F6qfjptAgt5VM-kVkqdyU8n3vAOwlBFgg.woff2)
+- [plusjakartasans-italic-vietnamese.woff2](https://fonts.gstatic.com/s/plusjakartasans/v12/LDIuaomQNQcsA88c7O9yZ4KMCoOg4Koz4yGqhMva.woff2)
+- [plusjakartasans-italic-latin-ext.woff2](https://fonts.gstatic.com/s/plusjakartasans/v12/LDIuaomQNQcsA88c7O9yZ4KMCoOg4Koz4yCqhMva.woff2)
+- [plusjakartasans-italic-latin.woff2](https://fonts.gstatic.com/s/plusjakartasans/v12/LDIuaomQNQcsA88c7O9yZ4KMCoOg4Koz4y6qhA.woff2)
+- [plusjakartasans-normal-vietnamese.woff2](https://fonts.gstatic.com/s/plusjakartasans/v12/LDIoaomQNQcsA88c7O9yZ4KMCoOg4Ko50yyygA.woff2)
+- [plusjakartasans-normal-latin-ext.woff2](https://fonts.gstatic.com/s/plusjakartasans/v12/LDIoaomQNQcsA88c7O9yZ4KMCoOg4Ko40yyygA.woff2)
+- [plusjakartasans-normal-latin.woff2](https://fonts.gstatic.com/s/plusjakartasans/v12/LDIoaomQNQcsA88c7O9yZ4KMCoOg4Ko20yw.woff2)
+- [fraunces-OFL.txt](https://raw.githubusercontent.com/google/fonts/main/ofl/fraunces/OFL.txt)
+- [plusjakartasans-OFL.txt](https://raw.githubusercontent.com/google/fonts/main/ofl/plusjakartasans/OFL.txt)
+- [ibmplexmono-OFL.txt](https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexmono/OFL.txt)

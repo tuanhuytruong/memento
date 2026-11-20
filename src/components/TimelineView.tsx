@@ -3,8 +3,8 @@ import React from 'react';
 import { TimelineEvent, EventTrack } from '../types';
 import { EventCard } from './EventCard';
 import { Calendar, Plus, Sparkles } from 'lucide-react';
-import { getEventTheme } from '../data/eventThemes';
 import { trackIdentity, momentIdentity } from '../lib/resourceIdentity';
+import { calendarDateToLocalInstant, memoryCalendarDate } from '../lib/localDate';
 
 interface TimelineViewProps {
   onToggleReaction: ReactionControlProps['onToggleReaction'];
@@ -53,7 +53,6 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
 }) => {
   const trackMap = new Map(tracks.map((track) => [trackIdentity(track), track]));
   const currentTrack = tracks.find((t) => trackIdentity(t) === currentTrackKey);
-  const trackTheme = currentTrack ? getEventTheme(currentTrack.color) : null;
 
   if (events.length === 0) {
     return (
@@ -129,82 +128,40 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
     );
   }
 
-  // Group events by Month and Year (e.g., "August 2026")
-  const groupedEvents: { [key: string]: TimelineEvent[] } = {};
-  events.forEach((evt) => {
-    const d = new Date(evt.date + 'T00:00:00');
-    const groupKey = isNaN(d.getTime())
-      ? 'General'
-      : d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-
-    if (!groupedEvents[groupKey]) {
-      groupedEvents[groupKey] = [];
-    }
-    groupedEvents[groupKey].push(evt);
-  });
-
-
+  // Preserve the server ordering, including across retained cursor pages.
+  const groups = new Map<string, TimelineEvent[]>();
+  for (const event of events) {
+    const date = calendarDateToLocalInstant(memoryCalendarDate(event.date));
+    const label = date ? date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 'Undated';
+    const group = groups.get(label);
+    if (group) group.push(event);
+    else groups.set(label, [event]);
+  }
 
   return (
-    <div id="timeline-container" className="relative pl-2 sm:pl-4">
-      {/* Continuous Vertical Timeline Stem Line */}
-      <div
-        className={`absolute left-[22px] sm:left-[27px] top-6 bottom-6 w-0.5 z-0 ${
-          trackTheme
-            ? `${trackTheme.accentBg} opacity-50`
-            : 'bg-gradient-to-b from-amber-400 via-stone-300 to-stone-200 dark:from-amber-600 dark:via-stone-700 dark:to-stone-800'
-        }`}
-        aria-hidden="true"
-      />
-
-      {/* Render Groups */}
-      <div className="space-y-10">
-        {Object.entries(groupedEvents).map(([groupLabel, groupItems]) => {
-          return (
-            <div key={groupLabel} className="relative space-y-6">
-              {/* Group Month/Year Divider Header */}
-              <div className="relative z-10 flex items-center gap-3">
-                <div
-                  className={`w-10 sm:w-12 h-6 sm:h-7 rounded-full text-white text-[11px] font-bold flex items-center justify-center shadow-xs shrink-0 ${
-                    trackTheme ? trackTheme.accentBg : 'bg-stone-900 dark:bg-stone-100 dark:text-stone-900'
-                  }`}
-                >
-                  <Calendar className="w-3 h-3 mr-1 opacity-80" />
-                </div>
-                <div className="px-3 py-1 rounded-full bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-xs text-xs font-bold text-stone-800 dark:text-stone-200 flex items-center gap-2">
-                  <span>{groupLabel}</span>
-                  <span className="font-normal text-stone-400">
-                    ({groupItems.length} {groupItems.length === 1 ? 'event' : 'events'})
-                  </span>
-                </div>
-                <div className="h-px bg-stone-200 dark:bg-stone-800 flex-1" />
-              </div>
-
-              {/* Event Cards inside this month group */}
-              <div className="space-y-6">
-                {groupItems.map((evt) => {
-                  const eventTrack = evt.eventId ? trackMap.get(`${evt.resourceOwnerId ?? 'legacy'}:${evt.eventId}`) : undefined;
-                  return (
-                    <EventCard
-                        onToggleReaction={onToggleReaction}
-                        currentUsername={currentUsername}
-                      key={momentIdentity(evt)}
-                      event={evt}
-                      track={eventTrack}
-                      onSelectTrack={onSelectTrack}
-                      onViewDetails={onViewDetails}
-                      onEdit={onEdit}
-                      onDelete={onDelete}
-                      onTagClick={onTagClick}
-                      onOpenImageLightbox={onOpenImageLightbox}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+    <div id="timeline-container" className="archival-chapters">
+      {Array.from(groups, ([label, group]) => (
+        <section key={label} className="archival-chapter" aria-label={label}>
+          <div className="archival-chapter-heading"><h2>{label}</h2><span>{group.length} {group.length === 1 ? 'entry' : 'entries'} shown</span></div>
+          <div className="archival-cards">
+            {group.map(event => (
+              <EventCard
+                key={momentIdentity(event)}
+                event={event}
+                track={event.eventId ? trackMap.get(`${event.resourceOwnerId ?? 'legacy'}:${event.eventId}`) : undefined}
+                onToggleReaction={onToggleReaction}
+                currentUsername={currentUsername}
+                onSelectTrack={onSelectTrack}
+                onViewDetails={onViewDetails}
+                onEdit={onEdit}
+                onDelete={onDelete}
+                onTagClick={onTagClick}
+                onOpenImageLightbox={onOpenImageLightbox}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
     </div>
   );
 };

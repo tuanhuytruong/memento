@@ -47,9 +47,9 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
   return (
     <div
       id="compact-list-table-wrap"
-      className="bg-white dark:bg-stone-900 rounded-2xl border border-stone-200 dark:border-stone-800 shadow-xs overflow-hidden"
+      className="archival-compact"
     >
-      <div className="overflow-x-auto">
+      <div className="archival-table-scroll" tabIndex={0} role="region" aria-label="Scrollable memory list">
         <table className="w-full text-left text-xs sm:text-sm border-collapse">
           <thead>
             <tr className="border-b border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-800/60 text-stone-500 dark:text-stone-400 font-semibold">
@@ -97,7 +97,7 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
 
                   {/* Date */}
                   <td className="py-3 px-4 whitespace-nowrap align-top">
-                    <div className="font-medium text-stone-900 dark:text-stone-100">
+                    <div className="archival-list-date">
                       {formatDateDisplay(evt.date)}
                     </div>
                     {evt.time && (
@@ -113,8 +113,8 @@ export const CompactListView: React.FC<CompactListViewProps> = ({
 
                   {/* Title, Idea, and Images flag */}
                   <td className="py-3 px-4 align-top max-w-xs sm:max-w-md">
-                    <div className="font-bold text-stone-900 dark:text-stone-100 hover:text-amber-700">
-                      {evt.title}
+                    <div className="archival-list-title">
+                      <button type="button" className="archival-card-title" onClick={click => { click.stopPropagation(); onViewDetails(evt); }}>{evt.title}</button>
                     </div>
                     {evt.idea && (
                       <div className="text-xs text-amber-800 dark:text-amber-300 italic flex items-center gap-1 mt-0.5 line-clamp-1">

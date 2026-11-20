@@ -1,19 +1,15 @@
 import { ReactionControls, type ReactionControlProps } from './ReactionControls';
 import React from 'react';
 import {
-  Calendar,
   MapPin,
   Lightbulb,
   Star,
   Edit2,
   Trash2,
-  ExternalLink,
-  Tag,
-  ImageIcon,
 } from 'lucide-react';
 import { TimelineEvent, EventTrack } from '../types';
 import { getEmotionMeta } from '../data/emotions';
-import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
+import { getEventIconComponent } from '../data/eventThemes';
 import { formatDateDisplay, getRelativeTime } from '../lib/storage';
 import { PrivateImage } from './PrivateImage';
 import { useLocalPhotos } from '../lib/localPhoto';
@@ -50,7 +46,6 @@ export const EventCard: React.FC<EventCardProps> = ({
   const photoCount = event.images.length + pendingPhotos.length;
   const emotionMeta = getEmotionMeta(event.emotion);
   const relativeTime = getRelativeTime(event.date);
-  const trackTheme = track ? getEventTheme(track.color) : null;
   const TrackIcon = track ? getEventIconComponent(track.icon) : null;
 
   const locationLabel = event.location
@@ -58,273 +53,50 @@ export const EventCard: React.FC<EventCardProps> = ({
     : null;
 
   return (
-    <div
-      className="relative flex items-start gap-4 sm:gap-6 group"
+    <article
+      id={`event-card-${momentIdentity(event)}`}
+      data-memory-date={event.date ?? ''}
+      data-milestone={event.isMilestone || undefined}
+      className="archival-card"
+      tabIndex={-1}
+      onClick={() => onViewDetails(event)}
     >
-      {/* Node Marker on the timeline stem */}
-      <div className="relative z-10 flex flex-col items-center mt-1.5 shrink-0">
-        <div
-          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center border-2 transition-transform duration-300 group-hover:scale-110 shadow-sm ${
-            event.isMilestone
-              ? 'bg-amber-500 border-amber-300 text-white ring-4 ring-amber-100 dark:ring-amber-950/60'
-              : emotionMeta
-              ? `${emotionMeta.badgeBg} ${emotionMeta.borderColor} text-stone-800`
-              : 'bg-white dark:bg-stone-800 border-stone-300 dark:border-stone-600 text-stone-600'
-          }`}
-        >
-          {event.isMilestone ? (
-            <Star className="w-4 h-4 fill-white text-white" />
-          ) : emotionMeta ? (
-            <span className="text-base sm:text-lg leading-none select-none">
-              {emotionMeta.emoji}
-            </span>
-          ) : (
-            <Calendar className="w-4 h-4 text-stone-500" />
-          )}
+      {photoCount > 0 && <div className="archival-card-media" data-multiple={photoCount > 1 || undefined}>
+        {event.images.slice(0, 3).map((src, index) => <div key={`${src}:${index}`} className="archival-photo-frame">
+          <PrivateImage src={src} variant={photoCount === 1 ? 'display' : 'thumb'} loading="lazy" alt={event.title} className="archival-card-photo" />
+          <button type="button" className="archival-photo-opener" aria-label={photoCount === 1 ? 'Open photo preview' : `Open photo ${index + 1} of ${event.images.length}`} onClick={click => { click.stopPropagation(); onOpenImageLightbox(event.images, index); }} />
+          {index === 2 && event.images.length > 3 && <span className="archival-photo-badge">+{event.images.length - 3} more</span>}
+        </div>)}
+        {pendingPhotos.slice(0, Math.max(0, 3 - event.images.length)).map(photo => <div key={photo.uploadId} className="archival-photo-frame">
+          <img src={photo.url} alt={event.title} className="archival-card-photo object-cover" />
+          <span className="archival-photo-badge archival-photo-status" role="status">{photo.status}</span>
+        </div>)}
+      </div>}
+      <div className="archival-card-body">
+        <div className="archival-card-meta">
+          {event.date ? <time dateTime={event.date} title={relativeTime || undefined}>{formatDateDisplay(event.date, event.time)}</time> : <span>Undated</span>}
+          {track && TrackIcon && <button type="button" className="archival-inline-track" onClick={click => { click.stopPropagation(); onSelectTrack?.(track); }} title={`View ${track.title} timeline`}><TrackIcon size={13} /><span>{track.title}</span></button>}
+          {(locationLabel || event.location?.country) && <span><MapPin size={13} />{[locationLabel, event.location?.country].filter(Boolean).join(' · ')}</span>}
+          {event.isMilestone && <span className="archival-wax"><Star size={13} fill="currentColor" />Milestone</span>}
+          {emotionMeta && <span className="archival-mood"><span>{emotionMeta.emoji}</span>{emotionMeta.label}{event.emotionIntensity ? <small aria-label={`Intensity ${event.emotionIntensity} of 5`}>{[1, 2, 3, 4, 5].map(level => <i key={level} data-filled={level <= event.emotionIntensity!} />)}</small> : null}</span>}
         </div>
-      </div>
-
-      {/* Post card and its separate reaction rail share the timeline column. */}
-      <div className="min-w-0 flex-1">
-      <div
-        id={`event-card-${momentIdentity(event)}`}
-        data-memory-date={event.date??''}
-        // Not in the tab order; it is only a focus TARGET when the detail view
-        // closes, so keyboard users land back on the card they came from.
-        tabIndex={-1}
-        onClick={() => onViewDetails(event)}
-        className={`min-w-0 flex-1 break-words rounded-2xl p-4 sm:p-5 transition-all duration-200 cursor-pointer bg-white dark:bg-stone-900 border focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 ${
-          event.isMilestone
-            ? 'border-amber-300 dark:border-amber-800/80 shadow-md ring-1 ring-amber-400/20'
-            : 'border-stone-200/80 dark:border-stone-800 shadow-xs hover:shadow-md hover:border-stone-300 dark:hover:border-stone-700'
-        }`}
-      >
-        {/* Top bar: Date, Emotion pill, and Actions */}
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-          <div className="min-w-0 max-w-full flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 flex items-center gap-1.5">
-              <Calendar className="w-3.5 h-3.5 text-stone-500" />
-              {formatDateDisplay(event.date, event.time)}
-            </span>
-            {relativeTime && (
-              <span className="text-xs text-stone-500 dark:text-stone-400 font-medium">
-                ({relativeTime})
-              </span>
-            )}
-            {event.isMilestone && (
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
-                Milestone
-              </span>
-            )}
-
-            {track && trackTheme && TrackIcon && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (onSelectTrack) onSelectTrack(track);
-                }}
-                className={`ui-action max-w-full min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border transition ${trackTheme.badgeClass}`}
-                title={`View ${track.title} timeline`}
-              >
-                <TrackIcon className="w-3 h-3" />
-                <span className="min-w-0 truncate">{track.title}</span>
-              </button>
-            )}
+        <h3><button type="button" className="archival-card-title" onClick={click => { click.stopPropagation(); onViewDetails(event); }}>{event.title}</button></h3>
+        {event.description && <p className="archival-card-excerpt line-clamp-4">{event.description}</p>}
+        {event.idea && <div className="archival-card-idea"><Lightbulb size={15} /><div><span>Idea / Takeaway</span><p className="line-clamp-2">{event.idea}</p></div></div>}
+        <div className="archival-card-footer">
+          <div className="archival-card-tags">
+            {event.tags?.map(tag => <button key={tag} type="button" onClick={click => { click.stopPropagation(); onTagClick(tag); }}>#{tag}</button>)}
           </div>
-
-          {/* Quick Actions: viewers have read-only access. */}
-          {(track?.accessRole === 'owner' || track?.accessRole === 'editor') && <div
-            className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={() => onEdit(event)}
-              className="ui-action inline-flex items-center justify-center min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
-              title="Edit event"
-            >
-              <Edit2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => {
-                if (window.confirm('Delete this event?')) {
-                  onDelete(event);
-                }
-              }}
-              className="ui-action inline-flex items-center justify-center min-h-11 min-w-11 p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
-              title="Delete event"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>}
+          <div className="archival-card-actions" onClick={click => click.stopPropagation()}>
+            {(track?.accessRole === 'owner' || track?.accessRole === 'editor') && <>
+              <button type="button" className="archival-icon-button" title="Edit event" aria-label="Edit event" onClick={() => onEdit(event)}><Edit2 size={14} /></button>
+              <button type="button" className="archival-icon-button" title="Delete event" aria-label="Delete event" onClick={() => { if (window.confirm('Delete this event?')) void onDelete(event); }}><Trash2 size={14} /></button>
+            </>}
+            <button type="button" className="archival-open-card" onClick={() => onViewDetails(event)}>Open</button>
+          </div>
         </div>
-
-        {/* Title & Emotion */}
-        <div className="flex flex-wrap items-start justify-between gap-3 mb-2">
-          <h3 className="min-w-0 break-all line-clamp-3 text-base sm:text-lg font-bold font-display text-stone-900 dark:text-stone-100 leading-snug group-hover:text-amber-700 dark:group-hover:text-amber-400 transition-colors">
-            {event.title}
-          </h3>
-
-          {emotionMeta && (
-            <span
-              className={`shrink-0 max-w-full min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${emotionMeta.badgeBg} ${emotionMeta.badgeText} ${emotionMeta.borderColor} border`}
-            >
-              <span>{emotionMeta.emoji}</span>
-              <span>{emotionMeta.label}</span>
-              {event.emotionIntensity && (
-                <span className="opacity-70 text-[10px]">
-                  L{event.emotionIntensity}
-                </span>
-              )}
-            </span>
-          )}
-        </div>
-
-        {/* Location metadata */}
-        {locationLabel && (
-          <div className="flex items-center gap-1.5 text-xs text-stone-600 dark:text-stone-400 mb-3">
-            <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-            <span className="truncate">{locationLabel}</span>
-            {event.location?.country && (
-              <span className="text-stone-400">· {event.location.country}</span>
-            )}
-          </div>
-        )}
-
-        {/* Attached image preview (single or multi-thumbnail) */}
-        {photoCount > 0 && (
-          // The shared photo container only paints a full-width panel for the multi-photo
-          // grid; a single photo brings its own compact frame.
-          <div
-            className={photoCount === 1 ? 'mb-3' : 'mb-3 rounded-xl overflow-hidden bg-stone-100 dark:bg-stone-800'}
-            onClick={photoCount === 1 || event.images.length === 0 ? undefined : (e) => {
-              e.stopPropagation();
-              onOpenImageLightbox(event.images, 0);
-            }}
-          >
-            {event.images.length === 0 && pendingPhotos.length === 1 ? (
-              // Local-first: the saved moment shows its photo immediately, while the
-              // upload continues in the background. The chip must never claim success.
-              <div className="relative max-w-[360px] overflow-hidden rounded-xl">
-                <div className="aspect-[4/3] w-full">
-                  <img src={pendingPhotos[0].url} alt={event.title} className="h-full w-full object-cover" />
-                </div>
-                <span
-                  role="status"
-                  aria-live="polite"
-                  className="absolute bottom-1.5 left-1.5 rounded-md bg-black/65 px-1.5 py-0.5 text-[10px] font-medium text-white"
-                >
-                  {pendingPhotos[0].status}
-                </span>
-              </div>
-            ) : event.images.length === 1 ? (
-              // A single photo gets a bounded 4:3 frame instead of a full-width strip:
-              // stretching the 480px thumb across the card is what made it soft.
-              // The display derivative (1280px) stays sharp at this size and on 2x screens.
-              // Pointer and keyboard reach the same existing lightbox handler.
-              <div
-                role="button"
-                tabIndex={0}
-                aria-label="Open photo preview"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenImageLightbox(event.images, 0);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Enter' && e.key !== ' ') return;
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onOpenImageLightbox(event.images, 0);
-                }}
-                className="relative max-w-[360px] overflow-hidden rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60"
-              >
-                <div className="aspect-[4/3] w-full">
-                  <PrivateImage
-                    src={event.images[0]}
-                    variant="display"
-                    loading="lazy"
-                    alt={event.title}
-                    className="h-full w-full"
-                  />
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-3 gap-1.5 max-h-40 overflow-hidden p-1">
-                {event.images.slice(0, 3).map((img, idx) => (
-                  <div
-                    key={idx}
-                    className="relative h-28 rounded-lg overflow-hidden bg-stone-200 dark:bg-stone-700"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onOpenImageLightbox(event.images, idx);
-                    }}
-                  >
-                    <PrivateImage src={img} variant="thumb" loading="lazy" alt="Thumbnail" className="h-full hover:scale-105 transition-transform" />
-                    {idx === 2 && event.images.length > 3 && (
-                      <div className="absolute inset-0 bg-black/60 text-white font-bold text-xs flex items-center justify-center">
-                        +{event.images.length - 3} more
-                      </div>
-                    )}
-                  </div>
-                ))}
-                {pendingPhotos.slice(0, Math.max(0, 3 - event.images.length)).map((photo) => (
-                  <div key={photo.uploadId} className="relative h-28 rounded-lg overflow-hidden bg-stone-200 dark:bg-stone-700">
-                    <img src={photo.url} alt="Photo uploading" className="h-full w-full object-cover" />
-                    <span
-                      role="status"
-                      aria-live="polite"
-                      className="absolute bottom-1 left-1 rounded bg-black/65 px-1 py-0.5 text-[9px] font-medium text-white"
-                    >
-                      {photo.status}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Idea / Insight Callout Banner */}
-        {event.idea && (
-          <div className="mb-3 p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/40 text-xs">
-            <div className="flex items-center gap-1.5 font-bold uppercase tracking-wider text-[11px] text-amber-800 dark:text-amber-400 mb-1">
-              <Lightbulb className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
-              Idea / Takeaway
-            </div>
-            <p className="italic text-stone-700 dark:text-stone-300 line-clamp-2">
-              "{event.idea}"
-            </p>
-          </div>
-        )}
-
-        {/* Narrative excerpt */}
-        {event.description && (
-          <p className="text-xs sm:text-sm text-stone-600 dark:text-stone-400 line-clamp-2 sm:line-clamp-3 mb-3 leading-relaxed">
-            {event.description}
-          </p>
-        )}
-
-        {/* Bottom Tag Categorization Chips */}
-        {event.tags && event.tags.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-stone-100 dark:border-stone-800/80">
-            {event.tags.map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onTagClick(tag);
-                }}
-                className="ui-action max-w-full min-w-0 truncate inline-block items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-amber-100 hover:text-amber-900 dark:hover:bg-amber-950/60 dark:hover:text-amber-300 transition"
-              >
-                #{tag}
-              </button>
-            ))}
-          </div>
-        )}
+        <ReactionControls event={event} onToggleReaction={onToggleReaction} currentUsername={currentUsername} className="reaction-feed-rail" />
       </div>
-      <ReactionControls event={event} onToggleReaction={onToggleReaction} currentUsername={currentUsername} className="reaction-feed-rail mt-2 ml-1" />
-      </div>
-    </div>
+    </article>
   );
 };

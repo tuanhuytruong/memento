@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Calendar, KeyRound, LoaderCircle, LockKeyhole, UserRound } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ArrowRight, BookOpen, KeyRound, LoaderCircle, LockKeyhole, UserRound } from 'lucide-react';
+import archivalHero from '../assets/login/archival-hero.webp';
+import archivalHeroCompact from '../assets/login/archival-hero-compact.webp';
 
 interface AuthScreenProps {
   initialError?: string;
@@ -8,112 +10,145 @@ interface AuthScreenProps {
 
 export const AuthScreen: React.FC<AuthScreenProps> = ({ initialError, onSubmit }) => {
   const alive = useRef(true);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const submitting = useRef(false);
+  const title = useRef<HTMLHeadingElement>(null);
+  const form = useRef<HTMLFormElement>(null);
+  const registerDraft = useRef({ confirmPassword: '', inviteCode: '' });
+  const focusTitle = useRef(false);
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const registering = mode === 'register';
 
-  const handleSubmit = async (event: React.FormEvent) => {
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useEffect(() => {
+    if (focusTitle.current) {
+      focusTitle.current = false;
+      title.current?.focus();
+    }
+  }, [mode]);
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (pending) return;
+    if (submitting.current) return;
     setError('');
-    if (mode === 'register' && password !== confirmPassword) {
+
+    // Read the live DOM so autofilled values work even without change events.
+    const fields = new FormData(event.currentTarget);
+    const username = String(fields.get('username') ?? '').trim();
+    const password = String(fields.get('password') ?? '');
+    const inviteCode = String(fields.get('inviteCode') ?? registerDraft.current.inviteCode).trim();
+    if (registering && password !== fields.get('confirmPassword')) {
       setError('Passwords do not match.');
       return;
     }
+
+    submitting.current = true;
     setPending(true);
     try {
-      await onSubmit(mode, { username: username.trim(), password, inviteCode: inviteCode.trim() });
+      await onSubmit(mode, { username, password, inviteCode });
     } catch (err) {
       if (alive.current) setError(err instanceof Error ? err.message : 'Unable to authenticate. Please try again.');
     } finally {
+      submitting.current = false;
       if (alive.current) setPending(false);
     }
   };
 
-  const changeMode = (next: 'login' | 'register') => {
-    setMode(next);
+  const changeMode = () => {
+    if (submitting.current) return;
+    if (registering && form.current) {
+      const fields = new FormData(form.current);
+      registerDraft.current = {
+        confirmPassword: String(fields.get('confirmPassword') ?? ''),
+        inviteCode: String(fields.get('inviteCode') ?? ''),
+      };
+    }
+    focusTitle.current = true;
+    setMode(registering ? 'login' : 'register');
     setError('');
   };
 
   return (
-    <main className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 flex items-center justify-center p-4">
-      <section className="w-full max-w-md rounded-3xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-6 sm:p-8 shadow-xl">
-        <div className="flex items-center gap-3 mb-6">
-          <span className="w-11 h-11 rounded-2xl bg-amber-600 text-white flex items-center justify-center"><Calendar className="w-5 h-5" /></span>
-          <div>
-            <p className="text-xs uppercase tracking-[0.18em] text-amber-700 dark:text-amber-400 font-bold">Memento</p>
-            <h1 className="text-xl font-bold font-display">Your life, remembered.</h1>
+    <main className="archival-theme archival-auth">
+      <div className="archival-auth__panel">
+        <section className="archival-auth__content" aria-labelledby="archival-auth-title">
+          <div className="archival-auth__brand">
+            <span className="archival-auth__brand-mark"><BookOpen size={20} aria-hidden="true" /></span>
+            <div>
+              <p className="archival-auth__wordmark">Memento</p>
+              <p className="archival-auth__edition">Archival memory journal</p>
+            </div>
           </div>
-        </div>
-        <div className="mb-6">
-          <h2 className="text-2xl font-bold">{mode === 'login' ? 'Welcome back' : 'Create your account'}</h2>
-          <p className="text-sm text-stone-500 dark:text-stone-400 mt-1">{mode === 'login' ? 'Sign in to your private timeline.' : 'Registration requires a one-time invite code.'}</p>
-        </div>
 
-        {(error || initialError) && (
-          <div role="alert" className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200">
-            {error || initialError}
-          </div>
-        )}
+          <header className="archival-auth__intro">
+            <h1 ref={title} id="archival-auth-title" tabIndex={-1}>{registering ? 'Create your account' : 'Welcome back'}</h1>
+            <p>{registering ? 'Registration requires a one-time invite code.' : 'Sign in to your private timeline.'}</p>
+          </header>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <label className="block">
-            <span className="block text-sm font-semibold mb-1.5">Username</span>
-            <span className="relative block">
-              <UserRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
-              <input autoComplete="username" required value={username} onChange={(e) => setUsername(e.target.value)} className="w-full rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 pl-10 pr-3 py-3 outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500" />
-            </span>
-          </label>
-          <label className="block">
-            <span className="block text-sm font-semibold mb-1.5">Password</span>
-            <span className="relative block">
-              <LockKeyhole className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
-              <input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 pl-10 pr-3 py-3 outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500" />
-            </span>
-          </label>
-          {mode === 'register' && (
-            <>
-              <label className="block">
-                <span className="block text-sm font-semibold mb-1.5">Confirm password</span>
-                <span className="relative block">
-                  <LockKeyhole className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    required
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="w-full rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 pl-10 pr-3 py-3 outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
-                  />
+          {(error || initialError) && <p role="alert" className="archival-auth__alert">{error || initialError}</p>}
+
+          <form ref={form} onSubmit={handleSubmit} className="archival-auth__form" aria-label={registering ? 'Registration' : 'Sign in'}>
+            <fieldset className="archival-auth__fields" disabled={pending}>
+              <label className="archival-auth__field">
+                <span>Username</span>
+                <span className="archival-auth__input">
+                  <UserRound size={17} aria-hidden="true" />
+                  <input name="username" autoComplete="username" autoCapitalize="none" spellCheck={false} required />
                 </span>
               </label>
-              <label className="block">
-                <span className="block text-sm font-semibold mb-1.5">One-time invite code</span>
-              <span className="relative block">
-                <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
-                <input autoComplete="off" required value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} className="w-full rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 pl-10 pr-3 py-3 outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500" />
+              <label className="archival-auth__field">
+                <span>Password</span>
+                <span className="archival-auth__input">
+                  <LockKeyhole size={17} aria-hidden="true" />
+                  <input name="password" type="password" autoComplete={registering ? 'new-password' : 'current-password'} required />
                 </span>
               </label>
-            </>
-          )}
-          <button type="submit" disabled={pending} className="w-full flex items-center justify-center gap-2 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-semibold py-3 transition">
-            {pending && <LoaderCircle className="w-4 h-4 animate-spin" />}
-            {pending ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Register'}
-          </button>
-        </form>
+              {registering && (
+                <>
+                  <label className="archival-auth__field">
+                    <span>Confirm password</span>
+                    <span className="archival-auth__input">
+                      <LockKeyhole size={17} aria-hidden="true" />
+                      <input name="confirmPassword" type="password" defaultValue={registerDraft.current.confirmPassword} autoComplete="new-password" required />
+                    </span>
+                  </label>
+                  <label className="archival-auth__field">
+                    <span>One-time invite code</span>
+                    <span className="archival-auth__input">
+                      <KeyRound size={17} aria-hidden="true" />
+                      <input name="inviteCode" defaultValue={registerDraft.current.inviteCode} autoComplete="off" autoCapitalize="none" spellCheck={false} required />
+                    </span>
+                  </label>
+                </>
+              )}
+              <button type="submit" className="archival-auth__submit">
+                {pending ? 'Please wait…' : registering ? 'Register' : 'Sign in'}
+                {pending ? <LoaderCircle size={17} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={17} aria-hidden="true" />}
+              </button>
+            </fieldset>
+            <span role="status" className="sr-only">{pending ? (registering ? 'Creating your account…' : 'Signing in…') : ''}</span>
+          </form>
 
-        <p className="text-sm text-center text-stone-500 dark:text-stone-400 mt-6">
-          {mode === 'login' ? 'Need an account?' : 'Already have an account?'}{' '}
-          <button type="button" onClick={() => changeMode(mode === 'login' ? 'register' : 'login')} className="font-semibold text-amber-700 dark:text-amber-400 hover:underline">
-            {mode === 'login' ? 'Register with an invite' : 'Sign in'}
-          </button>
-        </p>
-      </section>
+          <p className="archival-auth__mode">
+            {registering ? 'Already have an account?' : 'Need an account?'}{' '}
+            <button type="button" disabled={pending} onClick={changeMode}>
+              {registering ? 'Sign in' : 'Register with an invite'}
+            </button>
+          </p>
+        </section>
+      </div>
+
+      <figure className="archival-auth__hero">
+        <picture>
+          <source media="(max-width: 767px)" srcSet={archivalHeroCompact} width={768} height={492} />
+          <img src={archivalHero} width={1024} height={1536} decoding="async" alt="" />
+        </picture>
+        <figcaption className="archival-auth__caption">
+          <span className="archival-auth__plate">The memory archive</span>
+          <span className="archival-auth__tagline">Your life, remembered.</span>
+        </figcaption>
+      </figure>
     </main>
   );
 };

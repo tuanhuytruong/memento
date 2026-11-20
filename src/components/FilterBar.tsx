@@ -86,240 +86,68 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   };
 
   return (
-    <div
-      id="filter-toolbar"
-      className="bg-white dark:bg-stone-900 rounded-2xl border border-stone-200/80 dark:border-stone-800 shadow-xs p-4 sm:p-5 space-y-4"
-    >
-      {/* Top row: Search input + View Switcher + Sort */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 justify-between">
-        {/* Search input */}
-        <div className="relative flex-1">
-          <Search className="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+    <section id="filter-toolbar" className="archival-toolbar" aria-label="Search and filter memories">
+      <div className="archival-search-row">
+        <div className="archival-search">
+          <Search size={16} aria-hidden="true" />
           <input
             type="text"
             id="timeline-search-input"
+            aria-label="Search memories"
             value={filters.search}
-            onChange={(e) => onFilterChange({ search: e.target.value })}
-            onKeyDown={(e) => { if(e.key === 'Enter' && !e.nativeEvent.isComposing) onSearchEnter?.(); }}
+            onChange={event => onFilterChange({ search: event.target.value })}
+            onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) onSearchEnter?.(); }}
             onCompositionStart={onSearchCompositionStart}
             onCompositionEnd={onSearchCompositionEnd}
-            placeholder="Search events, ideas, emotions, cities, or stories..."
-            className="w-full pl-9 pr-8 py-2 rounded-xl text-xs sm:text-sm border border-stone-200 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition"
+            placeholder="Search titles, ideas, places, or moods…"
           />
-          {filters.search && (
-            <button
-              type="button"
-              aria-label="Clear search"
-              onClick={() => onFilterChange({ search: '' })}
-              className="ui-action absolute right-1.5 top-1/2 -translate-y-1/2 min-h-11 min-w-11 flex items-center justify-center text-stone-400 hover:text-stone-600"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
+          {filters.search && <button type="button" aria-label="Clear search" className="archival-icon-button" onClick={() => onFilterChange({ search: '' })}><X size={16} /></button>}
         </div>
-
-        {/* View Mode Switcher + Sort + Advanced Toggle */}
-        <div className="flex flex-wrap items-center gap-2 justify-between sm:justify-end">
-          {/* View toggle tabs */}
-          <div className="flex items-center p-1 rounded-xl bg-stone-100 dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700">
+        <div className="archival-quick-filters">
+          <button type="button" className="archival-control" aria-pressed={filters.milestonesOnly} onClick={() => onFilterChange({ milestonesOnly: !filters.milestonesOnly })}><Star size={14} /><span>Milestones</span></button>
+          <button type="button" id="filter-saved-only" className="archival-control" aria-pressed={filters.savedOnly} onClick={() => onFilterChange({ savedOnly: !filters.savedOnly })}>
+            {filters.savedOnly ? <BookmarkCheck size={14} /> : <Bookmark size={14} />}<span>Saved</span><small>{savedCount}</small>
+          </button>
+          <button type="button" className="archival-control" aria-pressed={filters.hasImagesOnly} onClick={() => onFilterChange({ hasImagesOnly: !filters.hasImagesOnly })}><ImageIcon size={14} /><span>Photos</span></button>
+          <button type="button" id="toggle-advanced-filters" className="archival-control" aria-expanded={showAdvanced} aria-controls="archival-filter-panel" onClick={() => setShowAdvanced(value => !value)}>
+            <SlidersHorizontal size={14} /><span>Filters</span>{activeFiltersCount > 0 && <small>{activeFiltersCount}</small>}
+          </button>
+        </div>
+      </div>
+      {rangeError && <p role="alert" id="filter-range-error" className="text-xs text-rose-700 dark:text-rose-300">{rangeError}</p>}
+      {showAdvanced && (
+        <div className="archival-filter-panel" id="archival-filter-panel">
+          {/* Quick year pills */}
+          <div className="archival-year-filters">
+            <span className="text-stone-400 font-medium mr-1 shrink-0 flex items-center gap-1">
+              <Calendar className="w-3 h-3" /> Year:
+            </span>
             <button
-              id="view-timeline-btn"
               type="button"
-              aria-pressed={viewMode === 'timeline'}
-              aria-label="Timeline view"
-              onClick={() => onViewModeChange('timeline')}
-              className={`ui-action flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
-                viewMode === 'timeline'
-                  ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
-                  : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
-              }`}
-              title="Timeline View"
+              aria-pressed={filters.selectedYear === 'all'}
+              onClick={() => onFilterChange({ selectedYear: 'all' })}
+              className="archival-control"
             >
-              <LayoutList className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">Timeline</span>
+              All Years
             </button>
+            {availableYears.map((yr) => (
+              <button
+                key={yr}
+                type="button"
+                aria-pressed={filters.selectedYear === yr}
+                onClick={() => onFilterChange({ selectedYear: yr })}
+                className="archival-control"
+              >
+                {yr}
+              </button>
+            ))}
 
-            <button
-              id="view-compact-btn"
-              type="button"
-              aria-pressed={viewMode === 'compact'}
-              aria-label="Compact list view"
-              onClick={() => onViewModeChange('compact')}
-              className={`ui-action flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
-                viewMode === 'compact'
-                  ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
-                  : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
-              }`}
-              title="Compact Table List"
-            >
-              <Columns className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">List</span>
-            </button>
+            {/* Date range: an optional inclusive local-calendar window. Picking a
+                year clears it and vice versa, through one shared rule. */}
+            <DateRangePicker dateFrom={filters.dateFrom} dateTo={filters.dateTo} onChange={onFilterChange} />
 
-            <button
-              id="view-gallery-btn"
-              type="button"
-              aria-pressed={viewMode === 'gallery'}
-              aria-label="Gallery view"
-              onClick={() => onViewModeChange('gallery')}
-              className={`ui-action flex items-center gap-1.5 px-3 py-1.5 min-h-11 rounded-lg text-xs font-semibold transition ${
-                viewMode === 'gallery'
-                  ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
-                  : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
-              }`}
-              title="Gallery Grid"
-            >
-              <GalleryThumbnails className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">Cards</span>
-            </button>
           </div>
 
-          {/* Sort Direction Toggle */}
-          <button
-            id="toggle-sort-direction"
-            type="button"
-            aria-label={filters.sortDirection === 'newest' ? 'Sorted newest first. Activate to sort oldest first' : 'Sorted oldest first. Activate to sort newest first'}
-            onClick={() =>
-              onFilterChange({
-                sortDirection: filters.sortDirection === 'newest' ? 'oldest' : 'newest',
-              })
-            }
-            className="ui-action flex items-center gap-1 px-3 py-2 min-h-11 rounded-xl text-xs font-medium border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:border-stone-300"
-            title="Sort direction"
-          >
-            <ArrowUpDown className="w-3.5 h-3.5 text-stone-500" />
-            <span className="hidden sm:inline">
-              {filters.sortDirection === 'newest' ? 'Newest first' : 'Oldest first'}
-            </span>
-          </button>
-
-          {/* More Filters Toggle */}
-          <button
-            id="toggle-advanced-filters"
-            type="button"
-            aria-expanded={showAdvanced}
-            onClick={() => setShowAdvanced(!showAdvanced)}
-            className={`ui-action flex items-center gap-1 px-3 py-2 min-h-11 rounded-xl text-xs font-medium transition ${
-              showAdvanced || activeFiltersCount > 0
-                ? 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-800'
-                : 'border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:border-stone-300'
-            }`}
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-            <span>Filters</span>
-            {activeFiltersCount > 0 && (
-              <span className="ml-1 w-4 h-4 rounded-full bg-amber-600 text-white text-[10px] flex items-center justify-center font-bold">
-                {activeFiltersCount}
-              </span>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Quick year pills */}
-      <div className="flex flex-wrap items-center gap-1.5 pb-1 text-xs">
-        <span className="text-stone-400 font-medium mr-1 shrink-0 flex items-center gap-1">
-          <Calendar className="w-3 h-3" /> Year:
-        </span>
-        <button
-          type="button"
-          aria-pressed={filters.selectedYear === 'all'}
-          onClick={() => onFilterChange({ selectedYear: 'all' })}
-          className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition shrink-0 ${
-            filters.selectedYear === 'all'
-              ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900'
-              : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
-          }`}
-        >
-          All Years
-        </button>
-        {availableYears.map((yr) => (
-          <button
-            key={yr}
-            type="button"
-            aria-pressed={filters.selectedYear === yr}
-            onClick={() => onFilterChange({ selectedYear: yr })}
-            className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition shrink-0 ${
-              filters.selectedYear === yr
-                ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900'
-                : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
-            }`}
-          >
-            {yr}
-          </button>
-        ))}
-
-        {/* Date range: an optional inclusive local-calendar window. Picking a
-            year clears it and vice versa, through one shared rule. */}
-        <DateRangePicker dateFrom={filters.dateFrom} dateTo={filters.dateTo} onChange={onFilterChange} />
-
-        {/* Quick toggle chips */}
-        <div className="h-4 w-px bg-stone-200 dark:bg-stone-700 mx-1 shrink-0" />
-
-        <button
-          type="button"
-          aria-pressed={filters.milestonesOnly}
-          onClick={() => onFilterChange({ milestonesOnly: !filters.milestonesOnly })}
-          className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
-            filters.milestonesOnly
-              ? 'bg-amber-500 text-white shadow-xs'
-              : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
-          }`}
-        >
-          <Star className="w-3 h-3 fill-current" /> Milestones
-        </button>
-
-        {/* Saved is the caller's own list: a chip beside the other filters,
-            never a new global tab and never a milestone or a reaction. */}
-        <button
-          type="button"
-          id="filter-saved-only"
-          aria-pressed={filters.savedOnly}
-          onClick={() => onFilterChange({ savedOnly: !filters.savedOnly })}
-          className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
-            filters.savedOnly
-              ? 'bg-amber-500 text-white shadow-xs'
-              : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
-          }`}
-        >
-          {filters.savedOnly ? <BookmarkCheck className="w-3 h-3" /> : <Bookmark className="w-3 h-3" />} Saved
-          <span className="ml-0.5 text-[11px] font-bold opacity-80">{savedCount}</span>
-        </button>
-
-        <button
-          type="button"
-          aria-pressed={filters.hasImagesOnly}
-          onClick={() => onFilterChange({ hasImagesOnly: !filters.hasImagesOnly })}
-          className={`ui-action px-3 py-1 min-h-11 rounded-full font-medium transition flex items-center gap-1 shrink-0 ${
-            filters.hasImagesOnly
-              ? 'bg-sky-600 text-white shadow-xs'
-              : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200'
-          }`}
-        >
-          <ImageIcon className="w-3 h-3" /> With Photos
-        </button>
-
-        {activeFiltersCount > 0 && (
-          <button
-            type="button"
-            aria-label="Reset all filters"
-            onClick={onResetFilters}
-            className="ui-action text-stone-500 hover:text-rose-600 text-xs ml-auto shrink-0 flex items-center gap-1 hover:underline px-2 min-h-11"
-          >
-            <X className="w-3 h-3" /> Reset all
-          </button>
-        )}
-      </div>
-
-      {rangeError && (
-        <p role="alert" id="filter-range-error" className="text-xs text-rose-700 dark:text-rose-300">
-          {rangeError}
-        </p>
-      )}
-
-      {/* Advanced Tag & Emotion Filters drawer */}
-      {showAdvanced && (
-        <div className="pt-3 border-t border-stone-100 dark:border-stone-800 space-y-3.5">
           {/* Tag Categorization selector */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
@@ -403,18 +231,26 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           </div>
         </div>
       )}
-
-      {/* Filter status summary */}
-      <div className="flex items-center justify-between text-xs text-stone-500 dark:text-stone-400 pt-1">
-        <span role="status" aria-live="polite" aria-busy={searchPending}>
-          {searchPending ? 'Updating memories…' : <>Showing <strong className="text-stone-900 dark:text-stone-100">{totalFilteredCount}</strong> of{' '}{totalCount} events</>}
-        </span>
-        {activeFiltersCount > 0 && (
-          <span className="text-amber-700 dark:text-amber-400 font-medium">
-            Active filters applied
-          </span>
-        )}
+      <div className="archival-view-row">
+        <div className="archival-view-tabs" role="group" aria-label="Archive view mode">
+          {([
+            ['timeline', 'Timeline', 'Timeline view', LayoutList],
+            ['gallery', 'Gallery', 'Gallery view', GalleryThumbnails],
+            ['compact', 'List', 'Compact list view', Columns],
+          ] as const).map(([mode, label, accessibleLabel, Icon]) => <button key={mode} type="button" id={`view-${mode}-btn`} aria-pressed={viewMode === mode} aria-label={accessibleLabel} onClick={() => onViewModeChange(mode)}><Icon size={14} />{label}</button>)}
+        </div>
+        <button
+          type="button"
+          id="toggle-sort-direction"
+          className="archival-control"
+          aria-label={filters.sortDirection === 'newest' ? 'Sorted newest first. Activate to sort oldest first' : 'Sorted oldest first. Activate to sort newest first'}
+          onClick={() => onFilterChange({ sortDirection: filters.sortDirection === 'newest' ? 'oldest' : 'newest' })}
+        ><ArrowUpDown size={14} />{filters.sortDirection === 'newest' ? 'Newest first' : 'Oldest first'}</button>
       </div>
-    </div>
+      <div className="archival-filter-status">
+        <span role="status" aria-live="polite" aria-busy={searchPending}>{searchPending ? 'Updating memories…' : <><strong>{totalFilteredCount}</strong> of {totalCount} memories match</>}</span>
+        {activeFiltersCount > 0 && <button type="button" aria-label="Reset all filters" onClick={onResetFilters}><X size={14} />Reset all</button>}
+      </div>
+    </section>
   );
 };

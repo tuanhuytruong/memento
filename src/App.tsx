@@ -22,7 +22,8 @@ import { setImageCacheOwner } from './lib/imageCache';
 import { clearUploadDiagnostics, describeUploadTiming, phaseDiagnostic, recordUploadDiagnostic } from './lib/uploadDiagnostics';
 import { CollaborationModal, SharedInvitations } from './components/CollaborationModal';
 import { AuthScreen } from './components/AuthScreen';
-import { TimelineHeader } from './components/TimelineHeader';
+import { ArchiveShell } from './components/ArchiveShell';
+import { ArchiveWorkspace } from './components/ArchiveWorkspace';
 import { EventTrackNav } from './components/EventTrackNav';
 const EventTrackModal = lazy(() => import('./components/EventTrackModal').then(module => ({ default: module.EventTrackModal })));
 import { FilterBar } from './components/FilterBar';
@@ -37,7 +38,6 @@ const BlindboxMemory = lazy(() => import('./components/BlindboxMemory').then(mod
 const FutureLetterLibrary = lazy(() => import('./components/FutureLetterLibrary').then(module => ({ default: module.FutureLetterLibrary })));
 const StoryLibrary = lazy(() => import('./components/StoryLibrary').then(module => ({ default: module.StoryLibrary })));
 const PostcardComposer = lazy(() => import('./components/PostcardComposer').then(module => ({ default: module.PostcardComposer })));
-import { FloatingMemoryActions } from './components/FloatingMemoryActions';
 import { MemoryResurfacing } from './components/MemoryResurfacing';
 import type { MemoryVisit } from './lib/memoryResurfacing';
 import { DeferredUiBoundary } from './components/DeferredUiBoundary';
@@ -877,10 +877,46 @@ export default function App() {
     return <main className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 flex items-center justify-center p-4"><section className="max-w-md text-center rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 p-6"><h1 className="text-xl font-bold mb-2">Loading your timeline</h1>{dataLoading ? <p className="text-sm text-stone-500">Fetching account data…</p> : <><p role="alert" className="text-sm text-rose-700 dark:text-rose-300 mb-4">{dataError || 'Your account data could not be loaded. No local sample data was substituted.'}</p><button className="rounded-xl bg-amber-600 text-white px-4 py-2 font-semibold" onClick={() => void loadData().catch(() => undefined)}>Retry loading</button><button className="ml-2 text-sm text-stone-500 underline" onClick={() => void handleLogout()}>Sign out</button></>}</section></main>;
   }
 
+  const createInScope = selectedTrack ? canEditSelectedTrack : canCreateEntry;
+  const openNewTrack = () => { setTrackToEdit(null); setIsEventTrackModalOpen(true); };
+  const editTrack = (track: EventTrack) => {
+    if (track.accessRole !== 'owner') return;
+    setTrackToEdit(track);
+    setIsEventTrackModalOpen(true);
+  };
+  const trackNavProps = {
+    tracks: eventTracks,
+    overview,
+    selectedTrackKey,
+    onAddNewTrack: openNewTrack,
+    onEditTrack: editTrack,
+    onAddNewMoment: openCreateEntry,
+    onShareTrack: (track: EventTrack) => { if (track.accessRole === 'owner') setShareTrack(track); },
+    canEditSelectedTrack,
+  };
+
   return (
     <LocalPhotoProvider ownerId={user.id}>
-    <div className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors">
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
+      <ArchiveShell
+        key={`${user.id}:${authGenerationRef.current}`}
+        tracks={eventTracks}
+        overview={overview}
+        activeTrack={selectedTrack}
+        username={user.username}
+        readyLetterCount={letterSummary.readyCount}
+        onSelectTrack={handleSelectTrack}
+        onCreateMemory={createInScope ? openCreateEntry : undefined}
+        onOpenStories={() => setIsStoryLibraryOpen(true)}
+        onOpenLetters={() => setIsLetterLibraryOpen(true)}
+        onOpenBlindbox={() => setIsBlindboxOpen(true)}
+        onCreatePostcard={eventTracks.some(track => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
+        onExportBackup={exportJsonWithPerspectives}
+        onLogout={() => void handleLogout()}
+        tracksPanel={(select, close) => <EventTrackNav {...trackNavProps} variant="directory" onSelectTrack={select} onAddNewTrack={() => { close(); openNewTrack(); }} />}
+      >
+      <ArchiveWorkspace activeTrack={selectedTrack} overview={overview} trackCount={eventTracks.length}
+        trackDetails={selectedTrack && <EventTrackNav {...trackNavProps} variant="details" onSelectTrack={handleSelectTrack} />}
+      >
         {uploadRunning && pendingImageRetry && <div role="status" aria-live="polite" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">Moment saved · Saving {pendingImageRetry.files.length} photo{pendingImageRetry.files.length === 1 ? '' : 's'} in the background…</div>}
         {!uploadRunning && pendingImageRetry && <div role="status" aria-live="polite" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200"><span>{pendingImageRetry.files.length === 1 ? '1 photo has not reached the server yet. It is kept on this device.' : `${pendingImageRetry.files.length} photos have not reached the server yet. They are kept on this device.`}</span><button className="font-semibold underline" onClick={() => void retryImageUploads()}>Retry photo upload</button></div>}
         {dataError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/40 px-4 py-3 text-sm text-rose-800 dark:text-rose-200"><span>{dataError}</span><span className="flex gap-3">{pendingImageRetry && <button disabled={uploadRunning} className="font-semibold underline disabled:opacity-50" onClick={() => void retryImageUploads()}>{uploadRunning ? 'Uploading…' : pendingImageRetry.files.length ? 'Retry image upload' : 'Retry timeline refresh'}</button>}<button className="font-semibold underline" onClick={() => setDataError('')}>Dismiss</button></span></div>}
@@ -889,57 +925,12 @@ export default function App() {
         {perspectiveError && <p role="alert" className="mb-3 text-sm text-rose-700 dark:text-rose-300">Backup failed; no incomplete file was downloaded. {perspectiveError}</p>}
         {invitationError && <p role="status">{invitationError} <button onClick={() => { setInvitationError(''); void loadData(); }}>Retry invitations</button></p>}
         {visitError && <p role="status">{visitError} <button onClick={() => { const generation = authGenerationRef.current; void dataApi.trackVisits().then(rows => { if (generation === authGenerationRef.current) { setVisits(rows); setVisitError(''); } }).catch(() => { if (generation === authGenerationRef.current) setVisitError('Visit history unavailable.'); }); }}>Retry visit history</button></p>}
-        <TimelineHeader
-          overview={overview}
-          trackCount={eventTracks.length}
-          username={user.username}
-          onLogout={() => void handleLogout()}
-          onAddNewEvent={openCreateEntry}
-          // One export path only: a second, lighter one would be the route a
-          // partial backup escapes through.
-          onExportJson={exportJsonWithPerspectives}
-          onOpenStories={() => setIsStoryLibraryOpen(true)}
-          onOpenLetters={() => setIsLetterLibraryOpen(true)} readyLetterCount={letterSummary.readyCount}
-          // Export is owner-only, so the entry point disappears without an owned track.
-          onCreatePostcard={eventTracks.some((track) => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
-          canCreateEntry={canCreateEntry}
-        />
-        <FloatingMemoryActions canCreate={canCreateEntry} onCreate={openCreateEntry} onDiscover={() => setIsBlindboxOpen(true)} hidden={isEventModalOpen || isEventTrackModalOpen || isBlindboxOpen || isPostcardOpen || isStoryLibraryOpen || isLetterLibraryOpen || !!eventToView || !!shareTrack || lightboxState.isOpen} />
         {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
         {selectedTrackKey === 'all' && (
           <MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} />
         )}
-        {/* Event-Based Timeline Navigation & Overview */}
-        <EventTrackNav
-          tracks={eventTracks}
-          overview={overview}
-          selectedTrackKey={selectedTrackKey}
-          onSelectTrack={handleSelectTrack}
-          onAddNewTrack={() => {
-            setTrackToEdit(null);
-            setIsEventTrackModalOpen(true);
-          }}
-          onEditTrack={(track) => {
-            if (track.accessRole !== 'owner') return;
-            setTrackToEdit(track);
-            setIsEventTrackModalOpen(true);
-          }}
-          onAddNewMoment={() => {
-            // Role decides the CTA, including in the merged overview where no
-            // single track is selected.
-            if (!canCreateEntry) return;
-            setEventToEdit(null);
-            setIsEventModalOpen(true);
-          }}
-          onShareTrack={(track) => {
-            if (track.accessRole === 'owner') setShareTrack(track);
-          }}
-          canEditSelectedTrack={canCreateEntry}
-        />
-
         {/* Filter and Control Toolbar */}
-        <div className="mb-8">
-          <FilterBar
+        <FilterBar
             filters={filters}
             onFilterChange={(updated) => setFilters((prev) => applyFilterPatch(prev, updated))}
             onResetFilters={() =>
@@ -972,15 +963,14 @@ export default function App() {
                 ? (overview?.total ?? 0)
                 : (overview?.tracks.find(row => `${row.trackOwnerId}:${row.trackId}` === selectedTrackKey)?.count ?? 0)
             }
-          />
-        </div>
+        />
 
         <MonthQuickBrowseRail hidden={snapshot||viewMode!=='timeline'||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||isStoryLibraryOpen||isLetterLibraryOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} disabled={snapshot||feed.loading||feed.seeking} onNavigate={async (item)=>{const page=await feed.seek({ownerId:item.ownerId,id:item.id});if(page)landBrowse(page);}}/>
         {!snapshot&&feed.navigationTarget&&<div className="mb-4 flex items-center gap-3 text-sm text-stone-500" role="status">Browsing from {'month'in feed.navigationTarget?feed.navigationTarget.month:'selected memory'}<button className="min-h-11 px-3 underline" onClick={feed.newer}>{filters.sortDirection==='oldest'?'Back to start':'Back to latest'}</button></div>}
         {!snapshot&&feed.hasPrevious&&<div className="flex justify-center mb-4"><button id="feed-load-previous" disabled={feed.loading||feed.seeking} className="min-h-11 px-5 rounded-xl border border-stone-300 dark:border-stone-700" onClick={()=>pageWithAnchor(feed.loadPrevious)}>Load previous memories</button></div>}
         {/* View Switcher: Timeline, Compact List, or Gallery */}
-        <main aria-busy={search.pending || feed.loading}>
-          <div id="feed-transition-status" role="status" aria-live="polite" className="min-h-11 text-sm text-stone-500">
+        <main className={viewMode === 'timeline' ? 'archival-timeline-feed' : undefined} aria-busy={search.pending || feed.loading}>
+          <div id="feed-transition-status" role="status" aria-live="polite" className="archival-feed-status">
             {snapshot ? 'Previous results — not the current filters. ' : feed.items.length && feed.loading && !feed.appendLoading ? 'Updating memories… ' : ''}
             {snapshot && (feed.error ? 'Update failed. Retry the requested filters.' : 'Updating memories…')}
             {feed.error && <><span role="alert">{feed.error}</span><button id="feed-transition-retry" className="min-h-11 px-3 underline" onClick={feed.retry}>Retry requested results</button></>}
@@ -1017,7 +1007,7 @@ export default function App() {
               onResetFilters={() =>
                 setFilters({
                   search: '',
-                  selectedEventId: selectedTrackKey,
+                  selectedEventId: selectedTrack?.id ?? 'all',
                   selectedTags: [],
                   selectedEmotions: [],
                   selectedYear: 'all',
@@ -1034,6 +1024,7 @@ export default function App() {
                 filters.selectedTags.length > 0 ||
                 filters.selectedEmotions.length > 0 ||
                 filters.selectedYear !== 'all' ||
+                Boolean(filters.dateFrom || filters.dateTo) ||
                 filters.milestonesOnly ||
                 filters.hasImagesOnly
               }
@@ -1067,14 +1058,14 @@ export default function App() {
           )}
           </motion.div>
         </main>
-      </div>
 
       <div inert={snapshot} aria-hidden={snapshot || undefined} style={snapshot ? {visibility:'hidden',minHeight:120} : undefined}>
       <LoadMoreMemories hasMore={feed.hasMore} loading={feed.loading || search.pending} error={null}
         windowShifted={feed.windowShifted} loadedCount={feed.items.length} totalCount={feed.total}
         onLoadMore={()=>pageWithAnchor(feed.loadMore)} onNewer={feed.newer} onRefresh={feed.refresh} />
       </div>
-      <div aria-hidden="true" className="h-24" />
+      </ArchiveWorkspace>
+      </ArchiveShell>
       <DeferredUiBoundary key={`${user.id}:${authGenerationRef.current}:${overlayEpoch}`}>
       {isLetterLibraryOpen && <FutureLetterLibrary key={`${user.id}:${authGenerationRef.current}`} tracks={eventTracks} currentUserId={user.id} generation={authGenerationRef.current} onClose={() => setIsLetterLibraryOpen(false)} onChanged={letterSummary.refresh} />}
       {isStoryLibraryOpen && <StoryLibrary key={`${user.id}:${authGenerationRef.current}`} tracks={eventTracks} currentUserId={user.id} generation={authGenerationRef.current} initialTrackKey={selectedTrackKey} onClose={() => setIsStoryLibraryOpen(false)} onOpenMoment={openDetail} />}
@@ -1165,7 +1156,6 @@ export default function App() {
         onClose={() => setIsPostcardOpen(false)}
       />}</ModalTransition>
       </DeferredUiBoundary>
-    </div>
     </LocalPhotoProvider>
   );
 }
