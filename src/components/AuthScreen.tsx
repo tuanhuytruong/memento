@@ -141,7 +141,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ initialError, onSubmit }
 
       <figure className="archival-auth__hero">
         <picture>
-          <source media="(max-width: 767px)" srcSet={archivalHeroCompact} width={768} height={492} />
+          <source media="(width < 768px), (height <= 480px)" srcSet={archivalHeroCompact} width={768} height={492} />
           <img src={archivalHero} width={1024} height={1536} decoding="async" alt="" />
         </picture>
         <figcaption className="archival-auth__caption">
