@@ -5,6 +5,7 @@ export {sealBrowseCursor,openBrowseCursor};
 const invalid=message=>{throw new ApiError(400,message);};
 export function validateMonth(month){if(typeof month!=='string'||!(month==='undated'||/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(month)))invalid('invalid month');return month;}
 export function validateBrowseRequest(body={},purpose){
+ if(body.sortBy!=null&&body.sortBy!=='date')invalid('Month navigation requires date sort');
  const max=purpose==='months'?120:purpose==='preview'?40:100;
  const limit=body.limit??(purpose==='months'?120:purpose==='preview'?24:40);
  if(!Number.isInteger(limit)||limit<1||limit>max)invalid('invalid limit');

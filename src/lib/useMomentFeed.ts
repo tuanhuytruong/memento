@@ -19,6 +19,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TimelineEvent } from '../types';
 
+export type MomentSortBy = 'date' | 'relevance' | 'intensity';
+
 export interface MomentFeedQuery {
   search?: string;
   selectedYear?: string;
@@ -31,6 +33,7 @@ export interface MomentFeedQuery {
   savedOnly?: boolean;
   trackKey?: string | null;
   sortDirection?: 'newest' | 'oldest';
+  sortBy?: MomentSortBy;
   limit?: number;
 }
 
@@ -57,6 +60,7 @@ export function feedScopeHash(query: MomentFeedQuery, generation: number): strin
     v: Boolean(query.savedOnly),
     k: query.trackKey ?? null,
     d: query.sortDirection ?? 'newest',
+    ...(query.sortBy && query.sortBy !== 'date' ? { sortBy: query.sortBy } : {}),
   });
   let hash = 0x811c9dc5;
   for (let index = 0; index < canonical.length; index += 1) {
@@ -265,7 +269,7 @@ export function useMomentFeed(options: {
 
   const loadPrevious=useCallback(()=>{if(!busy.current && !paused && landedScope===scope && hasPrevious)void run('previous',pages);},[hasPrevious,pages,run,paused,landedScope,scope]);
   const seek=useCallback(async(target:{ownerId:string;id:string}|{month:string}, external?:AbortSignal,refreshing=false,retrying=false)=>{
-    if(!enabled || paused || (!refreshing && landedScope!==scope) || !fetchSeek || busy.current)return null;
+    if(!enabled || paused || (query.sortBy ?? 'date') !== 'date' || (!refreshing && landedScope!==scope) || !fetchSeek || busy.current)return null;
     setRetryLanding(null);
     const id=++requestId.current;activeController.current?.abort();const controller=new AbortController();activeController.current=controller;
     const abort=()=>controller.abort();external?.addEventListener('abort',abort,{once:true});if(external?.aborted)controller.abort();
@@ -278,9 +282,9 @@ export function useMomentFeed(options: {
   },[fetchSeek,query,scope,enabled,paused,landedScope,generation,run]);
   const refresh = useCallback(() => {
     setDropped(0);
-    if(anchor.current && fetchSeek){void seek(anchor.current,undefined,true);return;}
+    if((query.sortBy ?? 'date') === 'date' && anchor.current && fetchSeek){void seek(anchor.current,undefined,true);return;}
     setReloadToken(token => token + 1);
-  }, [seek,fetchSeek]);
+  }, [seek,fetchSeek,query.sortBy]);
 
   return {
     snapshot: enabled && !denied && landedGeneration === generation && landedScope !== null && (paused || landedScope !== scope),

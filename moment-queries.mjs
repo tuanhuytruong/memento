@@ -125,7 +125,7 @@ export const DEFAULT_LIMIT = 40;
 export const MAX_LIMIT = 100;
 
 const DIRECTIONS = new Set(['newest', 'oldest']);
-const SORT_FIELDS = new Set(['date']);
+const SORT_FIELDS = new Set(['date', 'relevance', 'intensity']);
 
 /** A cursor is opaque to callers but never an authorization token. */
 export function encodeCursor(tuple) {
@@ -160,10 +160,11 @@ export function decodeCursor(raw, expectedScope) {
  * Hash of everything that decides which rows are eligible. Baked into the
  * cursor so pagination cannot silently continue across a changed filter set.
  */
-export function scopeHash(filters, direction, userId) {
+export function scopeHash(filters, direction, userId, sortBy = 'date') {
   const canonical = JSON.stringify({
     u: userId,
     d: direction,
+    ...(sortBy === 'date' ? {} : { sortBy }),
     q: filters.search ?? '',
     y: filters.selectedYear ?? 'all',
     f: filters.dateFrom ?? '',
@@ -331,10 +332,56 @@ export function buildMomentPredicates(userId, filters, fold = canonicalFold) {
   return { args, where };
 }
 
+// Prototype weights, applied to authoritative relations rather than any
+// copies in a moment document. `strpos` treats the search needle literally.
+function smartRank(sortBy, filters, args) {
+  const doc = 'q.document';
+  const text = key => `${doc}->>'${key}'`;
+  const intensity = `(CASE WHEN jsonb_typeof(${doc}->'emotionIntensity') = 'number'
+    THEN (${text('emotionIntensity')})::numeric END)`;
+  if (sortBy === 'intensity') {
+    return `CASE WHEN coalesce(${text('emotion')}, '') <> '' THEN coalesce(${intensity}, 3) ELSE 0 END`;
+  }
+
+  const related = (table, owner, id) => `FROM {schema}.${table} WHERE ${owner} = q.owner_id AND ${id} = q.id`;
+  const photos = related('images', 'owner_id', 'moment_id');
+  const saved = related('saved_moments', 'moment_owner_id', 'moment_id');
+  const perspectives = related('moment_perspectives', 'moment_owner_id', 'moment_id');
+  const reactions = related('moment_reactions', 'moment_owner_id', 'moment_id');
+  const weights = [
+    `CASE WHEN ${doc}->'isMilestone' = 'true'::jsonb THEN 32 ELSE 0 END`,
+    `CASE WHEN EXISTS (SELECT 1 ${saved} AND user_id = $1) THEN 20 ELSE 0 END`,
+    `(SELECT count(*) ${perspectives}) * 14`,
+    `(SELECT count(*) ${reactions}) * 3`,
+    `CASE WHEN EXISTS (SELECT 1 ${photos}) THEN 10 ELSE 0 END`,
+    `CASE WHEN coalesce(${text('idea')}, '') <> '' THEN 6 ELSE 0 END`,
+    `coalesce(${intensity}, 0) * 2`,
+  ];
+  const needle = filters.search?.trim().toLowerCase();
+  if (needle) {
+    args.push(needle);
+    const hit = field => `strpos(lower(${field}), $${args.length}) > 0`;
+    const tags = `CASE WHEN jsonb_typeof(${doc}->'tags') = 'array' THEN ${doc}->'tags' ELSE '[]'::jsonb END`;
+    const bonus = (condition, weight) => `CASE WHEN ${condition} THEN ${weight} ELSE 0 END`;
+    weights.push(
+      bonus(hit(text('title')), 45),
+      bonus(hit(text('idea')), 28),
+      bonus(['name', 'city', 'country'].map(key => hit(`${doc}->'location'->>'${key}'`)).join(' OR '), 24),
+      bonus(`EXISTS (SELECT 1 FROM jsonb_array_elements_text(${tags}) AS tags(value) WHERE ${hit('tags.value')})`, 22),
+      bonus(hit(text('description')), 16),
+      bonus(`EXISTS (SELECT 1 ${perspectives} AND ${hit('body')})`, 14),
+    );
+  }
+  return weights.map(weight => `(${weight})`).join(' + ');
+}
+
 export async function queryMoments(client, userId, request, schema, helpers = {}) {
   const { fold = canonicalFold, reactionSummaries } = helpers;
-  const { limit, direction, filters } = request;
-  const scope = scopeHash(filters, request.direction, userId);
+  const { limit, direction, filters, sortBy = 'date' } = request;
+  if (!SORT_FIELDS.has(sortBy)) throw new ApiError(400, 'sortBy is not supported');
+  const smart = sortBy !== 'date';
+  if (smart && request.seekTuple) throw new ApiError(400, 'Month navigation requires date sort');
+  const scope = scopeHash(filters, direction, userId, sortBy);
   const navigation = request.navigation ?? 'next';
   if (!['next','previous'].includes(navigation)) throw new ApiError(400, 'invalid navigation direction');
   const binding = {user:userId,scope,purpose:'feed',navigation};
@@ -344,30 +391,33 @@ export async function queryMoments(client, userId, request, schema, helpers = {}
 
   const { args, where } = buildMomentPredicates(userId, filters, fold);
 
-  // Keyset predicate. Newest sorts the tuple descending, oldest ascending.
+  // Only the primary score flips for smart sorts. Negate it for Low → High
+  // so the entire display tuple still compares DESC with newest-first ties.
   const reverse = navigation === 'previous';
-  const cmp = (direction === 'newest') !== reverse ? '<' : '>';
+  const descending = (smart || direction === 'newest') !== reverse;
+  const cmp = descending ? '<' : '>';
+  const order = descending ? 'DESC' : 'ASC';
+  const rank = smart ? `(${smartRank(sortBy, filters, args)}) * ${direction === 'oldest' ? '-1' : '1'}` : null;
+  const date = smart ? `coalesce(q.document->>'date', '')` : dateKey('q');
+  const time = smart ? `coalesce(q.document->>'time', '')` : timeKey('q');
+  const keys = [...(smart ? ['q.sort_rank'] : []), date, time, 'q.owner_id', 'q.id'];
   const boundary = request.seekTuple || cursor;
   if (boundary) {
-    args.push(boundary.date, boundary.time, boundary.ownerId, boundary.id);
-    const [d, t, o, i] = [`$${args.length - 3}`, `$${args.length - 2}`, `$${args.length - 1}`, `$${args.length}`];
-    // Row expressions on the left, cursor values on the right. Getting this
-    // backwards inverts the page: "newest" would walk toward older rows
-    // instead of away from the cursor.
-    where.push(`(${dateKey('q')}, ${timeKey('q')}, q.owner_id, q.id) ${request.seekTuple ? (cmp === '<' ? '<=' : '>=') : cmp} (${d}, ${t}, ${o}, ${i})`);
+    const values = [...(smart ? [boundary.rank] : []), boundary.date, boundary.time, boundary.ownerId, boundary.id];
+    const placeholders = values.map(value => { args.push(value); return `$${args.length}`; });
+    where.push(`(${keys.join(', ')}) ${request.seekTuple ? `${cmp}=` : cmp} (${placeholders.join(', ')})`);
   }
   args.push(limit + 1);
   const limitParam = `$${args.length}`;
-  const order = (direction === 'newest') !== reverse ? 'DESC' : 'ASC';
 
   const sql = `
     WITH authorized AS (${AUTHORIZED_SCOPE.replace('m.document, m.version', 'm.document, m.version, m.search_text')}),
-    q AS (SELECT * FROM authorized)
+    q AS (${smart ? `SELECT q.*, ${rank} AS sort_rank FROM authorized q` : 'SELECT * FROM authorized'})
     SELECT q.owner_id, q.id, q.event_id, q.document, q.version,
-           ${dateKey('q')} AS sort_date, ${timeKey('q')} AS sort_time
+           ${date} AS sort_date, ${time} AS sort_time${smart ? ', q.sort_rank::text AS sort_rank' : ''}
     FROM q
     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-    ORDER BY ${dateKey('q')} ${order}, ${timeKey('q')} ${order}, q.owner_id ${order}, q.id ${order}
+    ORDER BY ${keys.map(key => `${key} ${order}`).join(', ')}
     LIMIT ${limitParam}`.replace(/\{schema\}/g, schema);
 
   const { rows } = await client.query(sql, args);
@@ -375,7 +425,10 @@ export async function queryMoments(client, userId, request, schema, helpers = {}
   const page = hasMore ? rows.slice(0, limit) : rows;
   if (reverse) page.reverse();
   const first = page[0];
-  const token = (row, nav) => row ? sealBrowseCursor({date:row.sort_date,time:row.sort_time,ownerId:row.owner_id,id:row.id,direction,scope},{user:userId,scope,purpose:'feed',navigation:nav}) : null;
+  const token = (row, nav) => row ? sealBrowseCursor({
+    date: row.sort_date, time: row.sort_time, ownerId: row.owner_id, id: row.id, direction, scope,
+    ...(smart ? { rank: row.sort_rank } : {}),
+  }, { ...binding, navigation: nav }) : null;
   const last = page[page.length - 1];
 
   // Batched, page-scoped enrichment: one query for images, one for reactions.

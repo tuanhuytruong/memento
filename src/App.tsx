@@ -8,8 +8,8 @@ import { trackIdentity, momentIdentity } from './lib/resourceIdentity';
 import { createReactionQueue } from './lib/reactionQueue';
 import { matchesMomentFilters, compareMoments, filterProjection, applyFilterPatch } from './lib/momentFilters';
 import { releaseAllMomentDrafts } from './lib/useMomentDraft';
-import { useMomentFeed, feedScopeHash } from './lib/useMomentFeed';
-import {MonthQuickBrowseRail} from './components/MonthQuickBrowseRail';
+import { useMomentFeed, feedScopeHash, type MomentSortBy } from './lib/useMomentFeed';
+import {MonthQuickBrowse} from './components/MonthQuickBrowse';
 import { useDebouncedSearch } from './lib/useDebouncedSearch';
 import { FeedLoadingState } from './components/FeedLoadingState';
 import { motion, useReducedMotion } from 'motion/react';
@@ -22,8 +22,8 @@ import { setImageCacheOwner } from './lib/imageCache';
 import { clearUploadDiagnostics, describeUploadTiming, phaseDiagnostic, recordUploadDiagnostic } from './lib/uploadDiagnostics';
 import { CollaborationModal, SharedInvitations } from './components/CollaborationModal';
 import { AuthScreen } from './components/AuthScreen';
-import { ArchiveShell } from './components/ArchiveShell';
-import { ArchiveWorkspace } from './components/ArchiveWorkspace';
+import { ArchiveShell, type WorkspaceSection } from './components/ArchiveShell';
+import { ArchiveWorkspace, ArchiveOverview } from './components/ArchiveWorkspace';
 import { EventTrackNav } from './components/EventTrackNav';
 const EventTrackModal = lazy(() => import('./components/EventTrackModal').then(module => ({ default: module.EventTrackModal })));
 import { FilterBar } from './components/FilterBar';
@@ -38,6 +38,7 @@ const BlindboxMemory = lazy(() => import('./components/BlindboxMemory').then(mod
 const FutureLetterLibrary = lazy(() => import('./components/FutureLetterLibrary').then(module => ({ default: module.FutureLetterLibrary })));
 const StoryLibrary = lazy(() => import('./components/StoryLibrary').then(module => ({ default: module.StoryLibrary })));
 const PostcardComposer = lazy(() => import('./components/PostcardComposer').then(module => ({ default: module.PostcardComposer })));
+const AtlasWorkspace = lazy(() => import('./components/AtlasWorkspace').then(module => ({ default: module.AtlasWorkspace })));
 import { MemoryResurfacing } from './components/MemoryResurfacing';
 import type { MemoryVisit } from './lib/memoryResurfacing';
 import { DeferredUiBoundary } from './components/DeferredUiBoundary';
@@ -240,9 +241,23 @@ export default function App() {
   const [trackToEdit, setTrackToEdit] = useState<EventTrack | null>(null);
 
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
-  const [isPostcardOpen, setIsPostcardOpen] = useState(false);
-  const [isLetterLibraryOpen, setIsLetterLibraryOpen] = useState(false);
-  const [isStoryLibraryOpen, setIsStoryLibraryOpen] = useState(false);
+  const [section, setSection] = useState<WorkspaceSection>('archive');
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [density, setDensity] = useState(3);
+  const [sortBy, setSortBy] = useState<MomentSortBy>('date');
+  useEffect(() => {
+    if (section !== 'archive') return;
+    const openQuickJump = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k' || document.querySelector('[aria-modal="true"]')) return;
+      const searchInput = document.getElementById('timeline-search-input');
+      if (!searchInput) return;
+      event.preventDefault();
+      searchInput.focus();
+    };
+    document.addEventListener('keydown', openQuickJump);
+    return () => document.removeEventListener('keydown', openQuickJump);
+  }, [section]);
+  const leaveGuard = useRef<(() => boolean) | null>(null);
   const [eventToEdit, setEventToEdit] = useState<TimelineEvent | null>(null);
   const [eventToView, setEventToView] = useState<TimelineEvent | null>(null);
 
@@ -268,8 +283,7 @@ export default function App() {
     uploadControllers.current.clear();
     reactionPending.current.clear();
     setSelectedTrackKey('all'); setVisits([]); visitWrites.current.clear();
-    setIsPostcardOpen(false);    setIsStoryLibraryOpen(false);
-    setIsLetterLibraryOpen(false);
+    setSection('archive'); setBrowseOpen(false);
     // No private draft crosses an account or session boundary.
     releaseAllMomentDrafts().forEach((url) => { try { URL.revokeObjectURL(url); } catch { /* already revoked */ } });
     clearUploadDiagnostics();
@@ -556,8 +570,8 @@ export default function App() {
   const availableYears = useMemo(() => overview?.years ?? [], [overview]);
 
   const search = useDebouncedSearch(filters.search, authGenerationRef.current);
-  const feedQuery = useMemo(() => ({ ...filterProjection(filters), search: search.value, sortDirection: filters.sortDirection,
-    trackKey: selectedTrackKey === 'all' ? null : selectedTrackKey, limit: 40 }), [filters, selectedTrackKey, search.value]);
+  const feedQuery = useMemo(() => ({ ...filterProjection(filters), search: search.value, sortDirection: filters.sortDirection, sortBy,
+    trackKey: selectedTrackKey === 'all' ? null : selectedTrackKey, limit: 40 }), [filters, selectedTrackKey, search.value, sortBy]);
   const fetchFeedPage = useCallback(async ({ cursor, navigation, query, signal }: any) => {
     const generation = authGenerationRef.current;
     try { return await dataApi.queryMoments({ ...query, cursor, navigation, includeTotal: cursor === null }, signal); }
@@ -877,6 +891,25 @@ export default function App() {
     return <main className="min-h-screen bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 flex items-center justify-center p-4"><section className="max-w-md text-center rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 p-6"><h1 className="text-xl font-bold mb-2">Loading your timeline</h1>{dataLoading ? <p className="text-sm text-stone-500">Fetching account data…</p> : <><p role="alert" className="text-sm text-rose-700 dark:text-rose-300 mb-4">{dataError || 'Your account data could not be loaded. No local sample data was substituted.'}</p><button className="rounded-xl bg-amber-600 text-white px-4 py-2 font-semibold" onClick={() => void loadData().catch(() => undefined)}>Retry loading</button><button className="ml-2 text-sm text-stone-500 underline" onClick={() => void handleLogout()}>Sign out</button></>}</section></main>;
   }
 
+  const navigate = (target: WorkspaceSection) => {
+    if (target !== section) {
+      if (leaveGuard.current && !leaveGuard.current()) return false;
+      setSection(target);
+      window.scrollTo({top: 0, behavior: 'instant'});
+    }
+    return true;
+  };
+  const selectArchiveTrack = (track: EventTrack | null) => {
+    if (!navigate('archive')) return false;
+    handleSelectTrack(track);
+    window.scrollTo({top: 0, behavior: 'instant'});
+    return true;
+  };
+  const hasPostcards = eventTracks.some(track => track.accessRole === 'owner' && track.resourceOwnerId === user.id);
+  const filterFromAtlas = (patch: Partial<FilterState>) => {
+    if (selectArchiveTrack(null)) setFilters(prev => applyFilterPatch(prev, patch));
+  };
+  const resurfacing = <MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} />;
   const createInScope = selectedTrack ? canEditSelectedTrack : canCreateEntry;
   const openNewTrack = () => { setTrackToEdit(null); setIsEventTrackModalOpen(true); };
   const editTrack = (track: EventTrack) => {
@@ -904,17 +937,17 @@ export default function App() {
         activeTrack={selectedTrack}
         username={user.username}
         readyLetterCount={letterSummary.readyCount}
-        onSelectTrack={handleSelectTrack}
+        section={section} onSection={navigate} viewMode={viewMode} onViewMode={setViewMode}
+        onSelectTrack={selectArchiveTrack}
+        onNewTrack={openNewTrack} onEditTrack={editTrack} onShareTrack={trackNavProps.onShareTrack}
+        onBrowse={section === 'archive' && sortBy === 'date' && !snapshot && !feed.loading && !feed.seeking ? () => setBrowseOpen(true) : undefined}
+        discovery={<MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} inSheet onOpen={openSuggested} />}
         onCreateMemory={createInScope ? openCreateEntry : undefined}
-        onOpenStories={() => setIsStoryLibraryOpen(true)}
-        onOpenLetters={() => setIsLetterLibraryOpen(true)}
         onOpenBlindbox={() => setIsBlindboxOpen(true)}
-        onCreatePostcard={eventTracks.some(track => track.accessRole === 'owner' && track.resourceOwnerId === user.id) ? () => setIsPostcardOpen(true) : undefined}
         onExportBackup={exportJsonWithPerspectives}
         onLogout={() => void handleLogout()}
-        tracksPanel={(select, close) => <EventTrackNav {...trackNavProps} variant="directory" onSelectTrack={select} onAddNewTrack={() => { close(); openNewTrack(); }} />}
       >
-      <ArchiveWorkspace activeTrack={selectedTrack} overview={overview} trackCount={eventTracks.length}
+      {section === 'archive' ? <ArchiveWorkspace viewMode={viewMode} onViewMode={setViewMode} density={density} onDensity={setDensity} activeTrack={selectedTrack} trackCount={eventTracks.length}
         trackDetails={selectedTrack && <EventTrackNav {...trackNavProps} variant="details" onSelectTrack={handleSelectTrack} />}
       >
         {uploadRunning && pendingImageRetry && <div role="status" aria-live="polite" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">Moment saved · Saving {pendingImageRetry.files.length} photo{pendingImageRetry.files.length === 1 ? '' : 's'} in the background…</div>}
@@ -925,13 +958,12 @@ export default function App() {
         {perspectiveError && <p role="alert" className="mb-3 text-sm text-rose-700 dark:text-rose-300">Backup failed; no incomplete file was downloaded. {perspectiveError}</p>}
         {invitationError && <p role="status">{invitationError} <button onClick={() => { setInvitationError(''); void loadData(); }}>Retry invitations</button></p>}
         {visitError && <p role="status">{visitError} <button onClick={() => { const generation = authGenerationRef.current; void dataApi.trackVisits().then(rows => { if (generation === authGenerationRef.current) { setVisits(rows); setVisitError(''); } }).catch(() => { if (generation === authGenerationRef.current) setVisitError('Visit history unavailable.'); }); }}>Retry visit history</button></p>}
-        {/* Calm rediscovery: only in the all-tracks overview, never a second primary action */}
-        {selectedTrackKey === 'all' && (
-          <MemoryResurfacing tracks={eventTracks} visits={visits} sessionGeneration={authGenerationRef.current} revision={feedRevision} onOpen={openSuggested} />
-        )}
+        {selectedTrackKey === 'all' && !filters.search && !filters.savedOnly && !filters.milestonesOnly && !filters.hasImagesOnly && !filters.selectedEmotions.length && !filters.selectedTags.length && filters.selectedYear === 'all' && !filters.dateFrom && !filters.dateTo && resurfacing}
         {/* Filter and Control Toolbar */}
         <FilterBar
             filters={filters}
+            sortBy={sortBy}
+            onSortBy={mode => { setSortBy(mode); setBrowseOpen(false); setFilters(prev => ({...prev, sortDirection: 'newest'})); }}
             onFilterChange={(updated) => setFilters((prev) => applyFilterPatch(prev, updated))}
             onResetFilters={() =>
               setFilters({
@@ -950,14 +982,12 @@ export default function App() {
             }
             availableTags={availableTags}
             availableYears={availableYears}
-            viewMode={viewMode}
-            onViewModeChange={setViewMode}
             searchPending={waiting || snapshot}
             onSearchEnter={search.flush}
             onSearchCompositionStart={search.compositionStart}
             onSearchCompositionEnd={search.compositionEnd}
-            totalFilteredCount={feed.total ?? 0}
             savedCount={savedCount}
+            totalFilteredCount={feed.total ?? 0}
             totalCount={
               selectedTrackKey === 'all'
                 ? (overview?.total ?? 0)
@@ -965,7 +995,7 @@ export default function App() {
             }
         />
 
-        <MonthQuickBrowseRail hidden={snapshot||viewMode!=='timeline'||isEventModalOpen||isEventTrackModalOpen||isBlindboxOpen||isPostcardOpen||isStoryLibraryOpen||isLetterLibraryOpen||!!eventToView||!!shareTrack||lightboxState.isOpen} empty={!feed.items.length} query={feedQuery} generation={authGenerationRef.current} disabled={snapshot||feed.loading||feed.seeking} onNavigate={async (item)=>{const page=await feed.seek({ownerId:item.ownerId,id:item.id});if(page)landBrowse(page);}}/>
+        <ArchiveOverview overview={overview} tracks={eventTracks} onOpenAtlas={() => navigate('atlas')} selectedEmotions={filters.selectedEmotions} onToggleEmotionFilter={mood => setFilters(prev => applyFilterPatch(prev, {selectedEmotions: prev.selectedEmotions.includes(mood) ? prev.selectedEmotions.filter(item => item !== mood) : [...prev.selectedEmotions, mood]}))} onClearEmotionFilters={() => setFilters(prev => applyFilterPatch(prev, {selectedEmotions: []}))} />
         {!snapshot&&feed.navigationTarget&&<div className="mb-4 flex items-center gap-3 text-sm text-stone-500" role="status">Browsing from {'month'in feed.navigationTarget?feed.navigationTarget.month:'selected memory'}<button className="min-h-11 px-3 underline" onClick={feed.newer}>{filters.sortDirection==='oldest'?'Back to start':'Back to latest'}</button></div>}
         {!snapshot&&feed.hasPrevious&&<div className="flex justify-center mb-4"><button id="feed-load-previous" disabled={feed.loading||feed.seeking} className="min-h-11 px-5 rounded-xl border border-stone-300 dark:border-stone-700" onClick={()=>pageWithAnchor(feed.loadPrevious)}>Load previous memories</button></div>}
         {/* View Switcher: Timeline, Compact List, or Gallery */}
@@ -977,12 +1007,14 @@ export default function App() {
           </div>
           {initialWaiting && <FeedLoadingState view={viewMode} />}
           <motion.div key={viewMode} {...contentMotion(!!reducedMotion)} inert={snapshot || initialWaiting} data-feed-snapshot={snapshot || undefined}>
-          {!initialWaiting && !(feed.error && !feed.items.length) && viewMode === 'timeline' && (
+          {!initialWaiting && !(feed.error && !feed.items.length) && (viewMode === 'timeline' || !filteredEvents.length) && (
             <TimelineView
               onToggleReaction={handleToggleReaction}
               currentUsername={user.username}
               events={filteredEvents}
+              ranked={sortBy !== 'date'}
               tracks={eventTracks}
+              density={density} savedKeys={savedKeys} onToggleSave={handleToggleSave}
               currentTrackKey={selectedTrackKey}
               canCreateEntry={selectedTrack ? canEditSelectedTrack : canCreateEntry}
               hasAnyTrack={eventTracks.length > 0}
@@ -1031,30 +1063,11 @@ export default function App() {
             />
           )}
 
-          {!initialWaiting && !(feed.error && !feed.items.length) && viewMode === 'compact' && (
-            <CompactListView
-              events={filteredEvents}
-              tracks={eventTracks}
-              onSelectTrack={handleSelectTrack}
-              onViewDetails={openDetail}
-              onEdit={(evt) => {
-                setEventToEdit(evt);
-                setIsEventModalOpen(true);
-              }}
-              onDelete={(event) => runMutation(() => handleDeleteEvent(event))}
-              onTagClick={handleTagClick}
-            />
+          {!initialWaiting && !(feed.error && !feed.items.length) && !!filteredEvents.length && viewMode === 'compact' && (
+            <CompactListView events={filteredEvents} tracks={eventTracks} savedKeys={savedKeys} onViewDetails={openDetail} />
           )}
-
-          {!initialWaiting && !(feed.error && !feed.items.length) && viewMode === 'gallery' && (
-            <GalleryView
-              events={filteredEvents}
-              tracks={eventTracks}
-              onSelectTrack={handleSelectTrack}
-              onViewDetails={openDetail}
-              onTagClick={handleTagClick}
-              onOpenImageLightbox={handleOpenLightbox}
-            />
+          {!initialWaiting && !(feed.error && !feed.items.length) && !!filteredEvents.length && viewMode === 'gallery' && (
+            <GalleryView events={filteredEvents} tracks={eventTracks} onViewDetails={openDetail} />
           )}
           </motion.div>
         </main>
@@ -1064,11 +1077,14 @@ export default function App() {
         windowShifted={feed.windowShifted} loadedCount={feed.items.length} totalCount={feed.total}
         onLoadMore={()=>pageWithAnchor(feed.loadMore)} onNewer={feed.newer} onRefresh={feed.refresh} />
       </div>
-      </ArchiveWorkspace>
+      </ArchiveWorkspace> : <DeferredUiBoundary>
+        {section === 'letters' && <FutureLetterLibrary workspace leaveGuard={leaveGuard} tracks={eventTracks} currentUserId={user.id} generation={authGenerationRef.current} onClose={() => { setSection('archive'); window.scrollTo({top: 0, behavior: 'instant'}); }} onChanged={letterSummary.refresh} />}
+        {section === 'stories' && <StoryLibrary workspace leaveGuard={leaveGuard} tracks={eventTracks} currentUserId={user.id} generation={authGenerationRef.current} initialTrackKey={selectedTrackKey} onClose={() => { setSection('archive'); window.scrollTo({top: 0, behavior: 'instant'}); }} onOpenMoment={openDetail} />}
+        {section === 'postcards' && (hasPostcards ? <PostcardComposer workspace leaveGuard={leaveGuard} isOpen tracks={eventTracks} currentUserId={user.id} onClose={() => { setSection('archive'); window.scrollTo({top: 0, behavior: 'instant'}); }} /> : <main className="archival-workspace"><h1 className="font-serif text-3xl">Postcard Press</h1><p className="mt-3">Postcards can only use memories from tracks you own.</p></main>)}
+        {section === 'atlas' && <AtlasWorkspace overview={overview} onFilterByMood={mood => filterFromAtlas({selectedEmotions:[mood]})} onFilterByPlace={place => filterFromAtlas({search:place})} onFilterByTag={tag => filterFromAtlas({selectedTags:[tag]})} />}
+      </DeferredUiBoundary>}
       </ArchiveShell>
       <DeferredUiBoundary key={`${user.id}:${authGenerationRef.current}:${overlayEpoch}`}>
-      {isLetterLibraryOpen && <FutureLetterLibrary key={`${user.id}:${authGenerationRef.current}`} tracks={eventTracks} currentUserId={user.id} generation={authGenerationRef.current} onClose={() => setIsLetterLibraryOpen(false)} onChanged={letterSummary.refresh} />}
-      {isStoryLibraryOpen && <StoryLibrary key={`${user.id}:${authGenerationRef.current}`} tracks={eventTracks} currentUserId={user.id} generation={authGenerationRef.current} initialTrackKey={selectedTrackKey} onClose={() => setIsStoryLibraryOpen(false)} onOpenMoment={openDetail} />}
       {/* Create / Edit Event Track Modal */}
       <ModalTransition>{isEventTrackModalOpen && <EventTrackModal key={`${user.id}:${authGenerationRef.current}`}
         isOpen={isEventTrackModalOpen}
@@ -1148,13 +1164,7 @@ export default function App() {
         onClose={() => setLightboxState((prev) => ({ ...prev, isOpen: false }))}
         onNavigate={(newIndex) => setLightboxState((prev) => ({ ...prev, index: newIndex }))}
       />}</ModalTransition>
-      <ModalTransition>{isPostcardOpen && <PostcardComposer
-        key={`${user.id}:${authGenerationRef.current}`}
-        isOpen={isPostcardOpen}
-        tracks={eventTracks}
-        currentUserId={user.id}
-        onClose={() => setIsPostcardOpen(false)}
-      />}</ModalTransition>
+      {browseOpen && sortBy === 'date' && section === 'archive' && <MonthQuickBrowse query={feedQuery} generation={authGenerationRef.current} initialMonth={(filteredEvents[0]?.date || '').slice(0,7)} onClose={() => setBrowseOpen(false)} onSeek={async (target, signal) => { setViewMode('timeline'); return feed.seek(target, signal); }} onLanded={page => { setBrowseOpen(false); landBrowse(page); }} />}
       </DeferredUiBoundary>
     </LocalPhotoProvider>
   );

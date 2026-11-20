@@ -250,7 +250,12 @@ export const dataApi = {
   browseMonths:(body:Record<string,unknown>,signal?:AbortSignal)=>request<BrowseMonths>('/moments/browse/months',{method:'POST',body:JSON.stringify(body),signal}),
   browsePreview:(body:Record<string,unknown>,signal?:AbortSignal)=>request<BrowsePage>('/moments/browse/preview',{method:'POST',body:JSON.stringify(body),signal}),
   seekMoments:(body:Record<string,unknown>,signal?:AbortSignal)=>request<import('./useMomentFeed').MomentFeedPage>('/moments/seek',{method:'POST',body:JSON.stringify(body),signal}),
-  queryMoments: (body: Record<string, unknown>, signal?: AbortSignal) =>
+  queryMoments: (body: import('./useMomentFeed').MomentFeedQuery & {
+    cursor?: string | null;
+    navigation?: 'next' | 'previous';
+    includeTotal?: boolean;
+    includeFacets?: boolean;
+  }, signal?: AbortSignal) =>
     request<{ moments: TimelineEvent[]; nextCursor: string | null; previousCursor?:string|null; scope?:string; total?: number; facets?: Record<string, number> }>('/moments/query', { method: 'POST', body: JSON.stringify(body), signal }),
   savedMoments: async ({ limit = 40, cursor }: { limit?: number; cursor?: string } = {}) => {
     const params = new URLSearchParams({ limit: String(limit) });

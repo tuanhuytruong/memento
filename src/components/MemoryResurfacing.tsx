@@ -1,3 +1,4 @@
+import { Bell, ChevronRight, X } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 import type { EventTrack, TimelineEvent } from '../types';
 import { momentIdentity, trackIdentity } from '../lib/resourceIdentity';
@@ -15,6 +16,7 @@ interface Props {
    */
   sessionGeneration: number;
   revision?: number;
+  inSheet?: boolean;
   /** Opens the existing moment detail flow with the exact owner+moment identity. */
   onOpen: (event: TimelineEvent) => void;
 }
@@ -46,10 +48,12 @@ function reasonLabel(reason: ResurfacingReason, event: TimelineEvent, today: str
  * A failure here simply hides the section. Rediscovery is a pleasure, not a
  * requirement, and it must never take the timeline down with it.
  */
-export function MemoryResurfacing({ tracks, visits, sessionGeneration, revision, onOpen }: Props) {
+export function MemoryResurfacing({ tracks, visits, sessionGeneration, revision, onOpen, inSheet = false }: Props) {
   const [today, setToday] = useState(() => localDayKey(new Date()));
   const [candidates, setCandidates] = useState<readonly TimelineEvent[]>([]);
-  const [expanded, setExpanded] = useState(false);
+  const [index, setIndex] = useState(0);
+  const [dismissed, setDismissed] = useState('');
+  const [loaded, setLoaded] = useState(false);
 
   // Recompute the local calendar day after midnight, a timezone change or tab focus.
   useEffect(() => {
@@ -84,15 +88,17 @@ export function MemoryResurfacing({ tracks, visits, sessionGeneration, revision,
     const generation = sessionGeneration;
     let cancelled = false;
     setCandidates([]);
+    setLoaded(false);
     dataApi.resurfacingCandidates(today)
       .then(result => {
         if (cancelled || generation !== sessionGeneration) return;
+        setLoaded(true);
         setCandidates(Array.isArray(result.moments) ? result.moments : []);
       })
       .catch(() => {
         // Rediscovery is optional: an empty section is correct, an error
         // banner over a working timeline would not be.
-        if (!cancelled && generation === sessionGeneration) setCandidates([]);
+        if (!cancelled && generation === sessionGeneration) { setCandidates([]); setLoaded(true); }
       });
     return () => { cancelled = true; };
   }, [today, sessionGeneration, revision]);
@@ -107,49 +113,12 @@ export function MemoryResurfacing({ tracks, visits, sessionGeneration, revision,
     });
   }, [candidates, tracks, visits, today]);
 
-  // No result is preferable to a misleading fallback; ordinary navigation and
-  // Blindbox remain available below/alongside this section.
-  if (!cards.length) return null;
-
-  return (
-    <section aria-labelledby="memory-resurfacing-title" id="memory-resurfacing" className="mb-6">
-      <div className="mb-3 flex items-baseline justify-between gap-3">
-        <div className="min-w-0">
-          <h2 id="memory-resurfacing-title" className="text-sm font-semibold text-stone-800 dark:text-stone-100">Ngày ấy · Remember when</h2>
-          <p className="text-xs text-stone-500">Memories worth returning to, chosen from your own timeline.</p>
-        </div>
-      </div>
-      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {cards.map((card, index) => (
-          <li key={card.key} className={index > 0 && !expanded ? 'hidden sm:block' : ''}>
-            <button
-              type="button"
-              onClick={() => onOpen(card.event)}
-              className="flex min-h-11 w-full min-w-0 flex-col gap-2 rounded-xl border border-stone-200 bg-white p-3 text-left transition hover:border-amber-300 hover:bg-stone-50 dark:border-stone-800 dark:bg-stone-900 dark:hover:border-amber-800 dark:hover:bg-stone-800/60"
-            >
-              <span className="w-full min-w-0 truncate text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
-                {reasonLabel(card.reason, card.event, today)}
-              </span>
-              {card.event.images[0] && (
-                <PrivateImage src={card.event.images[0]} variant="thumb" alt="" loading="lazy" className="h-24 w-full shrink-0 overflow-hidden rounded-lg" />
-              )}
-              <span className="w-full min-w-0 truncate text-sm font-semibold text-stone-800 dark:text-stone-100">{card.event.title}</span>
-              <span className="w-full min-w-0 truncate text-xs text-stone-500">
-                {formatDateDisplay(card.event.date)} · {card.track.title}
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
-      {cards.length > 1 && (
-        <button
-          type="button"
-          onClick={() => setExpanded(value => !value)}
-          className="mt-2 min-h-11 w-full rounded-lg border border-stone-200 px-3 text-sm font-medium text-stone-600 hover:bg-stone-50 dark:border-stone-800 dark:text-stone-300 dark:hover:bg-stone-800 sm:hidden"
-        >
-          {expanded ? 'Show less' : `See more (${cards.length - 1} more)`}
-        </button>
-      )}
-    </section>
-  );
+  if (!cards.length) return inSheet ? <p role="status">{loaded ? 'No memories to revisit today.' : 'Looking for memories…'}</p> : null;
+  const card = cards[index % cards.length];
+  if (!inSheet && dismissed === today) return null;
+  return <section aria-label="Resurfaced memory" id={inSheet ? undefined : 'memory-resurfacing'} className="archival-resurfacing">
+    {card.event.images[0] && <button className="archival-resurfacing-photo" aria-label={`Revisit ${card.event.title}`} onClick={() => onOpen(card.event)}><PrivateImage src={card.event.images[0]} variant="thumb" alt="" /></button>}
+    <div className="archival-resurfacing-copy"><div><span className="archival-wax">{card.reason === 'anniversary' ? <><Bell size={12} />{reasonLabel(card.reason, card.event, today)}</> : 'From your archive'}</span><span>·</span><time>{formatDateDisplay(card.event.date)}</time></div><h2><button onClick={() => onOpen(card.event)}>{card.event.title}</button></h2>{card.event.idea && <p className="line-clamp-1 italic">“{card.event.idea}”</p>}</div>
+    <div className="archival-resurfacing-actions"><button className="archival-control" onClick={() => onOpen(card.event)}>Revisit <ChevronRight size={14} /></button>{cards.length > 1 && <button data-keep-sheet onClick={() => setIndex(i => i + 1)}>Another</button>}{!inSheet && <button aria-label="Dismiss resurfaced memory" onClick={() => setDismissed(today)}><X size={16} /></button>}</div>
+  </section>;
 }

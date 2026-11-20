@@ -10,6 +10,10 @@ interface TimelineViewProps {
   onToggleReaction: ReactionControlProps['onToggleReaction'];
   currentUsername?: string;
   events: TimelineEvent[];
+  density?: number;
+  ranked?: boolean;
+  savedKeys?: ReadonlySet<string>;
+  onToggleSave?: (event: TimelineEvent) => Promise<void>;
   tracks: EventTrack[];
   currentTrackKey?: string;
   onSelectTrack?: (track: EventTrack) => void;
@@ -32,7 +36,7 @@ interface TimelineViewProps {
 }
 
 export const TimelineView: React.FC<TimelineViewProps> = ({
-  events,
+  events, ranked = false, density = 3, savedKeys, onToggleSave,
   tracks,
   currentTrackKey = 'all',
   onSelectTrack,
@@ -132,22 +136,24 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   const groups = new Map<string, TimelineEvent[]>();
   for (const event of events) {
     const date = calendarDateToLocalInstant(memoryCalendarDate(event.date));
-    const label = date ? date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 'Undated';
+    const label = ranked ? 'Ranked memories' : date ? date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 'Undated';
     const group = groups.get(label);
     if (group) group.push(event);
     else groups.set(label, [event]);
   }
 
   return (
-    <div id="timeline-container" className="archival-chapters">
+    <div className="archival-timeline-layout"><div id="timeline-container" className="archival-chapters">
       {Array.from(groups, ([label, group]) => (
-        <section key={label} className="archival-chapter" aria-label={label}>
+        <section key={label} id={`archive-chapter-${label.replaceAll(' ', '-')}`} className="archival-chapter" aria-label={label}>
           <div className="archival-chapter-heading"><h2>{label}</h2><span>{group.length} {group.length === 1 ? 'entry' : 'entries'} shown</span></div>
           <div className="archival-cards">
             {group.map(event => (
               <EventCard
                 key={momentIdentity(event)}
+                density={density} saved={savedKeys?.has(momentIdentity(event))} onToggleSave={onToggleSave}
                 event={event}
+                showTrack={currentTrackKey === 'all'}
                 track={event.eventId ? trackMap.get(`${event.resourceOwnerId ?? 'legacy'}:${event.eventId}`) : undefined}
                 onToggleReaction={onToggleReaction}
                 currentUsername={currentUsername}
@@ -162,6 +168,6 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
           </div>
         </section>
       ))}
-    </div>
+    </div><aside className="archival-month-index" aria-label="Visible months"><p>Month index</p>{Array.from(groups, ([label]) => <button key={label} type="button" onClick={() => document.getElementById(`archive-chapter-${label.replaceAll(' ', '-')}`)?.scrollIntoView()}>{label}</button>)}</aside></div>
   );
 };

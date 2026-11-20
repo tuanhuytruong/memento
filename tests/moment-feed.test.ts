@@ -24,6 +24,8 @@ test('the scope hash covers every decision that changes which rows are eligible'
   assert.notEqual(feedScopeHash({ savedOnly: true }, 1), hash, 'the saved filter is part of the scope');
   assert.notEqual(feedScopeHash({ trackKey: 'A:t1' }, 1), hash);
   assert.notEqual(feedScopeHash({ sortDirection: 'oldest' }, 1), hash);
+  assert.equal(feedScopeHash({ sortBy: 'date' }, 1), hash);
+  assert.equal(new Set([hash, feedScopeHash({ sortBy: 'relevance' }, 1), feedScopeHash({ sortBy: 'intensity' }, 1)]).size, 3);
   // Tag order is cosmetic, exactly as it is on the server.
   assert.equal(feedScopeHash({ selectedTags: ['b', 'a'] }, 1), feedScopeHash({ selectedTags: ['a', 'b'] }, 1));
 });

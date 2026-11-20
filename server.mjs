@@ -3,6 +3,7 @@ import {browseMonths,browsePreview,seekMoments} from './month-browse-queries.mjs
 import { mountExportSnapshotRoutes } from './export-snapshot.mjs';
 import { mountStoryRoutes } from './story-routes.mjs';
 import { mountDiscoveryRoutes } from './discovery-routes.mjs';
+import { validateInsightsQuery, queryArchiveInsights } from './archive-insights-queries.mjs';
 import { operationalMetrics, sampleOperationalState, cleanupExpiredSessions } from './operational-metrics.mjs';
 import { postcardRenderStats } from './postcard-renderer.mjs';
 import dotenv from 'dotenv';
@@ -413,6 +414,12 @@ app.post('/api/moments/query', auth, asyncHandler(async (req, res) => {
       ? { facets: { milestones: aggregate.milestones, withImages: aggregate.with_images, years: aggregate.years, earliest: aggregate.earliest, latest: aggregate.latest } }
       : {}),
   });
+}));
+
+app.get('/api/archive-insights', auth, asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const query = validateInsightsQuery(req.query);
+  res.json({ insights: await queryArchiveInsights(pool, req.user.id, query, DB_SCHEMA) });
 }));
 
 // Phase 3 Task 3.2: full-scope account summary. The header, track counts, tag

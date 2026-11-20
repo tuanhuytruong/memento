@@ -1,0 +1,50 @@
+.insight-atlas { display: grid; gap: 28px; overflow-wrap: anywhere; }
+.insight-atlas h1 { font: 500 clamp(32px, 4vw, 40px)/1.1 var(--archive-serif); }
+.insight-atlas h2, .insight-dialog h2 { font: 500 23px/1.2 var(--archive-serif); }
+.insight-atlas h3 { font: 500 19px/1.2 var(--archive-serif); }
+.insight-atlas p, .insight-dialog p { color: var(--archive-muted); }
+.insight-atlas small, .insight-dialog small { color: var(--archive-muted); font: 11px var(--archive-mono); }
+.insight-masthead { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--archive-line); padding-bottom: 24px; }
+.insight-masthead h1 { margin: 6px 0; }
+.insight-masthead > div:first-child { max-width: 620px; }
+.insight-row { display: flex; align-items: center; justify-content: space-between; gap: 8px 14px; flex-wrap: wrap; }
+.insight-row span > svg { display: inline; color: var(--archive-wax); }
+.insight-atlas button, .insight-rhythm button { min-height: 44px; }
+.insight-atlas .archival-control { white-space: normal; text-align: start; }
+.insight-segment { display: flex; background: var(--archive-linen); border-radius: 12px; padding: 4px; }
+.insight-segment button { border-radius: 8px; padding-inline: 12px; font-size: 12px; }
+.insight-segment button[aria-pressed=true] { background: var(--archive-surface); font-weight: 600; }
+.insight-grid, .insight-metrics, .insight-months { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.insight-atlas section > h2 + .insight-grid { margin-top: 12px; }
+.insight-card { min-width: 0; display: grid; align-content: start; gap: 8px; padding: 16px; border: 1px solid var(--archive-line); border-radius: 16px; background: var(--archive-surface); }
+.insight-metrics strong { display: block; font: 500 20px var(--archive-serif); }
+.insight-pulse { background: radial-gradient(ellipse at center, var(--archive-linen), var(--archive-surface) 78%); }
+.insight-orbits { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; padding: 22px 0; }
+.insight-orbits button { background: var(--archive-surface); display: flex; align-items: center; gap: 8px; border: 1px solid; border-radius: 30px; padding: 8px 14px; }
+.insight-orbits button[aria-pressed=true], .insight-pills button[aria-pressed=true] { background: var(--archive-linen-deep); font-weight: 600; }
+.insight-months li { display: grid; background: var(--archive-linen); border-top: 3px solid; border-radius: 8px; gap: 3px; padding: 8px; font-size: 12px; }
+.insight-recent li + li, .insight-factors li + li { border-top: 1px solid var(--archive-line); }
+.insight-recent button { display: flex; align-items: center; justify-content: space-between; width: 100%; text-align: start; gap: 8px; padding-block: 5px; }
+.insight-recent button:hover { text-decoration: underline; }
+.insight-recent small { flex: none; }
+.insight-factors li { display: grid; gap: 4px; padding-block: 8px; }
+.insight-factors meter { width: 100%; accent-color: var(--archive-prussian); }
+.insight-cover { aspect-ratio: 2; overflow: hidden; border-radius: 10px; }
+.insight-totals { font: 12px var(--archive-mono); }
+.insight-dialog { position: fixed; inset: 0; width: min(540px, calc(100% - 24px)); max-height: calc(100dvh - 32px); overflow: auto; margin: auto; padding: 18px; border: 1px solid var(--archive-line); border-radius: 16px; color: var(--archive-ink); background: var(--archive-surface); overflow-wrap: anywhere; }
+.insight-dialog::backdrop { background: rgb(20 17 13 / .58); }
+.insight-dialog header { position: sticky; top: -18px; background: var(--archive-surface); }
+.insight-seals li { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--archive-line); }
+.insight-seals li svg { color: var(--archive-wax); flex: none; }
+.insight-preview-image { height: min(46dvh, 400px); }
+.insight-description { white-space: pre-wrap; margin-block: 10px; }
+.insight-rhythm details { margin-top: 10px; }
+.insight-rhythm-grid { display: grid; gap: 12px; margin-top: 12px; }
+.insight-rhythm-grid svg { width: 100%; max-width: 420px; }
+.insight-rhythm label, .insight-atlas label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.insight-rhythm select, .insight-atlas select { padding: 6px; min-height: 44px; color: var(--archive-ink); background: var(--archive-surface); border: 1px solid var(--archive-line); border-radius: 6px; }
+.insight-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.insight-pills :is(span,button) { display: inline-flex; align-items: center; padding: 4px 10px; background: var(--archive-linen); border-radius: 20px; }
+@media(max-width: 639px) { .insight-grid { grid-template-columns: minmax(0,1fr); } }
+@media(min-width: 640px) { .insight-rhythm-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .insight-months { grid-template-columns: repeat(4,minmax(0,1fr)); } }
+@media(min-width: 1024px) { .insight-metrics { grid-template-columns: repeat(4,minmax(0,1fr)); } .insight-months { grid-template-columns: repeat(6,minmax(0,1fr)); } }

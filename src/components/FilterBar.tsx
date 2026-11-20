@@ -5,29 +5,26 @@ import {
   SlidersHorizontal,
   X,
   Star,
-  Image as ImageIcon,
   ArrowUpDown,
   Calendar,
   Sparkles,
   Bookmark,
-  BookmarkCheck,
+  Camera,
   Tag,
-  LayoutList,
-  Columns,
-  GalleryThumbnails,
 } from 'lucide-react';
-import { FilterState, ViewMode, EmotionKey } from '../types';
+import type { MomentSortBy } from '../lib/useMomentFeed';
+import { FilterState, EmotionKey } from '../types';
 import { EMOTIONS } from '../data/emotions';
 import { validateDateRange } from '../lib/momentFilters';
 
 interface FilterBarProps {
   filters: FilterState;
+  sortBy?: MomentSortBy;
+  onSortBy?: (mode: MomentSortBy) => void;
   onFilterChange: (updated: Partial<FilterState>) => void;
   onResetFilters: () => void;
   availableTags: { name: string; count: number }[];
   availableYears: string[];
-  viewMode: ViewMode;
-  onViewModeChange: (mode: ViewMode) => void;
   searchPending?: boolean;
   onSearchEnter?: () => void;
   onSearchCompositionStart?: () => void;
@@ -39,19 +36,18 @@ interface FilterBarProps {
 }
 
 export const FilterBar: React.FC<FilterBarProps> = ({
-  filters,
+  filters, sortBy = 'date', onSortBy,
   onFilterChange,
   onResetFilters,
   availableTags,
   availableYears,
-  viewMode,
-  onViewModeChange,
   totalFilteredCount,
   totalCount,
   savedCount,
   searchPending, onSearchEnter, onSearchCompositionStart, onSearchCompositionEnd,
 }) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [forward, reverse] = sortBy === 'relevance' ? ['Top first', 'Quietest first'] : sortBy === 'intensity' ? ['High to low', 'Low to high'] : ['Newest first', 'Oldest first'];
 
   const activeFiltersCount =
     (filters.search ? 1 : 0) +
@@ -99,20 +95,30 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) onSearchEnter?.(); }}
             onCompositionStart={onSearchCompositionStart}
             onCompositionEnd={onSearchCompositionEnd}
-            placeholder="Search titles, ideas, places, or moods…"
+            placeholder="Search titles, reflections, places, or perspectives..."
           />
           {filters.search && <button type="button" aria-label="Clear search" className="archival-icon-button" onClick={() => onFilterChange({ search: '' })}><X size={16} /></button>}
         </div>
         <div className="archival-quick-filters">
           <button type="button" className="archival-control" aria-pressed={filters.milestonesOnly} onClick={() => onFilterChange({ milestonesOnly: !filters.milestonesOnly })}><Star size={14} /><span>Milestones</span></button>
           <button type="button" id="filter-saved-only" className="archival-control" aria-pressed={filters.savedOnly} onClick={() => onFilterChange({ savedOnly: !filters.savedOnly })}>
-            {filters.savedOnly ? <BookmarkCheck size={14} /> : <Bookmark size={14} />}<span>Saved</span><small>{savedCount}</small>
+            <Bookmark size={14} /><span>Saved</span>
           </button>
-          <button type="button" className="archival-control" aria-pressed={filters.hasImagesOnly} onClick={() => onFilterChange({ hasImagesOnly: !filters.hasImagesOnly })}><ImageIcon size={14} /><span>Photos</span></button>
+          <button type="button" className="archival-control" aria-pressed={filters.hasImagesOnly} onClick={() => onFilterChange({ hasImagesOnly: !filters.hasImagesOnly })}><Camera size={14} /><span>Photos</span></button>
           <button type="button" id="toggle-advanced-filters" className="archival-control" aria-expanded={showAdvanced} aria-controls="archival-filter-panel" onClick={() => setShowAdvanced(value => !value)}>
-            <SlidersHorizontal size={14} /><span>Filters</span>{activeFiltersCount > 0 && <small>{activeFiltersCount}</small>}
+            <SlidersHorizontal size={14} /><span>Filters</span>{activeFiltersCount > 0 && <small>({activeFiltersCount})</small>}
           </button>
         </div>
+      </div>
+      <div className="archival-view-row">
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Smart sort"><span className="text-xs mr-1">Smart sort</span>{([['date', 'Date'], ['relevance', 'Relevance'], ['intensity', 'Mood intensity']] as const).map(([key, label]) => <button key={key} type="button" className="archival-control" aria-pressed={key === sortBy} onClick={() => onSortBy?.(key)}>{label}</button>)}</div>
+        <button
+          type="button"
+          id="toggle-sort-direction"
+          className="archival-control"
+          aria-label={filters.sortDirection === 'newest' ? `Sorted ${forward.toLowerCase()}. Activate to sort ${reverse.toLowerCase()}` : `Sorted ${reverse.toLowerCase()}. Activate to sort ${forward.toLowerCase()}`}
+          onClick={() => onFilterChange({ sortDirection: filters.sortDirection === 'newest' ? 'oldest' : 'newest' })}
+        ><ArrowUpDown size={14} />{filters.sortDirection === 'newest' ? forward : reverse}</button>
       </div>
       {rangeError && <p role="alert" id="filter-range-error" className="text-xs text-rose-700 dark:text-rose-300">{rangeError}</p>}
       {showAdvanced && (
@@ -231,26 +237,10 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           </div>
         </div>
       )}
-      <div className="archival-view-row">
-        <div className="archival-view-tabs" role="group" aria-label="Archive view mode">
-          {([
-            ['timeline', 'Timeline', 'Timeline view', LayoutList],
-            ['gallery', 'Gallery', 'Gallery view', GalleryThumbnails],
-            ['compact', 'List', 'Compact list view', Columns],
-          ] as const).map(([mode, label, accessibleLabel, Icon]) => <button key={mode} type="button" id={`view-${mode}-btn`} aria-pressed={viewMode === mode} aria-label={accessibleLabel} onClick={() => onViewModeChange(mode)}><Icon size={14} />{label}</button>)}
-        </div>
-        <button
-          type="button"
-          id="toggle-sort-direction"
-          className="archival-control"
-          aria-label={filters.sortDirection === 'newest' ? 'Sorted newest first. Activate to sort oldest first' : 'Sorted oldest first. Activate to sort newest first'}
-          onClick={() => onFilterChange({ sortDirection: filters.sortDirection === 'newest' ? 'oldest' : 'newest' })}
-        ><ArrowUpDown size={14} />{filters.sortDirection === 'newest' ? 'Newest first' : 'Oldest first'}</button>
-      </div>
-      <div className="archival-filter-status">
-        <span role="status" aria-live="polite" aria-busy={searchPending}>{searchPending ? 'Updating memories…' : <><strong>{totalFilteredCount}</strong> of {totalCount} memories match</>}</span>
+      {(activeFiltersCount > 0 || searchPending) && <div className="archival-filter-status">
+        <span role="status" aria-live="polite" aria-busy={searchPending}>{searchPending ? 'Updating memories…' : <><strong>{totalFilteredCount}</strong> of {totalCount} memories match{filters.savedOnly ? ` · ${savedCount} saved in your archive` : ''}</>}</span>
         {activeFiltersCount > 0 && <button type="button" aria-label="Reset all filters" onClick={onResetFilters}><X size={14} />Reset all</button>}
-      </div>
+      </div>}
     </section>
   );
 };

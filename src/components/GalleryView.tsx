@@ -1,192 +1,27 @@
-import React from 'react';
-import { TimelineEvent, EventTrack } from '../types';
+import type { TimelineEvent, EventTrack } from '../types';
 import { getEmotionMeta } from '../data/emotions';
 import { formatDateDisplay } from '../lib/storage';
-import { getEventTheme, getEventIconComponent } from '../data/eventThemes';
 import { trackIdentity, momentIdentity } from '../lib/resourceIdentity';
-import { Calendar, MapPin, Lightbulb, Star, ImageIcon } from 'lucide-react';
 import { PrivateImage } from './PrivateImage';
-import { ReactionSummaryRail } from './ReactionSummaryRail';
+import { useLocalPhotos } from '../lib/localPhoto';
 
-interface GalleryViewProps {
-  events: TimelineEvent[];
-  tracks: EventTrack[];
-  onSelectTrack?: (track: EventTrack) => void;
-  onViewDetails: (event: TimelineEvent) => void;
-  onTagClick: (tag: string) => void;
-  onOpenImageLightbox: (images: string[], index: number) => void;
+function GalleryTile({event, track, hero, onOpen}: {event: TimelineEvent; track?: EventTrack; hero: boolean; onOpen: () => void}) {
+  const [pending] = useLocalPhotos(event.id, event.resourceOwnerId);
+  const preview = event.images[0];
+  const mood = getEmotionMeta(event.emotion);
+  return <article className="archival-gallery-card" id={`event-card-${momentIdentity(event)}`} data-hero={hero && !!(preview || pending)}>
+    <button className="archival-gallery-tile" onClick={onOpen}>
+      {preview || pending ? <>
+        {preview ? <PrivateImage src={preview} variant={hero ? 'display' : 'thumb'} loading="lazy" alt="" className="archival-gallery-image" /> : <img className="archival-gallery-image object-cover" src={pending.url} alt="" />}
+        <div className="archival-gallery-caption"><p>{formatDateDisplay(event.date)}{event.location?.city && ` · ${event.location.city}`}{event.isMilestone && ' · Milestone'}</p><h3>{event.title}</h3>{!preview && pending && <span>{pending.status}</span>}</div>
+      </> : <div className="archival-gallery-note"><p>{formatDateDisplay(event.date)}{mood && <span>{mood.emoji} {mood.label}</span>}</p><div><h3>{event.title}</h3><p className="line-clamp-4">{event.description}</p></div><small>{track?.title ?? 'Written note'} · Read entry</small></div>}
+    </button>
+  </article>;
 }
 
-export const GalleryView: React.FC<GalleryViewProps> = ({
-  events,
-  tracks,
-  onSelectTrack,
-  onViewDetails,
-  onTagClick,
-  onOpenImageLightbox,
-}) => {
-  if (events.length === 0) {
-    return (
-      <div className="py-12 text-center text-sm text-stone-500">
-        No events match current filters.
-      </div>
-    );
-  }
-
-  const trackMap = new Map<string, EventTrack>();
-  tracks.forEach((t) => trackMap.set(trackIdentity(t), t));
-
-  return (
-    <div
-      id="gallery-view-grid"
-      className="archival-gallery"
-    >
-      {events.map((evt) => {
-        const emotionMeta = getEmotionMeta(evt.emotion);
-        const hasImages = evt.images && evt.images.length > 0;
-        const track = evt.eventId ? trackMap.get(`${evt.resourceOwnerId ?? 'legacy'}:${evt.eventId}`) : undefined;
-        const theme = track ? getEventTheme(track.color) : null;
-        const TrackIcon = track ? getEventIconComponent(track.icon) : null;
-
-        return (
-          <div
-            key={momentIdentity(evt)}
-            onClick={() => onViewDetails(evt)}
-            className="group archival-gallery-card"
-          >
-            {/* Top image or visual header */}
-            {hasImages ? (
-              <div
-                className="archival-gallery-media"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenImageLightbox(evt.images, 0);
-                }}
-              >
-                <PrivateImage src={evt.images[0]} variant="thumb" loading="lazy" alt={evt.title} className="h-full group-hover:scale-105 transition-transform duration-500" />
-                {evt.images.length > 1 && (
-                  <span className="absolute bottom-2.5 right-2.5 px-2 py-1 rounded-md bg-black/60 backdrop-blur-xs text-white text-[11px] font-medium flex items-center gap-1">
-                    <ImageIcon className="w-3 h-3" />
-                    +{evt.images.length - 1}
-                  </span>
-                )}
-                {evt.isMilestone && (
-                  <span className="absolute top-2.5 left-2.5 px-2.5 py-0.5 rounded-full bg-amber-500 text-white text-[11px] font-bold flex items-center gap-1 shadow-xs">
-                    <Star className="w-3 h-3 fill-white" /> Milestone
-                  </span>
-                )}
-                {track && theme && TrackIcon && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (onSelectTrack) onSelectTrack(track);
-                    }}
-                    className={`ui-action absolute max-w-[65%] top-2.5 right-2.5 min-w-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border backdrop-blur-md shadow-xs transition ${theme.badgeClass}`}
-                  >
-                    <TrackIcon className="w-3 h-3" />
-                    <span className="min-w-0 truncate">{track.title}</span>
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="archival-gallery-text-meta">
-                <span className="text-xs font-semibold text-stone-500 flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5" />
-                  {formatDateDisplay(evt.date)}
-                </span>
-                <div className="flex items-center gap-1.5">
-                  {track && theme && TrackIcon && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (onSelectTrack) onSelectTrack(track);
-                      }}
-                      className={`ui-action max-w-full min-w-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border transition ${theme.badgeClass}`}
-                    >
-                      <TrackIcon className="w-3 h-3" />
-                      <span className="min-w-0 truncate">{track.title}</span>
-                    </button>
-                  )}
-                  {evt.isMilestone && (
-                    <span className="text-[11px] font-bold text-amber-600 flex items-center gap-1">
-                      <Star className="w-3 h-3 fill-amber-500" />
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Card Content */}
-            <div className="p-4 sm:p-5 flex-1 flex flex-col justify-between space-y-3">
-              <div>
-                {/* Date & Emotion */}
-                <div className="flex items-center justify-between text-xs text-stone-500 mb-1.5">
-                  <span>{formatDateDisplay(evt.date)}</span>
-                  {emotionMeta && (
-                    <span
-                      className={`max-w-full min-w-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${emotionMeta.badgeBg} ${emotionMeta.badgeText} ${emotionMeta.borderColor}`}
-                    >
-                      <span>{emotionMeta.emoji}</span>
-                      <span>{emotionMeta.label}</span>
-                    </span>
-                  )}
-                </div>
-
-                {/* Title */}
-                <h3 className="archival-gallery-title">
-                  <button type="button" className="archival-card-title" onClick={click => { click.stopPropagation(); onViewDetails(evt); }}>{evt.title}</button>
-                </h3>
-
-                {/* Location */}
-                {evt.location && (
-                  <div className="flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400 mb-2">
-                    <MapPin className="w-3 h-3 text-rose-500 shrink-0" />
-                    <span className="truncate">
-                      {[evt.location.name, evt.location.city].filter(Boolean).join(', ')}
-                    </span>
-                  </div>
-                )}
-
-                {/* Idea snippet */}
-                {evt.idea && (
-                  <div className="p-2.5 rounded-xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/40 text-xs text-stone-700 dark:text-stone-300 italic mb-2 line-clamp-2">
-                    <span className="font-semibold text-amber-800 dark:text-amber-400 not-italic mr-1">
-                      💡 Idea:
-                    </span>
-                    "{evt.idea}"
-                  </div>
-                )}
-
-                {/* Description snippet */}
-                {evt.description && (
-                  <p className="text-xs text-stone-600 dark:text-stone-400 line-clamp-2 leading-relaxed">
-                    {evt.description}
-                  </p>
-                )}
-              </div>
-
-              <ReactionSummaryRail reactions={evt.reactions} className="pt-1" />
-              {/* Tags */}
-              <div className="flex flex-wrap gap-1 pt-2 border-t border-stone-100 dark:border-stone-800">
-                {evt.tags.map((tag) => (
-                  <button
-                    key={tag}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onTagClick(tag);
-                    }}
-                    className="ui-action max-w-full break-all px-2 py-0.5 rounded text-[11px] font-medium bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-amber-100 transition"
-                  >
-                    #{tag}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-};
+export function GalleryView({events, tracks, onViewDetails}: {events: TimelineEvent[]; tracks: EventTrack[]; onViewDetails: (event: TimelineEvent) => void}) {
+  const trackMap = new Map(tracks.map(track => [trackIdentity(track), track]));
+  return <section id="gallery-view-grid" className="archival-gallery" aria-label="Memory gallery">
+    {events.map((event, index) => <GalleryTile key={momentIdentity(event)} event={event} track={trackMap.get(`${event.resourceOwnerId}:${event.eventId}`)} hero={index === 0 && events.length >= 3} onOpen={() => onViewDetails(event)} />)}
+  </section>;
+}
